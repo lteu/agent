@@ -55,12 +55,36 @@ ai
 npm run dev        # 用 tsx 直接跑源码，免编译
 ```
 
+## 打包成 .dmg 分发（macOS）
+
+```bash
+npm run dmg        # 产出 dist/ai-<version>.dmg
+```
+
+生成的 DMG **内置了官方 Node 运行时**（默认 `v24.16.0` darwin-arm64），
+收到的人无需安装任何环境：
+
+1. 把 `Ai.app` 拖进「应用程序」；
+2. 右键 → 打开（首次绕过未签名提示）；
+3. 弹出终端进入对话。**没填过 key 时会在启动界面引导粘贴 key**，回车保存后无缝进入对话。
+
+DMG 里还附带「安装命令行 ai.command」，双击即可把 `ai` 装成终端命令。
+
+可调参数（环境变量）：
+- `ARCH`：默认 `arm64`（Apple Silicon）。Intel 机器用 `ARCH=x64 npm run dmg`
+- `NODE_VERSION`：内置的 Node 版本，默认 `v24.16.0`
+
+> 仅做了 ad-hoc 签名（非 Apple 开发者证书），所以接收方首次需「右键→打开」。
+> 下载过的 Node 会缓存在 `dist/.node-cache`，再次打包更快。
+
 ## 结构
 
 ```
 src/
-  cli.tsx           入口 + 界面（消息历史、流式输出、参数处理）
+  cli.tsx           入口 + 界面（消息历史、流式输出、缺 key 时的引导）
   MultilineInput.tsx 可编辑的多行输入框（光标、删除、快捷键）
   deepseek.ts       DeepSeek 流式 API 客户端
   config.ts         API key / 模型 的读取与保存
+scripts/
+  make-dmg.sh       打包内置 Node 的 Ai.app 并生成 .dmg
 ```

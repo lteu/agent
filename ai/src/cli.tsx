@@ -13,7 +13,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   console.log(`ai — 终端里的可编辑对话框（接入 DeepSeek）
 
 用法:
-  ai                  进入交互对话框
+  ai                  进入交互对话框（缺少 key 时会在启动时引导输入）
   ai --set-key <KEY>  保存 DeepSeek API key 到 ${CONFIG_PATH}
   ai --help           显示帮助
 
@@ -46,17 +46,6 @@ if (argv[0] === '--set-key') {
 
 const config = loadConfig()
 
-if (!config.apiKey) {
-  console.error(`没有找到 DeepSeek API key。
-
-请用以下任一方式设置：
-  1) ai --set-key <你的KEY>
-  2) export DEEPSEEK_API_KEY=<你的KEY>
-
-到 https://platform.deepseek.com 获取 API key。`)
-  process.exit(1)
-}
-
 // ———————————————————————————————————————————————
 // 界面
 // ———————————————————————————————————————————————
@@ -64,6 +53,8 @@ type UIMessage = { role: 'user' | 'assistant'; content: string }
 
 function App() {
   const { exit } = useApp()
+  // apiKey 改为状态：缺失时先走「输入 key」引导，存好后无缝进入对话
+  const [apiKey, setApiKey] = useState<string | undefined>(config.apiKey)
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [streaming, setStreaming] = useState('')
   const [busy, setBusy] = useState(false)
@@ -107,7 +98,7 @@ function App() {
       let acc = ''
       try {
         for await (const delta of streamChat(apiMessages, {
-          apiKey: config.apiKey!,
+          apiKey: apiKey!,
           model: config.model,
           baseURL: config.baseURL,
           signal: controller.signal,
@@ -129,8 +120,20 @@ function App() {
         abortRef.current = null
       }
     },
-    [messages],
+    [messages, apiKey],
   )
+
+  // 缺少 key：启动时引导用户输入并保存
+  if (!apiKey) {
+    return (
+      <KeyPrompt
+        onSave={k => {
+          saveApiKey(k)
+          setApiKey(k)
+        }}
+      />
+    )
+  }
 
   return (
     <Box flexDirection="column" paddingX={1}>
@@ -184,6 +187,63 @@ function App() {
         disabled={busy}
         placeholder="问点什么…（Ctrl+C 两次退出）"
       />
+    </Box>
+  )
+}
+
+// 首次启动 / 缺少 key 时的引导界面
+function KeyPrompt({ onSave }: { onSave: (key: string) => void }) {
+  const [err, setErr] = useState<string | null>(null)
+
+  const submit = useCallback(
+    (raw: string) => {
+      const key = raw.trim()
+      if (!key) {
+        setErr('请输入 key（粘贴后按 Enter）')
+        return
+      }
+      if (!key.startsWith('sk-')) {
+        setErr('看起来不像 DeepSeek key（通常以 sk- 开头）。如确认无误，可忽略——再次回车继续')
+        // 第二次回车放行：把错误清掉，但仍保存
+        onSave(key)
+        return
+      }
+      onSave(key)
+    },
+    [onSave],
+  )
+
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      <Box marginBottom={1} flexDirection="column">
+        <Text color="cyan" bold>
+          ✦ ai · 首次设置
+        </Text>
+        <Text dimColor>没有检测到 DeepSeek API key，先把它填进来吧。</Text>
+      </Box>
+
+      <Box flexDirection="column" marginBottom={1}>
+        <Text>1. 到 </Text>
+        <Text color="cyan">https://platform.deepseek.com</Text>
+        <Text> 申请并复制你的 API key（以 sk- 开头）。</Text>
+        <Text>
+          2. 在下面粘贴，按 <Text bold>Enter</Text> 保存。
+        </Text>
+        <Text dimColor>
+          会写入 {CONFIG_PATH}（仅自己可读）；之后再启动就直接进对话。
+        </Text>
+      </Box>
+
+      {err && (
+        <Box marginBottom={1}>
+          <Text color="yellow">⚠ {err}</Text>
+        </Box>
+      )}
+
+      <Box>
+        <Text color="cyan">key › </Text>
+        <MultilineInput onSubmit={submit} placeholder="sk-..." />
+      </Box>
     </Box>
   )
 }
