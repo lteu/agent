@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenClaw Architecture — Mermaid</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 24px 80px;
+      min-height: 100vh;
+    }
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 4px;
+      letter-spacing: 0.03em;
+    }
+    .subtitle {
+      color: #8b949e;
+      font-size: 0.9rem;
+      margin-bottom: 36px;
+    }
+    .diagram-wrapper {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 32px;
+      width: 100%;
+      max-width: 1400px;
+      overflow-x: auto;
+    }
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+    /* override mermaid default font */
+    .mermaid svg {
+      font-family: 'Segoe UI', system-ui, sans-serif !important;
+      max-width: 100%;
+    }
+    .controls {
+      margin-top: 20px;
+      display: flex;
+      gap: 10px;
+    }
+    button {
+      background: #21262d;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      border-radius: 6px;
+      padding: 6px 16px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #30363d; }
+  </style>
+</head>
+<body>
+  <h1>🦞 OpenClaw (ClawBot)</h1>
+  <p class="subtitle">AI-Powered Multi-Channel Messaging Gateway — Architecture Diagram</p>
+
+  <div class="diagram-wrapper">
+    <div class="mermaid">
+graph TD
+    subgraph CLIENTS["🖥️  CLIENTS / FRONTENDS"]
+        macos["🖥️ macOS App<br/>Swift · SwiftUI · menubar · gateway host"]
+        ios["📱 iOS App<br/>Swift · SwiftUI · watchOS · widgets"]
+        android["🤖 Android App<br/>Kotlin · Jetpack Compose"]
+        webui["🌐 Web UI<br/>React · Vite · chat · settings"]
+    end
+
+    macos & ios & android & webui -->|"WebSocket / HTTP"| GW_WS
+
+    subgraph GW["⚙️  GATEWAY — Core Orchestration Engine  src/gateway/"]
+        GW_WS["🔌 WebSocket / HTTP Server<br/>real-time RPC · client multiplexing"]
+        GW_RT["📡 Message Routing<br/>channel dispatch · thread binding · fallback"]
+        GW_AU["🔐 Pairing / Auth<br/>device pairing · OAuth · API key management"]
+        GW_CF["⚙️ Config Management<br/>YAML/JSON · schema validation · hot reload"]
+        GW_HE["❤️ Health Monitoring<br/>channel health · doctor diagnostics · OTel"]
+        GW_HK["🪝 Hooks System<br/>message · channel · agent lifecycle hooks"]
+    end
+
+    GW --> AE
+    GW --> CH
+    GW --> PS
+
+    subgraph AE["🧠  AGENT ENGINE  src/agents/"]
+        AE_AR["Auth Profile Rotation<br/>OAuth failover · rate-limit fallback"]
+        AE_RN["Runner Modes<br/>CLI · Pi embedded · cron-isolated"]
+        AE_TC["Tool Calling<br/>function schema · sandbox exec"]
+        AE_SK["Skills System<br/>reusable AI workflows · composable"]
+        AE_SB["Sandbox<br/>isolated execution · resource limits"]
+    end
+
+    subgraph CH["💬  CHANNELS SYSTEM  src/channels/"]
+        CH_MR["Multi-Channel Router<br/>allow-lists · typing indicators · read receipts"]
+        CH_TB["Thread Bindings<br/>cross-platform conversation mapping"]
+        CH_PL["Channel Plugins  26+<br/>Telegram · Discord · Slack · iMessage · WhatsApp<br/>Signal · Teams · Matrix · LINE · Nostr · IRC · more"]
+    end
+
+    subgraph PS["📦  PLUGIN SYSTEM  src/plugin-sdk/"]
+        PS_SDK["Plugin SDK<br/>public API · extension contracts · jiti alias"]
+        PS_REG["Extensions Registry<br/>discovery · lazy loading · runtime deps"]
+        PS_SEC["Secrets / Security<br/>credential store · key rotation · TLS"]
+        PS_CRN["Cron / Scheduler<br/>scheduled agents · isolated runners"]
+    end
+
+    AE & CH & PS --> EXT_AI
+    AE & CH & PS --> EXT_SR
+    AE & CH & PS --> EXT_ME
+    AE & CH & PS --> EXT_SP
+    AE & CH & PS --> EXT_GW
+    AE & CH & PS --> EXT_MO
+
+    subgraph EXT["🔌  EXTENSIONS  extensions/  — 85+ plugins"]
+        EXT_AI["🤖 AI Model Providers  18+<br/>anthropic · openai · google · mistral · deepseek<br/>groq · bedrock · vertex · ollama · vllm · xai · more"]
+        EXT_SR["🔍 Search & Web Tools<br/>brave · tavily · exa · duckduckgo · firecrawl · open-prose"]
+        EXT_ME["🧠 Memory & Storage<br/>memory-core · memory-lancedb · vector semantic search"]
+        EXT_SP["🔊 Speech & Audio<br/>elevenlabs · deepgram · microsoft-tts"]
+        EXT_GW["🌩️ AI Gateways / Proxies<br/>openrouter · together · vercel-ai · cloudflare · copilot-proxy"]
+        EXT_MO["📊 Infra & Monitoring<br/>diagnostics-otel · lobster · acpx · OpenTelemetry"]
+    end
+
+    EXT_AI & EXT_SR & EXT_ME & EXT_SP & EXT_GW & EXT_MO --> SUP
+
+    subgraph SUP["🛠️  SUPPORTING SYSTEMS"]
+        SUP_MD["🎬 Media Pipeline  src/media/<br/>image · video AI · audio transcription · TTS caching"]
+        SUP_CT["📚 Context Engine<br/>message history · pluggable providers · delegation"]
+        SUP_MM["💾 Memory System<br/>persistent memory · LanceDB · semantic search"]
+        SUP_CL["⌨️ CLI  src/cli/<br/>commands · onboarding wizard · update · doctor"]
+        SUP_TU["🖥️ Terminal UI<br/>progress bars · ANSI tables · clack spinners"]
+        SUP_SC["🔒 Secrets / Security<br/>credential storage · TLS · security policy checks"]
+    end
+
+    %% ── styles ──
+    classDef clientStyle  fill:#0d1f38,stroke:#1f6feb,color:#58a6ff,rx:8
+    classDef gwStyle      fill:#1a1f27,stroke:#444c56,color:#c9d1d9,rx:6
+    classDef agentStyle   fill:#0d2218,stroke:#238636,color:#3fb950,rx:6
+    classDef chanStyle    fill:#0d1e33,stroke:#1f6feb,color:#79c0ff,rx:6
+    classDef plugStyle    fill:#1c1038,stroke:#6e40c9,color:#d2a8ff,rx:6
+    classDef extStyle     fill:#1e1428,stroke:#8957e5,color:#d2a8ff,rx:6
+    classDef supStyle     fill:#1a1f27,stroke:#444c56,color:#8b949e,rx:6
+
+    class macos,ios,android,webui clientStyle
+    class GW_WS,GW_RT,GW_AU,GW_CF,GW_HE,GW_HK gwStyle
+    class AE_AR,AE_RN,AE_TC,AE_SK,AE_SB agentStyle
+    class CH_MR,CH_TB,CH_PL chanStyle
+    class PS_SDK,PS_REG,PS_SEC,PS_CRN plugStyle
+    class EXT_AI,EXT_SR,EXT_ME,EXT_SP,EXT_GW,EXT_MO extStyle
+    class SUP_MD,SUP_CT,SUP_MM,SUP_CL,SUP_TU,SUP_SC supStyle
+    </div>
+  </div>
+
+  <div class="controls">
+    <button onclick="window.print()">🖨️ Print / Save PDF</button>
+    <button onclick="downloadSVG()">⬇️ Download SVG</button>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#0d1117',
+        mainBkg: '#161b22',
+        nodeBorder: '#30363d',
+        clusterBkg: '#161b22',
+        clusterBorder: '#30363d',
+        titleColor: '#e6edf3',
+        edgeLabelBackground: '#161b22',
+        lineColor: '#8b949e',
+        fontSize: '13px',
+      },
+      flowchart: {
+        curve: 'basis',
+        padding: 20,
+        nodeSpacing: 40,
+        rankSpacing: 60,
+        htmlLabels: true,
+      },
+    });
+
+    function downloadSVG() {
+      const svg = document.querySelector('.mermaid svg');
+      if (!svg) return alert('Diagram not yet rendered.');
+      const blob = new Blob([svg.outerHTML], { type: 'image/svg+xml' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'openclaw-architecture.svg';
+      a.click();
+    }
+  </script>
+</body>
+</html>

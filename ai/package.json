@@ -1,0 +1,25 @@
+{
+  "name": "ai-cli",
+  "version": "0.1.0",
+  "description": "在终端输入 ai 弹出可编辑对话框，接入 DeepSeek",
+  "type": "module",
+  "bin": {
+    "ai": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "esbuild src/cli.tsx --bundle --platform=node --target=node20 --format=esm --packages=external --jsx=automatic --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli.js",
+    "dev": "tsx src/cli.tsx",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "ink": "^5.1.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0"
+  }
+}
