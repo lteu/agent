@@ -1,166 +1,94 @@
 #!/usr/bin/env bash
 #
 # 打包成可分发的 macOS .dmg：内置 Node 运行时 + 应用代码。
-# 收到的人无需安装任何东西，双击 Ai.app 即在终端进入对话；缺 key 会引导输入。
+# 双击 Ai.app 即在终端进入对话；缺 key 会引导输入。
+# （想要「装好就有 ai 命令」的一键安装，用 make-pkg.sh 生成 .pkg。）
 #
-# 用法:  npm run dmg          (= bash scripts/make-dmg.sh)
-# 产物:  dist/ai-<version>.dmg
+# 用法:  npm run dmg                 (ARCH=arm64|x64|universal)
+# 产物:  dist/ai-<version>-<arch>.dmg
 #
 set -euo pipefail
 
-# ——— 可调参数 ———
-NODE_VERSION="${NODE_VERSION:-v24.16.0}"   # 内置的 Node LTS
-ARCH="${ARCH:-arm64}"                       # arm64 | x64 | universal（两者通吃）
-APP_NAME="Ai"                               # .app 显示名
-BUNDLE_ID="com.ailab.ai-cli"
-
-# 目标架构清单：universal = 同时内置 arm64 + x64，启动时按机器自动选
-case "$ARCH" in
-  universal) ARCH_LIST=(arm64 x64) ;;
-  arm64|x64) ARCH_LIST=("$ARCH") ;;
-  *) echo "ARCH 只能是 arm64 / x64 / universal"; exit 1 ;;
-esac
-
-# ——— 路径 ———
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ARCH="${ARCH:-arm64}"
+APP_NAME="Ai"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 cd "$ROOT"
 VERSION="$(node -p "require('./package.json').version")"
 DIST="$ROOT/dist"
-WORK="$DIST/_pkg"                 # 临时装配目录
-APP="$WORK/$APP_NAME.app"
+WORK="$DIST/_pkg"
 DMG_ROOT="$DIST/_dmgroot"
-DMG="$DIST/ai-$VERSION-$ARCH.dmg" # 架构进文件名，避免互相覆盖
+APP="$WORK/$APP_NAME.app"
+DMG="$DIST/ai-$VERSION-$ARCH.dmg"   # 架构进文件名，避免互相覆盖
 VOLNAME="ai $VERSION"
-CACHE="$DIST/.node-cache"
 
-echo "▶ 打包 ai $VERSION  (node $NODE_VERSION / ${ARCH_LIST[*]})"
-
-# ——— 1. 构建应用代码 ———
-echo "▶ 构建 dist/cli.js"
-npm run build >/dev/null
-
-# ——— 2. 准备只含运行时依赖的 node_modules ———
-echo "▶ 安装运行时依赖（--omit=dev）"
-STAGE="$WORK/stage"
+echo "▶ 打包 DMG  ai $VERSION ($ARCH)"
 rm -rf "$WORK" "$DMG_ROOT"
-mkdir -p "$STAGE"
-cp "$ROOT/package.json" "$STAGE/"
-( cd "$STAGE" && npm install --omit=dev --no-audit --no-fund --silent )
+mkdir -p "$WORK"
 
-# ——— 3. 取得官方（可移植的）Node 二进制 ———
-NODE_PKG="node-$NODE_VERSION-darwin-$ARCH"
-NODE_TGZ="$CACHE/$NODE_PKG.tar.gz"
-NODE_BIN="$CACHE/$NODE_PKG/bin/node"
-if [[ ! -x "$NODE_BIN" ]]; then
-  mkdir -p "$CACHE"
-  echo "▶ 下载 Node $NODE_VERSION ..."
-  curl -fL --retry 3 -o "$NODE_TGZ" \
-    "https://nodejs.org/dist/$NODE_VERSION/$NODE_PKG.tar.gz"
-  tar -xzf "$NODE_TGZ" -C "$CACHE"
-fi
+# 1) 组装 .app（共用脚本）
+bash "$HERE/build-app.sh" "$APP"
 
-# ——— 4. 组装 .app ———
-echo "▶ 组装 $APP_NAME.app"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/app"
-
-# 应用负载：入口 + package.json + 运行时依赖
-cp "$DIST/cli.js"           "$APP/Contents/Resources/app/cli.js"
-cp "$ROOT/package.json"     "$APP/Contents/Resources/app/package.json"
-cp -R "$STAGE/node_modules" "$APP/Contents/Resources/app/node_modules"
-
-# 内置 node
-cp "$NODE_BIN" "$APP/Contents/Resources/node"
-chmod +x "$APP/Contents/Resources/node"
-
-# 启动器：双击 .app → 打开 Terminal 跑对话（.app 自身没有 TTY，必须借 Terminal）
-cat > "$APP/Contents/MacOS/$APP_NAME" <<'LAUNCH'
-#!/bin/bash
-RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
-NODE="$RES/node"
-ENTRY="$RES/app/cli.js"
-# 在新的 Terminal 窗口里运行；单引号包路径以容纳空格
-CMD="clear; '$NODE' '$ENTRY'; status=\$?; echo; echo '— ai 已退出（按任意键关闭窗口）—'; read -n 1 -s; exit \$status"
-/usr/bin/osascript <<OSA
-tell application "Terminal"
-  activate
-  do script "$CMD"
-end tell
-OSA
-LAUNCH
-chmod +x "$APP/Contents/MacOS/$APP_NAME"
-
-# Info.plist
-cat > "$APP/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>$APP_NAME</string>
-  <key>CFBundleDisplayName</key><string>ai</string>
-  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
-  <key>CFBundleVersion</key><string>$VERSION</string>
-  <key>CFBundleShortVersionString</key><string>$VERSION</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleExecutable</key><string>$APP_NAME</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict>
-</plist>
-PLIST
-printf 'APPL????' > "$APP/Contents/PkgInfo"
-
-# ——— 5. 即时（ad-hoc）签名，缓解 Gatekeeper ———
-echo "▶ ad-hoc 代码签名"
-codesign --force --sign - "$APP/Contents/Resources/node" 2>/dev/null || true
-codesign --force --deep --sign - "$APP" 2>/dev/null || true
-
-# ——— 6. 组 DMG 内容 ———
+# 2) 组 DMG 内容：Ai.app + Applications 快捷方式 + 一键安装命令脚本 + 说明
 echo "▶ 组装 DMG 内容"
 mkdir -p "$DMG_ROOT"
 cp -R "$APP" "$DMG_ROOT/"
 ln -s /Applications "$DMG_ROOT/Applications"
 
-# 可选：把 ai 装成终端命令的小脚本
-cat > "$DMG_ROOT/安装命令行 ai.command" <<'INSTALL'
+# 「① 安装 ai 命令」：拖好 Ai.app 后双击它，把 ai 装成终端命令
+cat > "$DMG_ROOT/① 安装 ai 命令.command" <<'INSTALL'
 #!/bin/bash
 # 把 Applications 里的 Ai.app 暴露成终端命令 `ai`
 set -e
 APP="/Applications/Ai.app"
-[ -d "$APP" ] || { echo "请先把 Ai.app 拖到「应用程序」里再运行本脚本"; exit 1; }
-TARGET="/usr/local/bin"; mkdir -p "$TARGET" 2>/dev/null || TARGET="$HOME/.local/bin"; mkdir -p "$TARGET"
-cat > "$TARGET/ai" <<EOF
+[ -d "$APP" ] || { echo "✋ 请先把 Ai.app 拖进「应用程序」，再运行本脚本"; echo "按任意键关闭"; read -n 1 -s; exit 1; }
+# 优先装到 /usr/local/bin（各机型默认都在 PATH 里）；没权限就退回 ~/.local/bin
+TARGET="/usr/local/bin"
+if [ -w "$TARGET" ] || mkdir -p "$TARGET" 2>/dev/null && [ -w "$TARGET" ]; then :; else
+  echo "（/usr/local/bin 需要管理员权限，下面可能让你输入登录密码）"
+  if sudo mkdir -p "$TARGET" 2>/dev/null; then SUDO=sudo; else TARGET="$HOME/.local/bin"; mkdir -p "$TARGET"; fi
+fi
+WRAP="$(mktemp)"
+cat > "$WRAP" <<EOF
 #!/bin/bash
-exec "$APP/Contents/Resources/node" "$APP/Contents/Resources/app/cli.js" "\$@"
+RES="$APP/Contents/Resources"
+M="\$(uname -m)"; [ "\$M" = "x86_64" ] && M="x64"
+NODE="\$RES/node-\$M"; [ -x "\$NODE" ] || NODE="\$(ls "\$RES"/node-* | head -1)"
+exec "\$NODE" "\$RES/app/cli.js" "\$@"
 EOF
-chmod +x "$TARGET/ai"
-echo "✅ 已安装到 $TARGET/ai"
-case ":$PATH:" in *":$TARGET:"*) :;; *) echo "提示：把 $TARGET 加到 PATH： echo 'export PATH=\"$TARGET:\$PATH\"' >> ~/.zshrc";; esac
-echo "现在新开终端输入 ai 即可。按任意键关闭"; read -n 1 -s
+chmod +x "$WRAP"
+${SUDO:-} cp "$WRAP" "$TARGET/ai"; rm -f "$WRAP"
+echo "✅ 已安装：$TARGET/ai"
+case ":$PATH:" in
+  *":$TARGET:"*) echo "现在新开一个终端，输入 ai 即可。";;
+  *) echo "把它加入 PATH： echo 'export PATH=\"$TARGET:\$PATH\"' >> ~/.zshrc，然后新开终端。";;
+esac
+echo "按任意键关闭"; read -n 1 -s
 INSTALL
-chmod +x "$DMG_ROOT/安装命令行 ai.command"
+chmod +x "$DMG_ROOT/① 安装 ai 命令.command"
 
-# README
+# 说明
 cat > "$DMG_ROOT/使用说明.txt" <<TXT
 ai —— 终端里的 DeepSeek 对话框
 
-【安装】把 Ai.app 拖到左边的「Applications」。
+【一步装好】
+  1. 把 Ai.app 拖进左边的「Applications」。
+  2. 双击「① 安装 ai 命令.command」（首次右键→打开以绕过未签名提示）。
+     之后新开终端输入 ai 就能用。
+  （只想点图标用也行：右键 Ai.app →打开。）
 
-【首次打开】右键点 Ai.app → 打开（绕过未签名提示，仅首次需要）。
-之后会弹出终端窗口。没填过 key 时，会引导你粘贴 DeepSeek API key
-（到 https://platform.deepseek.com 申请，sk- 开头），回车保存，随即进入对话。
-
-【想用命令行】双击「安装命令行 ai.command」，之后新开终端输入 ai 即可。
+【首次使用】没填过 key 时会引导你粘贴 DeepSeek API key
+（到 https://platform.deepseek.com 申请，sk- 开头），回车保存后进入对话。
 
 内置 Node 运行时，无需另装任何环境。版本 ${VERSION}。
+
+★ 想要双击就装好、自动带 ai 命令？改用 .pkg 安装包（见项目 README）。
 TXT
 
-# ——— 7. 生成 DMG ———
+# 3) 生成 DMG
 echo "▶ 生成 DMG"
 rm -f "$DMG"
-hdiutil create -volname "$VOLNAME" -srcfolder "$DMG_ROOT" \
-  -ov -format UDZO "$DMG" >/dev/null
-
-# 清理临时件（保留 node 缓存以便下次更快）
+hdiutil create -volname "$VOLNAME" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$WORK" "$DMG_ROOT"
 
 echo ""

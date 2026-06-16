@@ -55,23 +55,41 @@ ai
 npm run dev        # 用 tsx 直接跑源码，免编译
 ```
 
-## 打包成 .dmg 分发（macOS）
+## 打包分发（macOS）
+
+两种产物都**内置了官方 Node 运行时**（默认 `v24.16.0`），收到的人无需另装任何环境。
+按机器 `uname -m` 自动选内置 Node，`universal` 同时适配 Apple Silicon 和 Intel。
+
+### ① .pkg 安装包（推荐：双击即装好，自动带 `ai` 命令）
 
 ```bash
-npm run dmg        # 产出 dist/ai-<version>.dmg
+npm run pkg                    # arm64 → dist/ai-<version>-arm64.pkg
+ARCH=x64 npm run pkg           # Intel
+ARCH=universal npm run pkg     # 两者通吃
 ```
 
-生成的 DMG **内置了官方 Node 运行时**（默认 `v24.16.0` darwin-arm64），
-收到的人无需安装任何环境：
+双击 `.pkg` 走系统安装向导（首次右键→打开绕过未签名提示），它会：
 
-1. 把 `Ai.app` 拖进「应用程序」；
-2. 右键 → 打开（首次绕过未签名提示）；
-3. 弹出终端进入对话。**没填过 key 时会在启动界面引导粘贴 key**，回车保存后无缝进入对话。
+1. 把 `Ai.app` 装到 `/Applications`；
+2. 用 root 把 `ai` 命令写到 `/usr/local/bin`（各机型默认都在 PATH 里）。
 
-DMG 里还附带「安装命令行 ai.command」，双击即可把 `ai` 装成终端命令。
+装完**新开一个终端，直接输入 `ai` 即可**——不需要任何手动步骤。
+首次没填过 key 时，会在界面引导你粘贴 DeepSeek key（sk- 开头），回车保存后进入对话。
 
-可调参数（环境变量）：
-- `ARCH`：默认 `arm64`（Apple Silicon）。Intel 机器用 `ARCH=x64 npm run dmg`
+### ② .dmg 磁盘镜像（拖拽安装；`ai` 命令需多点一下）
+
+```bash
+npm run dmg                    # arm64 → dist/ai-<version>-arm64.dmg
+ARCH=x64 npm run dmg           # Intel
+ARCH=universal npm run dmg     # 两者通吃（约 97MB）
+```
+
+DMG 里是 `Ai.app` + 一个「① 安装 ai 命令.command」。把 `Ai.app` 拖进「应用程序」后，
+**还要**双击那个 `.command` 才会把 `ai` 装成终端命令。想要「装好就有命令」请用上面的 `.pkg`。
+
+### 可调参数（环境变量）
+
+- `ARCH`：`arm64`（默认）/ `x64` / `universal`
 - `NODE_VERSION`：内置的 Node 版本，默认 `v24.16.0`
 
 > 仅做了 ad-hoc 签名（非 Apple 开发者证书），所以接收方首次需「右键→打开」。
@@ -86,5 +104,7 @@ src/
   deepseek.ts       DeepSeek 流式 API 客户端
   config.ts         API key / 模型 的读取与保存
 scripts/
-  make-dmg.sh       打包内置 Node 的 Ai.app 并生成 .dmg
+  build-app.sh      组装内置 Node 的 Ai.app（被下面两个共用）
+  make-pkg.sh       生成 .pkg 安装包（装好自动带 ai 命令）
+  make-dmg.sh       生成 .dmg 磁盘镜像
 ```
