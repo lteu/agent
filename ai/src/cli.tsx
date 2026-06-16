@@ -1,8 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { render, Box, Text, useApp, useInput } from 'ink'
 import MultilineInput from './MultilineInput.js'
-import { streamChat, type ChatMessage } from './deepseek.js'
+import { chatComplete, type ChatMessage } from './deepseek.js'
 import { loadConfig, saveApiKey, CONFIG_PATH, DEFAULT_MODEL } from './config.js'
+import { TOOL_SCHEMAS, runTool, describeToolCall } from './tools.js'
+
+// 告诉模型：你不是只会聊天，你有真正能动手的本地工具。
+const SYSTEM_PROMPT = `你是运行在用户终端里的编码 agent，当前工作目录是 ${process.cwd()}。
+你具备本地工具：write_file 建/写文件、read_file 读文件、list_dir 列目录、run_bash 执行 shell 命令。
+当用户要求建文件、建目录、写代码、跑命令等本地操作时，必须直接调用相应工具去完成，
+**绝对不要**回答"我没有权限操作你的设备"——你有。完成后用简洁的中文说明你做了什么。`
 
 // ———————————————————————————————————————————————
 // 命令行参数（在渲染界面之前处理）
@@ -49,18 +56,19 @@ const config = loadConfig()
 // ———————————————————————————————————————————————
 // 界面
 // ———————————————————————————————————————————————
-type UIMessage = { role: 'user' | 'assistant'; content: string }
+type UIMessage = { role: 'user' | 'assistant' | 'tool'; content: string }
 
 function App() {
   const { exit } = useApp()
   // apiKey 改为状态：缺失时先走「输入 key」引导，存好后无缝进入对话
   const [apiKey, setApiKey] = useState<string | undefined>(config.apiKey)
   const [messages, setMessages] = useState<UIMessage[]>([])
-  const [streaming, setStreaming] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastCtrlC = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
+  // 完整的 API 对话历史（含 system / 工具调用 / 工具结果），跨轮累积
+  const historyRef = useRef<ChatMessage[]>([{ role: 'system', content: SYSTEM_PROMPT }])
 
   // Ctrl+C：一次中断生成，连按两次退出
   useInput((_input, key) => {
@@ -83,44 +91,69 @@ function App() {
   const send = useCallback(
     async (text: string) => {
       setError(null)
-      const history: UIMessage[] = [...messages, { role: 'user', content: text }]
-      setMessages(history)
+      setMessages(prev => [...prev, { role: 'user', content: text }])
       setBusy(true)
-      setStreaming('')
 
-      const apiMessages: ChatMessage[] = history.map(m => ({
-        role: m.role,
-        content: m.content,
-      }))
+      const history = historyRef.current
+      history.push({ role: 'user', content: text })
 
       const controller = new AbortController()
       abortRef.current = controller
-      let acc = ''
       try {
-        for await (const delta of streamChat(apiMessages, {
-          apiKey: apiKey!,
-          model: config.model,
-          baseURL: config.baseURL,
-          signal: controller.signal,
-        })) {
-          acc += delta
-          setStreaming(acc)
+        // agent 循环：模型→工具→回传→再问，直到它不再要求调用工具
+        for (let step = 0; step < 25; step++) {
+          const { content, toolCalls } = await chatComplete(history, {
+            apiKey: apiKey!,
+            model: config.model,
+            baseURL: config.baseURL,
+            signal: controller.signal,
+            tools: TOOL_SCHEMAS,
+          })
+
+          history.push({
+            role: 'assistant',
+            content: content || '',
+            tool_calls: toolCalls.length ? toolCalls : undefined,
+          })
+          if (content) {
+            setMessages(prev => [...prev, { role: 'assistant', content }])
+          }
+
+          if (!toolCalls.length) break // 没有工具调用 = 最终答复，结束
+
+          // 逐个执行模型请求的工具，把结果回传给它
+          for (const tc of toolCalls) {
+            let args: Record<string, any> = {}
+            try {
+              args = JSON.parse(tc.function.arguments || '{}')
+            } catch {
+              /* 参数解析失败时按空对象处理 */
+            }
+            setMessages(prev => [
+              ...prev,
+              { role: 'tool', content: describeToolCall(tc.function.name, args) },
+            ])
+            let result: string
+            try {
+              result = await runTool(tc.function.name, args)
+            } catch (e: any) {
+              result = '错误: ' + (e?.message ?? String(e))
+            }
+            history.push({ role: 'tool', tool_call_id: tc.id, content: result })
+          }
         }
-        setMessages([...history, { role: 'assistant', content: acc }])
       } catch (e: any) {
         if (controller.signal.aborted) {
-          // 用户主动中断：把已生成的部分保留下来
-          if (acc) setMessages([...history, { role: 'assistant', content: acc + ' [已中断]' }])
+          setMessages(prev => [...prev, { role: 'assistant', content: '[已中断]' }])
         } else {
           setError(e?.message ?? String(e))
         }
       } finally {
-        setStreaming('')
         setBusy(false)
         abortRef.current = null
       }
     },
-    [messages, apiKey],
+    [apiKey],
   )
 
   // 缺少 key：启动时引导用户输入并保存
@@ -150,10 +183,14 @@ function App() {
 
       {/* 历史消息 */}
       {messages.map((m, i) => (
-        <Box key={i} flexDirection="column" marginBottom={1}>
+        <Box key={i} flexDirection="column" marginBottom={m.role === 'tool' ? 0 : 1}>
           {m.role === 'user' ? (
             <Text color="cyan" bold>
               › {m.content}
+            </Text>
+          ) : m.role === 'tool' ? (
+            <Text color="yellow" dimColor>
+              ⚙ {m.content}
             </Text>
           ) : (
             <Text>{m.content}</Text>
@@ -161,16 +198,12 @@ function App() {
         </Box>
       ))}
 
-      {/* 正在生成 */}
+      {/* 正在工作 */}
       {busy && (
         <Box flexDirection="column" marginBottom={1}>
-          {streaming ? (
-            <Text>{streaming}</Text>
-          ) : (
-            <Text dimColor>
-              <Spinner /> 思考中…
-            </Text>
-          )}
+          <Text dimColor>
+            <Spinner /> 工作中…
+          </Text>
         </Box>
       )}
 
