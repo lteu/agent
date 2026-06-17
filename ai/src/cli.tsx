@@ -1,15 +1,19 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { render, Box, Text, useApp, useInput } from 'ink'
 import MultilineInput from './MultilineInput.js'
-import { chatComplete, type ChatMessage } from './deepseek.js'
-import { loadConfig, saveApiKey, CONFIG_PATH, DEFAULT_MODEL } from './config.js'
-import { TOOL_SCHEMAS, runTool, describeToolCall } from './tools.js'
+import { type ChatMessage } from './deepseek.js'
+import {
+  loadConfig,
+  saveApiKey,
+  saveQQConfig,
+  addQQAllow,
+  CONFIG_PATH,
+  DEFAULT_MODEL,
+} from './config.js'
+import { runAgent } from './agent/engine.js'
+import { buildSystemPrompt } from './agent/session.js'
 
-// 告诉模型：你不是只会聊天，你有真正能动手的本地工具。
-const SYSTEM_PROMPT = `你是运行在用户终端里的编码 agent，当前工作目录是 ${process.cwd()}。
-你具备本地工具：write_file 建/写文件、read_file 读文件、list_dir 列目录、run_bash 执行 shell 命令。
-当用户要求建文件、建目录、写代码、跑命令等本地操作时，必须直接调用相应工具去完成，
-**绝对不要**回答"我没有权限操作你的设备"——你有。完成后用简洁的中文说明你做了什么。`
+const SYSTEM_PROMPT = buildSystemPrompt(process.cwd(), 'terminal')
 
 // ———————————————————————————————————————————————
 // 命令行参数（在渲染界面之前处理）
@@ -17,12 +21,15 @@ const SYSTEM_PROMPT = `你是运行在用户终端里的编码 agent，当前工
 const argv = process.argv.slice(2)
 
 if (argv[0] === '--help' || argv[0] === '-h') {
-  console.log(`ai — 终端里的可编辑对话框（接入 DeepSeek）
+  console.log(`ai — 终端里的可编辑对话框（接入 DeepSeek），也能通过 QQ 远程操控
 
 用法:
-  ai                  进入交互对话框（缺少 key 时会在启动时引导输入）
-  ai --set-key <KEY>  保存 DeepSeek API key 到 ${CONFIG_PATH}
-  ai --help           显示帮助
+  ai                       进入交互对话框（缺少 key 时会在启动时引导输入）
+  ai serve                 启动 QQ 官方机器人（q.qq.com 开放平台，白名单内可操控 agent）
+  ai --set-key <KEY>       保存 DeepSeek API key 到 ${CONFIG_PATH}
+  ai --set-qq-app <ID> <SECRET>  保存 QQ 机器人 AppID 和 AppSecret
+  ai --qq-allow <openid>   往 QQ 白名单追加一个 openid（可多次；未授权用户发消息会回显其 openid）
+  ai --help                显示帮助
 
 配置（优先级从高到低）:
   环境变量 DEEPSEEK_API_KEY / AI_MODEL / DEEPSEEK_BASE_URL
@@ -48,6 +55,27 @@ if (argv[0] === '--set-key') {
   }
   saveApiKey(key)
   console.log(`已保存到 ${CONFIG_PATH}`)
+  process.exit(0)
+}
+
+if (argv[0] === '--set-qq-app') {
+  const [, appId, secret] = argv
+  if (!appId || !secret) {
+    console.error('用法: ai --set-qq-app <AppID> <AppSecret>')
+    process.exit(1)
+  }
+  saveQQConfig({ appId, secret })
+  console.log('已保存 QQ 机器人 AppID / AppSecret。')
+  process.exit(0)
+}
+
+if (argv[0] === '--qq-allow') {
+  if (!argv[1]) {
+    console.error('用法: ai --qq-allow <openid>')
+    process.exit(1)
+  }
+  const list = addQQAllow(argv[1])
+  console.log(`白名单已更新: ${list.join(', ')}`)
   process.exit(0)
 }
 
@@ -100,46 +128,17 @@ function App() {
       const controller = new AbortController()
       abortRef.current = controller
       try {
-        // agent 循环：模型→工具→回传→再问，直到它不再要求调用工具
-        for (let step = 0; step < 25; step++) {
-          const { content, toolCalls } = await chatComplete(history, {
-            apiKey: apiKey!,
-            model: config.model,
-            baseURL: config.baseURL,
-            signal: controller.signal,
-            tools: TOOL_SCHEMAS,
-          })
-
-          history.push({
-            role: 'assistant',
-            content: content || '',
-            tool_calls: toolCalls.length ? toolCalls : undefined,
-          })
-          if (content) {
-            setMessages(prev => [...prev, { role: 'assistant', content }])
-          }
-
-          if (!toolCalls.length) break // 没有工具调用 = 最终答复，结束
-
-          // 逐个执行模型请求的工具，把结果回传给它
-          for (const tc of toolCalls) {
-            let args: Record<string, any> = {}
-            try {
-              args = JSON.parse(tc.function.arguments || '{}')
-            } catch {
-              /* 参数解析失败时按空对象处理 */
-            }
-            setMessages(prev => [
-              ...prev,
-              { role: 'tool', content: describeToolCall(tc.function.name, args) },
-            ])
-            let result: string
-            try {
-              result = await runTool(tc.function.name, args)
-            } catch (e: any) {
-              result = '错误: ' + (e?.message ?? String(e))
-            }
-            history.push({ role: 'tool', tool_call_id: tc.id, content: result })
+        // 共享的 agent 引擎：消费它产出的事件流来更新界面。
+        for await (const ev of runAgent(history, {
+          apiKey: apiKey!,
+          model: config.model,
+          baseURL: config.baseURL,
+          signal: controller.signal,
+        })) {
+          if (ev.type === 'text') {
+            setMessages(prev => [...prev, { role: 'assistant', content: ev.content }])
+          } else {
+            setMessages(prev => [...prev, { role: 'tool', content: ev.summary }])
           }
         }
       } catch (e: any) {
@@ -292,4 +291,10 @@ function Spinner() {
   return <Text color="cyan">{SPINNER_FRAMES[i]}</Text>
 }
 
-render(<App />)
+if (argv[0] === 'serve') {
+  // QQ 机器人是常驻进程，不进 Ink 界面。动态 import 避免渲染相关依赖被无谓加载。
+  const { startQQ } = await import('./channels/qq.js')
+  startQQ()
+} else {
+  render(<App />)
+}
