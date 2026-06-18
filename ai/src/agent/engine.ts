@@ -15,6 +15,12 @@ export type AgentEvent =
   | { type: 'text'; content: string }
   | { type: 'tool'; name: string; summary: string }
 
+/** 由具体 channel 注入的额外工具（如 QQ 的 send_image），与内置工具合并提供给模型。 */
+export type ExtraTools = {
+  schemas: readonly { function: { name: string } }[]
+  run: (name: string, args: Record<string, any>) => Promise<string> | string
+}
+
 export type EngineDeps = {
   apiKey: string
   model: string
@@ -22,6 +28,8 @@ export type EngineDeps = {
   signal?: AbortSignal
   /** 防止工具循环失控的最大步数，默认 25。 */
   maxSteps?: number
+  /** channel 专属工具：与内置 TOOL_SCHEMAS 合并，执行时优先用它。 */
+  extraTools?: ExtraTools
 }
 
 export async function* runAgent(
@@ -29,6 +37,8 @@ export async function* runAgent(
   deps: EngineDeps,
 ): AsyncGenerator<AgentEvent, void, unknown> {
   const maxSteps = deps.maxSteps ?? 25
+  const extraNames = new Set((deps.extraTools?.schemas ?? []).map(s => s.function.name))
+  const tools = [...TOOL_SCHEMAS, ...(deps.extraTools?.schemas ?? [])]
 
   for (let step = 0; step < maxSteps; step++) {
     const { content, toolCalls } = await chatComplete(history, {
@@ -36,7 +46,7 @@ export async function* runAgent(
       model: deps.model,
       baseURL: deps.baseURL,
       signal: deps.signal,
-      tools: TOOL_SCHEMAS,
+      tools,
     })
 
     history.push({
@@ -58,7 +68,9 @@ export async function* runAgent(
       yield { type: 'tool', name: tc.function.name, summary: describeToolCall(tc.function.name, args) }
       let result: string
       try {
-        result = await runTool(tc.function.name, args)
+        result = extraNames.has(tc.function.name)
+          ? await deps.extraTools!.run(tc.function.name, args)
+          : await runTool(tc.function.name, args)
       } catch (e: any) {
         result = '错误: ' + (e?.message ?? String(e))
       }

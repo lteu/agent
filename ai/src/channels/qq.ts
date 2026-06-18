@@ -14,9 +14,13 @@
 //
 // 依赖：Node 内置的 fetch 与全局 WebSocket（本项目内置 Node v24，无需额外安装）。
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { runAgent } from '../agent/engine.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { loadConfig, loadQQConfig } from '../config.js'
+
+type Target = { kind: 'group'; id: string } | { kind: 'c2c'; id: string }
 
 const TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
 const GROUP_AND_C2C_INTENT = 1 << 25 // 33554432：群@消息 + 单聊消息
@@ -42,6 +46,36 @@ class TokenManager {
     this.token = json.access_token
     this.expireAt = Date.now() + Number(json.expires_in ?? 7200) * 1000
     return this.token
+  }
+}
+
+/**
+ * 主动给白名单里的「单聊用户」发一条消息（不带 msg_id，用 is_wakeup 走「互动召回」）。
+ * ⚠️ 官方限制：单聊主动消息每月仅 4 条/人；需用户 30 天内主动与 bot 对话过；
+ *    用户若关闭「接收主动消息」则失败。真正的冷启动主动推送已于 2025-04-21 停用。
+ */
+export async function qqPush(text: string): Promise<void> {
+  const qq = loadQQConfig()
+  if (!qq.appId || !qq.secret) {
+    console.error('缺少 QQ 凭据。先运行: ai --set-qq-app <AppID> <AppSecret>')
+    process.exit(1)
+  }
+  const targets = (qq.whitelist ?? []).map(String)
+  if (!targets.length) {
+    console.error('白名单为空，没有可推送的 openid。先运行: ai --qq-allow <openid>')
+    process.exit(1)
+  }
+  const apiBase = qq.sandbox ? 'https://sandbox.api.sgroup.qq.com' : 'https://api.sgroup.qq.com'
+  const token = await new TokenManager(qq.appId, qq.secret).get()
+  const headers = { Authorization: `QQBot ${token}`, 'Content-Type': 'application/json' }
+  for (const openid of targets) {
+    const res = await fetch(`${apiBase}/v2/users/${openid}/messages`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ content: text, msg_type: 0, is_wakeup: true }),
+    })
+    const body = await res.text().catch(() => '')
+    console.log(`→ ${openid}: HTTP ${res.status} ${res.ok ? '已发送(主动消息)' : body.slice(0, 200)}`)
   }
 }
 
@@ -74,20 +108,17 @@ export function startQQ(): void {
 
   const authHeader = async () => ({ Authorization: `QQBot ${await tokens.get()}`, 'Content-Type': 'application/json' })
 
-  // 被动回复：群发到 /v2/groups/{gid}/messages，单聊发到 /v2/users/{uid}/messages。
-  async function sendReply(
-    target: { kind: 'group'; id: string } | { kind: 'c2c'; id: string },
-    msgId: string,
-    content: string,
-  ) {
+  const msgUrl = (t: Target) =>
+    t.kind === 'group' ? `${apiBase}/v2/groups/${t.id}/messages` : `${apiBase}/v2/users/${t.id}/messages`
+  const filesUrl = (t: Target) =>
+    t.kind === 'group' ? `${apiBase}/v2/groups/${t.id}/files` : `${apiBase}/v2/users/${t.id}/files`
+
+  // 被动回复文本：群发到 /v2/groups/{gid}/messages，单聊发到 /v2/users/{uid}/messages。
+  async function sendReply(target: Target, msgId: string, content: string) {
     if (!content) return
-    const url =
-      target.kind === 'group'
-        ? `${apiBase}/v2/groups/${target.id}/messages`
-        : `${apiBase}/v2/users/${target.id}/messages`
     const seq = (seqOf.get(msgId) ?? 0) + 1
     seqOf.set(msgId, seq)
-    const res = await fetch(url, {
+    const res = await fetch(msgUrl(target), {
       method: 'POST',
       headers: await authHeader(),
       body: JSON.stringify({ content, msg_type: 0, msg_id: msgId, msg_seq: seq }),
@@ -98,13 +129,57 @@ export function startQQ(): void {
     }
   }
 
+  // 发图片：先把本地文件(base64)或 URL 上传到富媒体接口拿 file_info，再以 msg_type:7 被动回复。
+  async function sendImage(target: Target, msgId: string, source: string): Promise<string> {
+    const isUrl = /^https?:\/\//i.test(source)
+    const uploadBody: Record<string, any> = { file_type: 1, srv_send_msg: false }
+    if (isUrl) {
+      uploadBody.url = source
+    } else {
+      // 本地文件走 base64 的 file_data；注意此时不能再带 url 字段（哪怕空串都会被判“格式不支持”）。
+      const path = resolve(source)
+      uploadBody.file_data = readFileSync(path).toString('base64')
+    }
+    const up = await fetch(filesUrl(target), {
+      method: 'POST',
+      headers: await authHeader(),
+      body: JSON.stringify(uploadBody),
+    })
+    const upJson: any = await up.json().catch(() => ({}))
+    if (!up.ok || !upJson.file_info) {
+      return `发图失败（上传阶段 HTTP ${up.status}）: ${JSON.stringify(upJson).slice(0, 200)}`
+    }
+    const seq = (seqOf.get(msgId) ?? 0) + 1
+    seqOf.set(msgId, seq)
+    const res = await fetch(msgUrl(target), {
+      method: 'POST',
+      headers: await authHeader(),
+      body: JSON.stringify({ msg_type: 7, media: { file_info: upJson.file_info }, msg_id: msgId, msg_seq: seq }),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      return `发图失败（发送阶段 HTTP ${res.status}）: ${detail.slice(0, 200)}`
+    }
+    return `已通过 QQ 发送图片：${source}`
+  }
+
+  const SEND_IMAGE_SCHEMA = {
+    type: 'function',
+    function: {
+      name: 'send_image',
+      description: '通过 QQ 给当前用户发送一张图片（png/jpg）。用于用户要求“发图/截图/把某张图发过来”等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '本地图片文件路径，或以 http(s):// 开头的图片 URL' },
+        },
+        required: ['path'],
+      },
+    },
+  } as const
+
   // 处理一条进来的消息（群@ 或 单聊）。
-  async function handleMessage(
-    target: { kind: 'group'; id: string } | { kind: 'c2c'; id: string },
-    senderOpenid: string,
-    msgId: string,
-    rawContent: string,
-  ) {
+  async function handleMessage(target: Target, senderOpenid: string, msgId: string, rawContent: string) {
     const text = (rawContent ?? '').trim()
 
     // 未授权：回显 openid 引导加白名单，绝不执行任何 agent 动作。
@@ -137,7 +212,15 @@ export function startQQ(): void {
     history.push({ role: 'user', content: text })
     try {
       let said = false
-      for await (const out of runAgent(history, { apiKey: cfg.apiKey!, model: cfg.model, baseURL: cfg.baseURL })) {
+      for await (const out of runAgent(history, {
+        apiKey: cfg.apiKey!,
+        model: cfg.model,
+        baseURL: cfg.baseURL,
+        extraTools: {
+          schemas: [SEND_IMAGE_SCHEMA],
+          run: (_name, args) => sendImage(target, msgId, String(args.path ?? '')),
+        },
+      })) {
         // 官方被动回复对单条 msg_id 的回复条数有限制，所以只回「文字结果」，跳过工具进度噪音。
         if (out.type === 'text' && out.content.trim()) {
           await sendReply(target, msgId, out.content)

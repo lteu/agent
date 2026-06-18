@@ -26,6 +26,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
 用法:
   ai                       进入交互对话框（缺少 key 时会在启动时引导输入）
   ai serve                 启动 QQ 官方机器人（q.qq.com 开放平台，白名单内可操控 agent）
+  ai push <消息>           主动给白名单用户发一条 QQ 消息（官方限单聊每月 4 条）
   ai --set-key <KEY>       保存 DeepSeek API key 到 ${CONFIG_PATH}
   ai --set-qq-app <ID> <SECRET>  保存 QQ 机器人 AppID 和 AppSecret
   ai --qq-allow <openid>   往 QQ 白名单追加一个 openid（可多次；未授权用户发消息会回显其 openid）
@@ -295,6 +296,15 @@ if (argv[0] === 'serve') {
   // QQ 机器人是常驻进程，不进 Ink 界面。动态 import 避免渲染相关依赖被无谓加载。
   const { startQQ } = await import('./channels/qq.js')
   startQQ()
+} else if (argv[0] === 'push') {
+  const msg = argv.slice(1).join(' ').trim()
+  if (!msg) {
+    console.error('用法: ai push <消息内容>')
+    process.exit(1)
+  }
+  const { qqPush } = await import('./channels/qq.js')
+  await qqPush(msg)
+  process.exit(0)
 } else {
   render(<App />)
 }
