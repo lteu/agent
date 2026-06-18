@@ -1,12 +1,27 @@
 // 崩溃日志：进程意外退出时，把错误、运行环境、以及「最近的按键序列」一并落盘，
-// 方便事后复现究竟是哪种输入触发的。日志追加写到 ~/.ai/crash.log。
+// 方便事后复现究竟是哪种输入触发的。日志追加写到项目 log/crash.log。
 
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { appendFileSync, mkdirSync } from 'node:fs'
 
-const LOG_DIR = join(homedir(), '.ai')
-export const CRASH_LOG = join(LOG_DIR, 'crash.log')
+/**
+ * 返回日志目录路径（同 chatlog.ts）。
+ * 用函数防止 esbuild --bundle 在构建时常量折叠路径。
+ */
+function getLogDir(): string {
+  const selfPath = fileURLToPath(import.meta.url)
+  const selfDir = dirname(selfPath)
+  const projectRoot =
+    selfDir.endsWith('/dist') || selfDir.endsWith('/dist/')
+      ? dirname(selfDir)
+      : join(selfDir, '..', '..')
+  return join(projectRoot, 'log')
+}
+
+function getCrashLogPath(): string {
+  return join(getLogDir(), 'crash.log')
+}
 
 // 最近输入事件的环形缓冲。崩溃多半发生在敲键的当下，这段序列就是最好的线索。
 const MAX_RECENT = 60
@@ -24,6 +39,7 @@ export function recordInput(input: string, key: Record<string, unknown>): void {
 export function writeCrash(label: string, err: unknown): string {
   const time = new Date().toISOString()
   const stack = err instanceof Error ? err.stack ?? err.message : String(err)
+  const crashLog = getCrashLogPath()
   const block =
     `\n===== ${time} [${label}] =====\n` +
     `node ${process.version} · ${process.platform} · argv: ${process.argv.slice(2).join(' ') || '(none)'}\n` +
@@ -32,10 +48,10 @@ export function writeCrash(label: string, err: unknown): string {
     (recent.length ? recent.map(l => '  ' + l).join('\n') : '  (无)') +
     `\n错误:\n${stack}\n`
   try {
-    mkdirSync(LOG_DIR, { recursive: true })
-    appendFileSync(CRASH_LOG, block)
+    mkdirSync(getLogDir(), { recursive: true })
+    appendFileSync(crashLog, block)
   } catch {
     /* 写日志失败也不能再抛，否则套娃崩溃 */
   }
-  return CRASH_LOG
+  return crashLog
 }

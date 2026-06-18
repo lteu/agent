@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { runAgent } from '../agent/engine.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
-import { logChat, resetTopic } from '../agent/chatlog.js'
+import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadQQConfig } from '../config.js'
 
 type Target = { kind: 'group'; id: string } | { kind: 'c2c'; id: string }
@@ -100,6 +100,8 @@ export function startQQ(): void {
     process.exit(1)
   }
 
+  writeLogBanner('qq', 'QQ 机器人启动')
+
   const apiBase = qq.sandbox ? 'https://sandbox.api.sgroup.qq.com' : 'https://api.sgroup.qq.com'
   const whitelist = new Set((qq.whitelist ?? []).map(String))
   const tokens = new TokenManager(qq.appId, qq.secret)
@@ -137,7 +139,7 @@ export function startQQ(): void {
     if (isUrl) {
       uploadBody.url = source
     } else {
-      // 本地文件走 base64 的 file_data；注意此时不能再带 url 字段（哪怕空串都会被判“格式不支持”）。
+      // 本地文件走 base64 的 file_data；注意此时不能再带 url 字段（哪怕空串都会被判"格式不支持"）。
       const path = resolve(source)
       uploadBody.file_data = readFileSync(path).toString('base64')
     }
@@ -168,7 +170,7 @@ export function startQQ(): void {
     type: 'function',
     function: {
       name: 'send_image',
-      description: '通过 QQ 给当前用户发送一张图片（png/jpg）。用于用户要求“发图/截图/把某张图发过来”等。',
+      description: '通过 QQ 给当前用户发送一张图片（png/jpg）。用于用户要求"发图/截图/把某张图发过来"等。',
       parameters: {
         type: 'object',
         properties: {
@@ -236,6 +238,7 @@ export function startQQ(): void {
       sessions.trim(sessionId)
     } catch (err: any) {
       await sendReply(target, msgId, '⚠ 出错了: ' + (err?.message ?? String(err)))
+      logChat({ channel: 'qq', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
     } finally {
       busy.delete(sessionId)
     }

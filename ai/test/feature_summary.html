@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>特征能力梳理 · 应用数据 / 能力标签 / 数量</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#181b22; --panel2:#1f232c; --line:#2a2f3a;
+    --txt:#e6e9ef; --muted:#9aa3b2; --accent:#7c9cff;
+    --credit:#a855f7; --inner:#3b82f6; --stat:#0ea5e9; --seq:#ec4899; --eff:#f59e0b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.55;font-size:14px}
+  .wrap{max-width:980px;margin:0 auto;padding:40px 24px 80px}
+  h1{font-size:25px;font-weight:700;margin:0 0 6px}
+  .sub{color:var(--muted);margin:0 0 30px;font-size:13px}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:0 0 28px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px 18px}
+  .card .n{font-size:28px;font-weight:700;line-height:1}
+  .card .l{color:var(--muted);font-size:12px;margin-top:6px}
+  .card.stat .n{color:var(--stat)} .card.seq .n{color:var(--seq)}
+
+  table{width:100%;border-collapse:collapse;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:6px 0}
+  th,td{padding:11px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+  th{background:var(--panel2);font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+  tr:last-child td{border-bottom:none}
+  td.data{font-weight:700;font-size:15px;white-space:nowrap;border-right:1px solid var(--line)}
+  td.data.credit{color:var(--credit)} td.data.inner{color:var(--inner)} td.data.eff{color:var(--eff)}
+  td.data2{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--inner);white-space:nowrap}
+  td.data2c{font-weight:700;color:var(--inner);white-space:nowrap}
+  td.ex{color:var(--muted);font-size:12px;font-family:ui-monospace,Menlo,monospace}
+  td.cnt{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;width:80px;font-size:15px}
+  .tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600;color:#fff;margin-right:8px}
+  .t-stat{background:var(--stat)} .t-seq{background:var(--seq)}
+  tr.sub td{background:#13161c;font-weight:600;color:var(--muted)}
+  tr.total td{background:var(--panel2);font-weight:700;font-size:15px}
+  .note{color:var(--muted);font-size:12px;margin:14px 0 0}
+  caption{caption-side:top;text-align:left;font-size:16px;font-weight:700;padding:18px 2px 8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>信贷特征能力梳理</h1>
+  <p class="sub">维度：应用的数据　×　实现的能力 / 标签（统计类 / 序列类）　×　数量　·　来源 <code>bill_feat.sql</code>、<code>credit_feat.sql</code>、<code>eff_feature_catalog.md</code></p>
+
+  <div class="cards">
+    <div class="card"><div class="n">587</div><div class="l">特征总数（3 套体系）</div></div>
+    <div class="card stat"><div class="n">528</div><div class="l">统计类</div></div>
+    <div class="card seq"><div class="n">59</div><div class="l">序列类（定长30）</div></div>
+    <div class="card"><div class="n" style="color:var(--eff)">366</div><div class="l">EFF 特征平台</div></div>
+  </div>
+
+  <table>
+    <caption>① 征信数据　<span style="font-weight:400;color:var(--muted);font-size:12px">credit_feat.sql</span></caption>
+    <thead><tr><th>应用的数据</th><th>实现的能力 / 标签</th><th>数量</th></tr></thead>
+    <tbody>
+      <tr class="sub"><td></td><td colspan="2"><span class="tag t-stat">统计类</span></td></tr>
+      <tr><td class="data credit" rowspan="13">征信数据</td><td><span class="tag t-stat">统计类</span>个人身份信息</td><td class="cnt">7</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>征信查询摘要</td><td class="cnt">8</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>征信查询聚合</td><td class="cnt">9</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>授信协议</td><td class="cnt">6</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>贷款账户聚合</td><td class="cnt">82</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>5年逾期历史聚合</td><td class="cnt">7</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>信贷交易摘要 + 提示</td><td class="cnt">22</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>手机号信息</td><td class="cnt">4</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>居住信息</td><td class="cnt">7</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>职业信息</td><td class="cnt">10</td></tr>
+      <tr><td><span class="tag t-seq">序列类</span>征信查询序列</td><td class="cnt">3</td></tr>
+      <tr><td><span class="tag t-seq">序列类</span>5年逐月还款序列</td><td class="cnt">11</td></tr>
+      <tr><td><span class="tag t-seq">序列类</span>账户级借款序列</td><td class="cnt">19</td></tr>
+      <tr class="total"><td>征信数据 小计</td><td>统计 162 + 序列 33</td><td class="cnt">195</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption>② 内部交易数据　<span style="font-weight:400;color:var(--muted);font-size:12px">bill_feat.sql（放款 / 还款扣款流水）</span></caption>
+    <thead><tr><th>应用的数据</th><th>实现的能力 / 标签</th><th>数量</th></tr></thead>
+    <tbody>
+      <tr><td class="data inner" rowspan="2">内部交易数据</td><td><span class="tag t-seq">序列类</span>借款行为序列</td><td class="cnt">19</td></tr>
+      <tr><td><span class="tag t-seq">序列类</span>还款（扣款）序列</td><td class="cnt">7</td></tr>
+      <tr class="total"><td>内部交易数据 小计</td><td>全部为序列类</td><td class="cnt">26</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption>②-A 借款行为序列　按标签分类（19）<span style="font-weight:400;color:var(--muted);font-size:12px">每用户最近 30 笔放款，按 loan_date 倒序</span></caption>
+    <thead><tr><th>能力 / 标签</th><th>数量</th><th>包含字段</th></tr></thead>
+    <tbody>
+      <tr><td class="data2c">借款基础</td><td class="cnt">6</td><td class="ex">loan_date · loan_amt · loan_term · loan_hour · days_since_last · seq_no</td></tr>
+      <tr><td class="data2c">授信额度</td><td class="cnt">1</td><td class="ex">credit_limit</td></tr>
+      <tr><td class="data2c">逾期表现</td><td class="cnt">4</td><td class="ex">overdue_days · overdue_level · overdue_amount · overdue_amount_effective</td></tr>
+      <tr><td class="data2c">还款 / 结清</td><td class="cnt">5</td><td class="ex">repay_completion · settle_pattern · is_settled · anticipate_settle_days · late_settle_days</td></tr>
+      <tr><td class="data2c">扣款行为</td><td class="cnt">3</td><td class="ex">loan_deduct_success_rate · early_repay_ratio · active_repay_ratio</td></tr>
+      <tr class="total"><td>小计</td><td class="cnt">19</td><td></td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption>②-B 还款（扣款）序列　按标签分类（7）<span style="font-weight:400;color:var(--muted);font-size:12px">每用户最近 30 笔扣款，按 deduct_date 倒序</span></caption>
+    <thead><tr><th>能力 / 标签</th><th>数量</th><th>包含字段</th></tr></thead>
+    <tbody>
+      <tr><td class="data2c">扣款基础</td><td class="cnt">3</td><td class="ex">deduct_date · deduct_amount · deduct_type（ES/BT/OD/RP）</td></tr>
+      <tr><td class="data2c">扣款结果</td><td class="cnt">2</td><td class="ex">deduct_is_success（03）· deduct_is_fail（04）</td></tr>
+      <tr><td class="data2c">还款属性</td><td class="cnt">2</td><td class="ex">is_early_repay（ES/RP）· is_active_repay（非BT）</td></tr>
+      <tr class="total"><td>小计</td><td class="cnt">7</td><td></td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption>③ EFF 特征平台　<span style="font-weight:400;color:var(--muted);font-size:12px">eff_feature_catalog.md · 共 366（精确匹配 82 + 规则推理 284）· 均为统计/聚合类标量</span></caption>
+    <thead><tr><th>应用的数据</th><th>实现的能力 / 标签</th><th>数量</th></tr></thead>
+    <tbody>
+      <tr><td class="data eff" rowspan="9">EFF<br>特征平台</td><td><span class="tag t-stat">统计类</span>客户画像·基础（额度 / 借款 / 贷后 / 申请历史）</td><td class="cnt">27</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>社交关系网·通讯录 / 通话</td><td class="cnt">47</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>设备·硬件信息与位置</td><td class="cnt">9</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>App 安装与 App 风险指数</td><td class="cnt">51</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>LBS 地理位置</td><td class="cnt">10</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>通讯录文本衍生（备注 / 多头）</td><td class="cnt">22</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>借条贷中行为（借款 / 还款 / 逾期 / 额度 / 负债）</td><td class="cnt">155</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>埋点行为（借款 / 还款 / 粘性）</td><td class="cnt">44</td></tr>
+      <tr><td><span class="tag t-stat">统计类</span>内外部行为比对</td><td class="cnt">1</td></tr>
+      <tr class="total"><td>EFF 小计</td><td>52 个细类汇总</td><td class="cnt">366</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption>③-A 借条贷中行为　按主题拆分（155）<span style="font-weight:400;color:var(--muted);font-size:12px">EFF 中占比最大的一类</span></caption>
+    <thead><tr><th>主题</th><th>数量</th><th>构成</th></tr></thead>
+    <tbody>
+      <tr><td class="data2c">额度使用率</td><td class="cnt">48</td><td class="ex">借据粒度单笔 31 + 用户粒度 17</td></tr>
+      <tr><td class="data2c">借款</td><td class="cnt">46</td><td class="ex">借款 35 + 专项衍生·借款 11</td></tr>
+      <tr><td class="data2c">还款</td><td class="cnt">43</td><td class="ex">还款 38 + novip 还款 5</td></tr>
+      <tr><td class="data2c">逾期</td><td class="cnt">15</td><td class="ex">逾期金额 / 间隔 / 期次占比</td></tr>
+      <tr><td class="data2c">负债</td><td class="cnt">3</td><td class="ex">未来单月最大还款 / 到期金额</td></tr>
+      <tr class="total"><td>小计</td><td class="cnt">155</td><td></td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption>④ 三套特征体系总计</caption>
+    <thead><tr><th>应用的数据</th><th>能力类型</th><th>数量</th></tr></thead>
+    <tbody>
+      <tr><td class="data eff">EFF 特征平台</td><td>统计类</td><td class="cnt">366</td></tr>
+      <tr><td class="data credit">征信数据（credit_feat）</td><td>统计 162 + 序列 33</td><td class="cnt">195</td></tr>
+      <tr><td class="data inner">内部交易数据（bill_feat）</td><td>序列 26</td><td class="cnt">26</td></tr>
+      <tr class="total"><td>合计</td><td>统计 528 + 序列 59</td><td class="cnt">587</td></tr>
+    </tbody>
+  </table>
+  <p class="note">说明：EFF 特征全部为时点/聚合标量（统计类），不含定长序列。「借条贷中行为」的借款 / 还款 / 逾期主题与 bill_feat 的序列特征在业务语义上有重叠，但分属不同特征平台与加工口径，故分开计数。</p>
+
+  <p class="note">注：数量基本沿用各 SQL 模块注释口径（如「个人身份信息(7)」「征信查询摘要(8)」）；「贷款账户聚合」注释标 70+，按实际 SELECT 字段精确统计为 82。序列类字段每条均为长度 30 的数组。</p>
+
+</div>
+</body>
+</html>

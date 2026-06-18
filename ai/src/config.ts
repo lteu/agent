@@ -33,12 +33,28 @@ export type WechatConfig = {
   port?: number
 }
 
+export type SmtpConfig = {
+  /** SMTP 服务器，默认 smtp.gmail.com */
+  host?: string
+  /** 端口，默认 465 */
+  port?: number
+  /** 是否隐式 TLS（465 用 true；587 用 false 走 STARTTLS），默认 true */
+  secure?: boolean
+  /** 登录用户名，一般是完整邮箱地址 */
+  user?: string
+  /** 登录密码：Gmail/QQ 邮箱要用「应用专用密码 / 授权码」，不是账号登录密码 */
+  pass?: string
+  /** 发件人地址，留空则用 user */
+  from?: string
+}
+
 export type Config = {
   apiKey?: string
   model?: string
   baseURL?: string
   qq?: QQConfig
   wechat?: WechatConfig
+  smtp?: SmtpConfig
 }
 
 const CONFIG_DIR = join(homedir(), '.ai')
@@ -129,4 +145,29 @@ export function loadWechatConfig(): WechatConfig {
 export function saveWechatConfig(patch: Partial<WechatConfig>): void {
   const current = readFile()
   writeConfig({ ...current, wechat: { ...current.wechat, ...patch } })
+}
+
+/** 读取 SMTP 配置：环境变量优先，其次 config.json，再套用 Gmail 默认值。 */
+export function loadSmtpConfig(): Required<Pick<SmtpConfig, 'host' | 'port' | 'secure'>> &
+  SmtpConfig {
+  const file = readFile().smtp ?? {}
+  const user = process.env.AI_SMTP_USER || file.user
+  const port = Number(process.env.AI_SMTP_PORT) || file.port || 465
+  // secure 默认随端口推断：465→隐式 TLS，其余→STARTTLS。
+  const secureEnv = process.env.AI_SMTP_SECURE
+  const secure = secureEnv ? secureEnv === '1' : file.secure ?? port === 465
+  return {
+    host: process.env.AI_SMTP_HOST || file.host || 'smtp.gmail.com',
+    port,
+    secure,
+    user,
+    pass: process.env.AI_SMTP_PASS || file.pass,
+    from: process.env.AI_SMTP_FROM || file.from || user,
+  }
+}
+
+/** 合并并保存 SMTP 配置（传入字段覆盖，其余保留原值）。 */
+export function saveSmtpConfig(patch: Partial<SmtpConfig>): void {
+  const current = readFile()
+  writeConfig({ ...current, smtp: { ...current.smtp, ...patch } })
 }

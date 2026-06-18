@@ -8,13 +8,19 @@ import {
   saveQQConfig,
   addQQAllow,
   saveWechatConfig,
+  saveSmtpConfig,
+  loadSmtpConfig,
   CONFIG_PATH,
   DEFAULT_MODEL,
 } from './config.js'
+import { sendMail } from './smtp.js'
 import { runAgent } from './agent/engine.js'
 import { buildSystemPrompt } from './agent/session.js'
-import { logChat } from './agent/chatlog.js'
+import { logChat, writeLogBanner } from './agent/chatlog.js'
 import { writeCrash } from './crashlog.js'
+
+// 启动时写 banner，快速确认日志系统运行
+writeLogBanner('terminal', `ai 终端启动，工作目录: ${process.cwd()}`)
 
 const SYSTEM_PROMPT = buildSystemPrompt(process.cwd(), 'terminal')
 
@@ -30,8 +36,10 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai                       进入交互对话框（缺少 key 时会在启动时引导输入）
   ai serve                 启动 QQ 官方机器人（q.qq.com 开放平台，白名单内可操控 agent）
   ai push <消息>           主动给白名单用户发一条 QQ 消息（官方限单聊每月 4 条）
+  ai email <收件人> <主题> <正文>  用已配置的 SMTP 邮箱发一封邮件（收件人多个用逗号分隔）
   ai wechat                启动企业微信回调服务（配合 cloudflared 隧道接入企业微信）
   ai --set-wechat <CorpID> <AgentId> <Secret> <Token> <EncodingAESKey>  保存企业微信凭据
+  ai --set-smtp <邮箱> <应用专用密码> [host] [port]  保存发件邮箱（默认 smtp.gmail.com:465）
   ai --set-key <KEY>       保存 DeepSeek API key 到 ${CONFIG_PATH}
   ai --set-qq-app <ID> <SECRET>  保存 QQ 机器人 AppID 和 AppSecret
   ai --qq-allow <openid>   往 QQ 白名单追加一个 openid（可多次；未授权用户发消息会回显其 openid）
@@ -98,6 +106,49 @@ if (argv[0] === '--set-wechat') {
   saveWechatConfig({ corpId, agentId, secret, token, aesKey })
   console.log('已保存企业微信凭据。')
   process.exit(0)
+}
+
+if (argv[0] === '--set-smtp') {
+  const [, user, pass, host, port] = argv
+  if (!user || !pass) {
+    console.error('用法: ai --set-smtp <邮箱> <应用专用密码> [host] [port]')
+    console.error('例:   ai --set-smtp you@gmail.com abcd-efgh-ijkl-mnop')
+    process.exit(1)
+  }
+  const patch: Record<string, unknown> = { user, pass, from: user }
+  if (host) patch.host = host
+  if (port) {
+    patch.port = Number(port)
+    patch.secure = Number(port) === 465 // 465=隐式TLS，587=STARTTLS
+  }
+  saveSmtpConfig(patch)
+  console.log(`已保存发件邮箱 ${user}（${host ?? 'smtp.gmail.com'}:${port ?? 465}）。`)
+  process.exit(0)
+}
+
+if (argv[0] === 'email') {
+  const [, to, subject, ...rest] = argv
+  const body = rest.join(' ')
+  if (!to || !subject) {
+    console.error('用法: ai email <收件人> <主题> <正文>')
+    process.exit(1)
+  }
+  const smtp = loadSmtpConfig()
+  if (!smtp.user || !smtp.pass) {
+    console.error('未配置发件邮箱。先运行: ai --set-smtp <邮箱> <应用专用密码> [host] [port]')
+    process.exit(1)
+  }
+  try {
+    const sent = await sendMail(
+      { host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user, pass: smtp.pass, from: smtp.from! },
+      { to: to.split(',').map(s => s.trim()).filter(Boolean), subject, text: body },
+    )
+    console.log(`✓ 已发送给 ${sent.join(', ')}`)
+    process.exit(0)
+  } catch (e: any) {
+    console.error(`✗ 发送失败: ${e?.message ?? String(e)}`)
+    process.exit(1)
+  }
 }
 
 const config = loadConfig()
@@ -168,8 +219,12 @@ function App() {
       } catch (e: any) {
         if (controller.signal.aborted) {
           setMessages(prev => [...prev, { role: 'assistant', content: '[已中断]' }])
+          // 被中断的问答也记录下来（方便后续回顾）
+          logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: '[已中断]' })
         } else {
           setError(e?.message ?? String(e))
+          // 出错的问答也记录下来
+          logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: `[错误] ${e?.message ?? String(e)}` })
         }
       } finally {
         setBusy(false)

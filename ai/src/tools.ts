@@ -10,6 +10,8 @@ import {
   statSync,
 } from 'node:fs'
 import { resolve, dirname } from 'node:path'
+import { loadSmtpConfig } from './config.js'
+import { sendMail } from './smtp.js'
 
 // 发给 DeepSeek 的工具声明（OpenAI 兼容格式）。
 export const TOOL_SCHEMAS = [
@@ -71,6 +73,23 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'send_email',
+      description:
+        '通过已配置的 SMTP 邮箱发送一封纯文本邮件。用于「发邮件/把结果邮件给我」等需求。需先用 ai --set-smtp 配置发件邮箱。',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: '收件人邮箱；多个用英文逗号分隔' },
+          subject: { type: 'string', description: '邮件主题' },
+          body: { type: 'string', description: '邮件正文（纯文本）' },
+        },
+        required: ['to', 'subject', 'body'],
+      },
+    },
+  },
 ] as const
 
 export type ToolCall = {
@@ -119,6 +138,26 @@ export async function runTool(name: string, args: Record<string, any>): Promise<
         )
       })
     }
+    case 'send_email': {
+      const smtp = loadSmtpConfig()
+      if (!smtp.user || !smtp.pass) {
+        return '未配置发件邮箱。先运行: ai --set-smtp <邮箱> <应用专用密码> [host] [port]'
+      }
+      const to = String(args.to ?? '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+      if (!to.length) return '收件人为空'
+      try {
+        const sent = await sendMail(
+          { host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user, pass: smtp.pass, from: smtp.from! },
+          { to, subject: String(args.subject ?? ''), text: String(args.body ?? '') },
+        )
+        return `邮件已发送给 ${sent.join(', ')}`
+      } catch (e: any) {
+        return `发送失败: ${e?.message ?? String(e)}`
+      }
+    }
     default:
       return `未知工具: ${name}`
   }
@@ -135,6 +174,8 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return `列目录 ${args.path ?? '.'}`
     case 'run_bash':
       return `运行 \`${String(args.command ?? '').slice(0, 80)}\``
+    case 'send_email':
+      return `发邮件给 ${args.to}`
     default:
       return name
   }

@@ -21,7 +21,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createHash, createDecipheriv } from 'node:crypto'
 import { runAgent } from '../agent/engine.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
-import { logChat, resetTopic } from '../agent/chatlog.js'
+import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadWechatConfig } from '../config.js'
 
 // —— 验签：sha1(sort(token,timestamp,nonce,data)) ——
@@ -104,6 +104,8 @@ export function startWechat(): void {
     }
   }
 
+  writeLogBanner('wechat', '企业微信回调服务启动')
+
   const tokens = new TokenManager(wx.corpId!, wx.secret!)
   const sessions = new SessionStore(buildSystemPrompt(process.cwd(), 'wechat'))
   const busy = new Set<string>()
@@ -161,6 +163,7 @@ export function startWechat(): void {
       sessions.trim(sessionId)
     } catch (err: any) {
       await sendText(fromUser, '⚠ 出错了: ' + (err?.message ?? String(err)))
+      logChat({ channel: 'wechat', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
     } finally {
       busy.delete(sessionId)
     }

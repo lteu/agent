@@ -3,17 +3,36 @@
 //   · 渠道（channel）——消息从哪来：PC 终端 / QQ / 企业微信
 // 终端、QQ、企业微信三个 channel 共用本模块。
 //
-// 落地两份文件（都在 ~/.ai/ 下）：
+// 落地两份文件（在项目 log/ 目录下）：
 //   chat-history.jsonl  每行一个 JSON，机器可读，便于检索/统计
 //   chat-history.md     人类可读，按「[渠道] 话题」分节，方便直接翻看
 
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 
-const LOG_DIR = join(homedir(), '.ai')
-export const CHATLOG_JSONL = join(LOG_DIR, 'chat-history.jsonl')
-export const CHATLOG_MD = join(LOG_DIR, 'chat-history.md')
+/**
+ * 返回日志目录路径。
+ * 用函数而非顶层常量，是为了防止 esbuild --bundle 在构建时内联
+ * fileURLToPath(import.meta.url) 算出错误的路径——
+ * 构建时的 __dirname 是源码目录，不是最终产物 dist/ 的目录。
+ * 放到函数里运行时才计算，esbuild 就无法常量折叠。
+ */
+function getLogDir(): string {
+  // 注意：此处的 import.meta.url 是调用时所在模块的 URL。
+  // 当 chatlog.ts 被 esbuild 内联到 dist/cli.js 后，
+  // import.meta.url 对应的是 dist/cli.js 的路径。
+  // 因此 dirname -> dist/，join('..') -> 项目根目录。
+  const selfPath = fileURLToPath(import.meta.url)
+  const selfDir = dirname(selfPath)
+  // 如果从 dist/cli.js 运行，selfDir = .../dist/，取上级 = 项目根
+  // 如果从 src/agent/chatlog.ts 直接运行（如 tsx），selfDir = .../src/agent/，取上两级 = 项目根
+  const projectRoot =
+    selfDir.endsWith('/dist') || selfDir.endsWith('/dist/')
+      ? dirname(selfDir)
+      : join(selfDir, '..', '..')
+  return join(projectRoot, 'log')
+}
 
 export type LogChannel = 'terminal' | 'qq' | 'wechat'
 
@@ -54,14 +73,37 @@ export type LogTurn = {
   answer: string
 }
 
-/** 记录一轮问答。日志失败绝不影响主流程。 */
+// 确保 log 目录存在（同步创建，抛出异常以便调用者知晓）
+function ensureLogDir(): void {
+  mkdirSync(getLogDir(), { recursive: true })
+}
+
+/**
+ * 在 log 目录写入一个 banner 文件，方便快速确认日志系统是否工作。
+ * 应用启动时调用一次即可。
+ */
+export function writeLogBanner(channel: LogChannel, info: string): void {
+  try {
+    ensureLogDir()
+    const time = new Date().toISOString()
+    const bannerFile = join(getLogDir(), `startup-${channel}.log`)
+    writeFileSync(bannerFile, `[${time}] ${info}\n`)
+  } catch (e) {
+    console.error(`[chatlog] 无法写入启动 banner: ${e}`)
+  }
+}
+
+/** 记录一轮问答。日志失败时写入一条错误标记，但绝不影响主流程。 */
 export function logChat(turn: LogTurn): void {
   const topic = topicFor(turn.sessionId, turn.question)
   const time = new Date().toISOString()
+  const logDir = getLogDir()
+  const jsonlPath = join(logDir, 'chat-history.jsonl')
+  const mdPath = join(logDir, 'chat-history.md')
   try {
-    mkdirSync(LOG_DIR, { recursive: true })
+    ensureLogDir()
     appendFileSync(
-      CHATLOG_JSONL,
+      jsonlPath,
       JSON.stringify({ time, channel: turn.channel, topic, ...turn }) + '\n',
     )
     const md =
@@ -70,8 +112,17 @@ export function logChat(turn: LogTurn): void {
       `- 会话：${turn.sessionId}\n\n` +
       `**问：** ${turn.question}\n\n` +
       `**答：** ${turn.answer}\n`
-    appendFileSync(CHATLOG_MD, md)
-  } catch {
-    /* 写日志失败时静默，不打断对话 */
+    appendFileSync(mdPath, md)
+  } catch (e) {
+    // 日志失败时不打断对话，但写入一个错误标记以便排查
+    try {
+      ensureLogDir()
+      appendFileSync(
+        join(logDir, 'chatlog-errors.log'),
+        `[${time}] logChat 失败: ${e}\n`,
+      )
+    } catch {
+      // 实在写不了就算了
+    }
   }
 }
