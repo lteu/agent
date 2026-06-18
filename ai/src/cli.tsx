@@ -7,11 +7,14 @@ import {
   saveApiKey,
   saveQQConfig,
   addQQAllow,
+  saveWechatConfig,
   CONFIG_PATH,
   DEFAULT_MODEL,
 } from './config.js'
 import { runAgent } from './agent/engine.js'
 import { buildSystemPrompt } from './agent/session.js'
+import { logChat } from './agent/chatlog.js'
+import { writeCrash } from './crashlog.js'
 
 const SYSTEM_PROMPT = buildSystemPrompt(process.cwd(), 'terminal')
 
@@ -27,6 +30,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai                       进入交互对话框（缺少 key 时会在启动时引导输入）
   ai serve                 启动 QQ 官方机器人（q.qq.com 开放平台，白名单内可操控 agent）
   ai push <消息>           主动给白名单用户发一条 QQ 消息（官方限单聊每月 4 条）
+  ai wechat                启动企业微信回调服务（配合 cloudflared 隧道接入企业微信）
+  ai --set-wechat <CorpID> <AgentId> <Secret> <Token> <EncodingAESKey>  保存企业微信凭据
   ai --set-key <KEY>       保存 DeepSeek API key 到 ${CONFIG_PATH}
   ai --set-qq-app <ID> <SECRET>  保存 QQ 机器人 AppID 和 AppSecret
   ai --qq-allow <openid>   往 QQ 白名单追加一个 openid（可多次；未授权用户发消息会回显其 openid）
@@ -80,6 +85,21 @@ if (argv[0] === '--qq-allow') {
   process.exit(0)
 }
 
+if (argv[0] === '--set-wechat') {
+  const [, corpId, agentId, secret, token, aesKey] = argv
+  if (!corpId || !agentId || !secret || !token || !aesKey) {
+    console.error('用法: ai --set-wechat <CorpID> <AgentId> <Secret> <Token> <EncodingAESKey>')
+    process.exit(1)
+  }
+  if (aesKey.length !== 43) {
+    console.error(`EncodingAESKey 应为 43 位，当前 ${aesKey.length} 位，请检查。`)
+    process.exit(1)
+  }
+  saveWechatConfig({ corpId, agentId, secret, token, aesKey })
+  console.log('已保存企业微信凭据。')
+  process.exit(0)
+}
+
 const config = loadConfig()
 
 // ———————————————————————————————————————————————
@@ -128,6 +148,7 @@ function App() {
 
       const controller = new AbortController()
       abortRef.current = controller
+      const answers: string[] = []
       try {
         // 共享的 agent 引擎：消费它产出的事件流来更新界面。
         for await (const ev of runAgent(history, {
@@ -138,10 +159,12 @@ function App() {
         })) {
           if (ev.type === 'text') {
             setMessages(prev => [...prev, { role: 'assistant', content: ev.content }])
+            answers.push(ev.content)
           } else {
             setMessages(prev => [...prev, { role: 'tool', content: ev.summary }])
           }
         }
+        logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: answers.join('\n') })
       } catch (e: any) {
         if (controller.signal.aborted) {
           setMessages(prev => [...prev, { role: 'assistant', content: '[已中断]' }])
@@ -305,6 +328,27 @@ if (argv[0] === 'serve') {
   const { qqPush } = await import('./channels/qq.js')
   await qqPush(msg)
   process.exit(0)
+} else if (argv[0] === 'wechat') {
+  const { startWechat } = await import('./channels/wechat.js')
+  startWechat()
 } else {
-  render(<App />)
+  const instance = render(<App />)
+
+  // 兜底：任何没被捕获的异常/拒绝，先把终端恢复正常（退出 raw mode、显示光标），
+  // 再打印简短错误后退出——避免「崩了还把终端搞坏」让人误以为是死机。
+  const bail = (label: string) => (err: unknown) => {
+    const logPath = writeCrash(label, err) // 先落盘，再恢复终端
+    try {
+      instance.unmount()
+    } catch {
+      /* 卸载失败也要继续恢复终端 */
+    }
+    process.stdout.write('\x1b[?25h') // 确保光标可见
+    console.error(`\nai 遇到了意外错误（${label}）。详细日志（含最近按键）已写入：`)
+    console.error(`  ${logPath}`)
+    console.error(err instanceof Error ? err.stack ?? err.message : String(err))
+    process.exit(1)
+  }
+  process.on('uncaughtException', bail('uncaughtException'))
+  process.on('unhandledRejection', bail('unhandledRejection'))
 }

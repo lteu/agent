@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { runAgent } from '../agent/engine.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
+import { logChat, resetTopic } from '../agent/chatlog.js'
 import { loadConfig, loadQQConfig } from '../config.js'
 
 type Target = { kind: 'group'; id: string } | { kind: 'c2c'; id: string }
@@ -194,6 +195,7 @@ export function startQQ(): void {
 
     if (text === '/clear') {
       sessions.reset(sessionId)
+      resetTopic(sessionId)
       await sendReply(target, msgId, '🧹 已清空本会话上下文。')
       return
     }
@@ -212,6 +214,7 @@ export function startQQ(): void {
     history.push({ role: 'user', content: text })
     try {
       let said = false
+      const answers: string[] = []
       for await (const out of runAgent(history, {
         apiKey: cfg.apiKey!,
         model: cfg.model,
@@ -224,10 +227,12 @@ export function startQQ(): void {
         // 官方被动回复对单条 msg_id 的回复条数有限制，所以只回「文字结果」，跳过工具进度噪音。
         if (out.type === 'text' && out.content.trim()) {
           await sendReply(target, msgId, out.content)
+          answers.push(out.content)
           said = true
         }
       }
       if (!said) await sendReply(target, msgId, '(已完成，无文字输出)')
+      logChat({ channel: 'qq', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {
       await sendReply(target, msgId, '⚠ 出错了: ' + (err?.message ?? String(err)))

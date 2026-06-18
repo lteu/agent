@@ -5,9 +5,16 @@
 //   - Enter 发送；行尾以 "\" 结尾再按 Enter 则换行
 //   - 粘贴多行文本
 //   - Esc 清空
+//
+// 状态用 ref 承载、再 bump 触发重渲染：因为 Ink 在一次 stdin 数据块里可能
+// 连续触发多次 useInput（快速输入 / 粘贴 / 方向键和字符混在一起时），若直接
+// 读闭包里的 value/cursor，React 18 的批处理会让这几次回调都基于同一份「旧」
+// 状态计算，导致后写覆盖前写——字符丢失、光标错位。ref 是同步的，每次回调都
+// 能拿到上一次的结果，从根上消除这个竞态。
 
-import { useState } from 'react'
+import { useRef, useReducer } from 'react'
 import { Box, Text, useInput } from 'ink'
+import { recordInput } from './crashlog.js'
 
 type Props = {
   onSubmit: (value: string) => void
@@ -33,83 +40,91 @@ function lineColToOffset(value: string, line: number, col: number): number {
 }
 
 export default function MultilineInput({ onSubmit, disabled, placeholder }: Props) {
-  const [value, setValue] = useState('')
-  const [cursor, setCursor] = useState(0)
+  // ref 是同步的「真相源」，state 仅用来触发重渲染。
+  const valueRef = useRef('')
+  const cursorRef = useRef(0)
+  const [, bump] = useReducer((n: number) => n + 1, 0)
+
+  // 统一的状态写入：钳制光标到合法范围，再触发一次重渲染。
+  const set = (value: string, cursor: number) => {
+    valueRef.current = value
+    cursorRef.current = Math.max(0, Math.min(cursor, value.length))
+    bump()
+  }
 
   useInput(
     (input, key) => {
+      recordInput(input, key as unknown as Record<string, unknown>)
+      const value = valueRef.current
+      const cursor = cursorRef.current
+
       // —— 提交 / 换行 ——
       if (key.return) {
         // 行尾反斜杠 => 换行而非发送
         if (value.slice(0, cursor).endsWith('\\')) {
-          const next = value.slice(0, cursor - 1) + '\n' + value.slice(cursor)
-          setValue(next)
-          setCursor(cursor) // 删了 '\'(-1) 又加了 '\n'(+1)
+          set(value.slice(0, cursor - 1) + '\n' + value.slice(cursor), cursor) // 删 '\'(-1) 加 '\n'(+1)
           return
         }
         if (value.trim().length === 0) return
+        set('', 0)
         onSubmit(value)
-        setValue('')
-        setCursor(0)
         return
       }
 
       // —— 光标移动 ——
       if (key.leftArrow) {
-        setCursor(Math.max(0, cursor - 1))
+        set(value, cursor - 1)
         return
       }
       if (key.rightArrow) {
-        setCursor(Math.min(value.length, cursor + 1))
+        set(value, cursor + 1)
         return
       }
       if (key.upArrow || key.downArrow) {
         const [line, col] = offsetToLineCol(value, cursor)
-        setCursor(lineColToOffset(value, line + (key.upArrow ? -1 : 1), col))
+        set(value, lineColToOffset(value, line + (key.upArrow ? -1 : 1), col))
         return
       }
 
       // —— 行首 / 行尾 / 删除 ——
       if (key.ctrl && input === 'a') {
         const [line] = offsetToLineCol(value, cursor)
-        setCursor(lineColToOffset(value, line, 0))
+        set(value, lineColToOffset(value, line, 0))
         return
       }
       if (key.ctrl && input === 'e') {
         const [line] = offsetToLineCol(value, cursor)
-        setCursor(lineColToOffset(value, line, Infinity))
+        set(value, lineColToOffset(value, line, Infinity))
         return
       }
       if (key.ctrl && input === 'u') {
-        const [line, col] = offsetToLineCol(value, cursor)
+        const [line] = offsetToLineCol(value, cursor)
         const start = lineColToOffset(value, line, 0)
-        setValue(value.slice(0, start) + value.slice(cursor))
-        setCursor(start)
-        void col
+        set(value.slice(0, start) + value.slice(cursor), start)
         return
       }
 
       if (key.backspace || key.delete) {
         if (cursor === 0) return
-        setValue(value.slice(0, cursor - 1) + value.slice(cursor))
-        setCursor(cursor - 1)
+        set(value.slice(0, cursor - 1) + value.slice(cursor), cursor - 1)
         return
       }
 
       if (key.escape) {
-        setValue('')
-        setCursor(0)
+        set('', 0)
         return
       }
 
       // —— 普通字符 / 粘贴 ——（忽略其他控制键）
       if (input && !key.ctrl && !key.meta) {
-        setValue(value.slice(0, cursor) + input + value.slice(cursor))
-        setCursor(cursor + input.length)
+        set(value.slice(0, cursor) + input + value.slice(cursor), cursor + input.length)
       }
     },
     { isActive: !disabled },
   )
+
+  const value = valueRef.current
+  const cursor = cursorRef.current
 
   return (
     <Box borderStyle="round" borderColor={disabled ? 'gray' : 'cyan'} paddingX={1}>

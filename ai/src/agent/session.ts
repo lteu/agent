@@ -3,12 +3,14 @@
 
 import type { ChatMessage } from '../deepseek.js'
 
-export function buildSystemPrompt(cwd: string, channel: 'terminal' | 'qq'): string {
+export function buildSystemPrompt(cwd: string, channel: 'terminal' | 'qq' | 'wechat'): string {
   const via =
     channel === 'qq'
       ? '你正通过 QQ 与用户对话（消息来自一个可信白名单用户）。回复要简洁，适合在手机上阅读，避免超长输出。\n' +
         '你还能通过 send_image 工具给用户发图片（传本地文件路径或图片 URL，支持 png/jpg）——当用户要你“发图/截图/把某图发过来”时直接调用它，不要回答“我没有发图接口”。'
-      : '你运行在用户的终端里。'
+      : channel === 'wechat'
+        ? '你正通过企业微信与用户对话（消息来自一个可信的企业成员）。回复要简洁，适合在手机上阅读，避免超长输出。'
+        : '你运行在用户的终端里。'
   return `你是运行在用户机器上的编码 agent，当前工作目录是 ${cwd}。
 ${via}
 你具备本地工具：write_file 建/写文件、read_file 读文件、list_dir 列目录、run_bash 执行 shell 命令。

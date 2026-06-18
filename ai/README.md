@@ -51,6 +51,21 @@ ai
 | `Esc` | 清空输入 |
 | `Ctrl+C` | 生成中按一次中断；空闲时连按两次退出 |
 
+## 稳定性与崩溃日志
+
+输入框过去在**快速打字、粘贴、或方向键/退格和字符混在一起**时偶发「卡住/字符错乱」。
+原因是 `useInput` 回调直接读 React 闭包里的 `value/cursor`：Ink 在一个 stdin 数据块里可能连续触发多次回调，
+React 18 的批处理让这几次都基于同一份「旧」状态计算，后写覆盖前写 → 丢字符、光标错位。
+现已改为用 **ref 承载状态**（同步真相源），每次按键都能拿到上一次的结果，从根上消除这个竞态。
+
+此外加了**崩溃兜底**：任何未捕获的异常/拒绝，都会先
+
+1. 把现场写进 **`~/.ai/crash.log`**（含错误堆栈、运行环境、终端尺寸，以及**最近 60 次按键序列**——排查「是哪种输入触发的」最关键的线索）；
+2. 恢复终端（退出 raw mode、显示光标），避免崩溃后把终端搞坏；
+3. 打印日志路径再退出。
+
+> 万一又崩了，把 `~/.ai/crash.log` 里最新那段（尤其「最近 N 次按键」）发出来，就能定位是哪条输入序列触发的。
+
 ## 通过 QQ 远程操控（`ai serve`）
 
 让 `ai` 跑成一个 **QQ 官方机器人**：在 QQ 里给它发消息，就能远程让它在你这台机器上建文件、读写、跑命令。
@@ -152,9 +167,10 @@ src/
   channels/
     qq.ts           QQ channel：对接 QQ 官方机器人 v2 API（鉴权/网关 WS/收发），openid 白名单
   tools.ts          本地工具：write_file / read_file / list_dir / run_bash
-  MultilineInput.tsx 可编辑的多行输入框（光标、删除、快捷键）
+  MultilineInput.tsx 可编辑的多行输入框（光标、删除、快捷键）；状态用 ref 承载，避免快速输入丢字符
   deepseek.ts       DeepSeek 客户端：流式聊天 + 带工具的非流式补全
   config.ts         API key / 模型 / QQ（AppID、AppSecret、openid 白名单）的读取与保存
+  crashlog.ts       崩溃兜底：未捕获异常时落盘 ~/.ai/crash.log（含最近按键序列）并恢复终端
 scripts/
   build-app.sh      组装内置 Node 的 Ai.app（被下面两个共用）
   make-pkg.sh       生成 .pkg 安装包（装好自动带 ai 命令）
