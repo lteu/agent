@@ -86,7 +86,7 @@ export function startWechat(): void {
   const wx = loadWechatConfig()
 
   if (!cfg.apiKey) {
-    console.error('缺少 DeepSeek API key。先运行: ai --set-key sk-xxxx')
+    console.error('缺少 API key。先运行: ai --set-key <KEY>')
     process.exit(1)
   }
   for (const [k, label] of [
@@ -151,7 +151,7 @@ export function startWechat(): void {
     try {
       let said = false
       const answers: string[] = []
-      for await (const out of runAgent(history, { apiKey: cfg.apiKey!, model: cfg.model, baseURL: cfg.baseURL })) {
+      for await (const out of runAgent(history, { apiKey: cfg.apiKey!, model: cfg.model, baseURL: cfg.baseURL, provider: cfg.provider })) {
         if (out.type === 'text' && out.content.trim()) {
           await sendText(fromUser, out.content)
           answers.push(out.content)

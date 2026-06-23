@@ -12,8 +12,9 @@ import {
 import { resolve, dirname } from 'node:path'
 import { loadSmtpConfig } from './config.js'
 import { sendMail } from './smtp.js'
+import { getQuotes, formatQuote } from './stocks.js'
 
-// 发给 DeepSeek 的工具声明（OpenAI 兼容格式）。
+// 发给模型的工具声明（OpenAI 兼容格式）。
 export const TOOL_SCHEMAS = [
   {
     type: 'function',
@@ -90,6 +91,24 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'stock_quote',
+      description:
+        '查询美股实时报价（数据来自 Yahoo Finance）。用于「某只股票多少钱/涨跌如何」这类需求。',
+      parameters: {
+        type: 'object',
+        properties: {
+          symbols: {
+            type: 'string',
+            description: '股票代码，多个用英文逗号分隔，如 AAPL,TSLA,NVDA',
+          },
+        },
+        required: ['symbols'],
+      },
+    },
+  },
 ] as const
 
 export type ToolCall = {
@@ -158,6 +177,17 @@ export async function runTool(name: string, args: Record<string, any>): Promise<
         return `发送失败: ${e?.message ?? String(e)}`
       }
     }
+    case 'stock_quote': {
+      const symbols = String(args.symbols ?? '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+      if (!symbols.length) return '未提供股票代码'
+      const results = await getQuotes(symbols)
+      return results
+        .map(r => (r.quote ? formatQuote(r.quote) : `${r.symbol}: ${r.error}`))
+        .join('\n')
+    }
     default:
       return `未知工具: ${name}`
   }
@@ -176,6 +206,8 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return `运行 \`${String(args.command ?? '').slice(0, 80)}\``
     case 'send_email':
       return `发邮件给 ${args.to}`
+    case 'stock_quote':
+      return `查行情 ${args.symbols}`
     default:
       return name
   }

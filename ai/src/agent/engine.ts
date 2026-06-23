@@ -8,7 +8,7 @@
 //   }
 // history 会被原地追加（assistant / tool 消息），方便跨轮累积上下文。
 
-import { chatComplete, type ChatMessage } from '../deepseek.js'
+import { chatComplete, type ChatMessage } from '../llm.js'
 import { TOOL_SCHEMAS, runTool, describeToolCall } from '../tools.js'
 
 export type AgentEvent =
@@ -25,6 +25,8 @@ export type EngineDeps = {
   apiKey: string
   model: string
   baseURL: string
+  /** 服务商显示名，仅用于报错信息。 */
+  provider?: string
   signal?: AbortSignal
   /** 防止工具循环失控的最大步数，默认 25。 */
   maxSteps?: number
@@ -45,6 +47,7 @@ export async function* runAgent(
       apiKey: deps.apiKey,
       model: deps.model,
       baseURL: deps.baseURL,
+      provider: deps.provider,
       signal: deps.signal,
       tools,
     })

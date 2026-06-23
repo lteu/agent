@@ -1,4 +1,6 @@
-// DeepSeek 客户端：OpenAI 兼容的 /chat/completions 流式接口。
+// 通用大模型客户端：任何 OpenAI 兼容的 /chat/completions 接口都能用。
+// 只要在配置里给出 baseURL / model / apiKey，即可对接 DeepSeek、OpenAI、
+// 通义千问、Moonshot、OpenRouter、本地 Ollama 等任意服务商。
 // 仅依赖 Node 内置的全局 fetch（Node 18+）。
 
 export type RawToolCall = {
@@ -19,10 +21,17 @@ export type StreamOptions = {
   apiKey: string
   model: string
   baseURL?: string
+  /** 服务商显示名，仅用于报错信息（如 "OpenAI"、"通义千问"）。 */
+  provider?: string
   signal?: AbortSignal
 }
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com'
+
+/** 报错前缀，带上服务商名方便定位是哪家的问题。 */
+function errLabel(opts: StreamOptions): string {
+  return opts.provider ? `${opts.provider} 请求失败` : '模型请求失败'
+}
 
 // 一轮（非流式）补全的结果：要么是给用户的文字，要么是想调用的工具。
 export type Completion = {
@@ -56,7 +65,7 @@ export async function chatComplete(
 
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    throw new Error(`DeepSeek 请求失败 (HTTP ${res.status}): ${detail.slice(0, 300)}`)
+    throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
   }
 
   const json = await res.json()
@@ -68,7 +77,7 @@ export async function chatComplete(
 }
 
 /**
- * 向 DeepSeek 发送一轮对话，逐段产出助手回复文本（增量）。
+ * 向模型发送一轮对话，逐段产出助手回复文本（增量）。
  * 用法：for await (const delta of streamChat(messages, opts)) { ... }
  */
 export async function* streamChat(
@@ -92,7 +101,7 @@ export async function* streamChat(
 
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
-    throw new Error(`DeepSeek 请求失败 (HTTP ${res.status}): ${detail.slice(0, 300)}`)
+    throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
   }
 
   const reader = res.body.getReader()

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Loop 三方对比 · Claude Code vs OpenClaw vs ai</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d2129; --ink:#e6e9ef; --muted:#9aa3b2;
+    --cc:#d97757; --oc:#5b9bd5; --ai:#5fb878; --line:#2a2f3a; --warn:#e0b341;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;
+    line-height:1.7;font-size:15px}
+  .wrap{max-width:1140px;margin:0 auto;padding:48px 24px 96px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:.5px}
+  .sub{color:var(--muted);margin:0 0 8px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:28px}
+  h2{font-size:21px;margin:52px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:26px 0 10px}
+  code,.fn{font-family:var(--mono);font-size:.86em;background:#0b0d11;border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;color:#cbd3e1}
+  .fn.cc{color:var(--cc);border-color:#42302a}
+  .fn.oc{color:var(--oc);border-color:#28384a}
+  .fn.ai{color:var(--ai);border-color:#26402f}
+  p{margin:10px 0}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .card.cc{border-top:3px solid var(--cc)}
+  .card.oc{border-top:3px solid var(--oc)}
+  .card.ai{border-top:3px solid var(--ai)}
+  .tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 10px;border-radius:20px;margin-bottom:8px}
+  .tag.cc{background:#3a2620;color:var(--cc)}
+  .tag.oc{background:#1d2c3c;color:var(--oc)}
+  .tag.ai{background:#1c2e22;color:var(--ai)}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:600}
+  th.cc{color:var(--cc)} th.oc{color:var(--oc)} th.ai{color:var(--ai)}
+  td.feat{color:var(--muted);font-weight:600;background:#13161c;white-space:nowrap}
+  .flow{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 0;margin:14px 0}
+  .step{display:flex;gap:14px;padding:11px 20px;border-bottom:1px dashed var(--line)}
+  .step:last-child{border-bottom:none}
+  .step .n{flex:0 0 26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:12px}
+  .step.cc .n{background:#3a2620;color:var(--cc)}
+  .step.oc .n{background:#1d2c3c;color:var(--oc)}
+  .step.ai .n{background:#1c2e22;color:var(--ai)}
+  .step .body{flex:1}
+  .step .t{font-weight:600;margin-bottom:2px}
+  .step .d{color:var(--muted);font-size:13.5px}
+  .callout{background:#13161c;border-left:3px solid var(--warn);border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:16px 0;color:#dfe4ec}
+  .callout b{color:var(--warn)}
+  .src{font-family:var(--mono);font-size:12px;color:#6b7585}
+  .legend{display:flex;gap:24px;flex-wrap:wrap;margin:10px 0 0}
+  .legend span{font-size:13px;color:var(--muted)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  .dot.cc{background:var(--cc)} .dot.oc{background:var(--oc)} .dot.ai{background:var(--ai)}
+  hr{border:none;border-top:1px solid var(--line);margin:40px 0}
+  .foot{color:var(--muted);font-size:12.5px;margin-top:40px}
+  pre.code{font-family:var(--mono);font-size:12px;line-height:1.55;background:#0b0d11;
+    border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;
+    margin:10px 0;color:#cdd6e4;white-space:pre}
+  pre.code.cc{border-left:3px solid var(--cc)}
+  pre.code.oc{border-left:3px solid var(--oc)}
+  pre.code.ai{border-left:3px solid var(--ai)}
+  pre.code .kw{color:#c678dd}
+  pre.code .fnn{color:#61afef;font-style:normal}
+  pre.code .vr{color:#e0b341}
+  pre.code .st{color:#98c379}
+  pre.code .cm{color:#5c6675;font-style:italic}
+  pre.code .sr{color:#4a5263;font-size:.9em}
+  .scale{display:flex;align-items:center;gap:10px;margin:6px 0}
+  .scale .lbl{flex:0 0 120px;color:var(--muted);font-size:13px}
+  .bar{flex:1;height:14px;background:#0b0d11;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .bar i{display:block;height:100%}
+  .bar i.cc{background:var(--cc)} .bar i.oc{background:var(--oc)} .bar i.ai{background:var(--ai)}
+  .num{flex:0 0 90px;text-align:right;color:var(--muted);font-size:12.5px;font-family:var(--mono)}
+  .lead{font-size:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Agent Loop 三方对比</h1>
+  <p class="sub">同一个「模型 ↔ 工具反复交互」内核，三种工程取舍：从一个 <code>for</code> 循环到一千七百行的状态机</p>
+  <p class="meta">对象：<code>claudecode</code>（泄露源码）· <code>openclaw-2026.3.23</code>（内核代号 <b>Pi</b>）· <code>ai/</code>（本项目）· 生成日期：2026-06-23</p>
+  <div class="legend">
+    <span><i class="dot cc"></i>Claude Code — 软件工程 CLI，<code>claudecode/query.ts</code>（~1730 行单循环）</span>
+    <span><i class="dot oc"></i>OpenClaw — 多渠道私人助理，<code>src/agents/pi-embedded-runner/run.ts</code>（~1716 行编排壳）</span>
+    <span><i class="dot ai"></i>ai — 你的本地编码 agent，<code>ai/src/agent/engine.ts</code>（85 行）</span>
+  </div>
+
+  <!-- ============ 一句话结论 ============ -->
+  <h2>一句话结论</h2>
+  <div class="grid3">
+    <div class="card cc">
+      <span class="tag cc">Claude Code</span>
+      <p class="lead">把循环本身做成产品。</p>
+      <p>一个 <code>while(true)</code> 生成器里塞进了全部上下文工程与容错：多级压缩、模型回退、流式工具并发、对超长/超 token 的逐级恢复。终止有七八种 <code>reason</code>。</p>
+    </div>
+    <div class="card oc">
+      <span class="tag oc">OpenClaw</span>
+      <p class="lead">自己不写循环，而是包住一个循环。</p>
+      <p>真正的「模型↔工具」迭代交给内嵌引擎 <code>@mariozechner/pi-coding-agent</code>；<code>run.ts</code> 是它外面的<b>调度壳</b>：会话队列、密钥轮换、模型回退、溢出补偿、多聊天渠道。</p>
+    </div>
+    <div class="card ai">
+      <span class="tag ai">ai（本项目）</span>
+      <p class="lead">把循环还原成它最朴素的样子。</p>
+      <p>一个 <code>for (step &lt; 25)</code> 跑完：非流式补全 → 没有工具调用就结束 → 否则顺序执行工具回灌结果。上下文靠「丢最旧的几条」维持，干净、好读、够用。</p>
+    </div>
+  </div>
+  <div class="callout">
+    <b>同源不同量。</b> 三者内核完全一致——<i>发消息 → 模型要么回话要么调工具 → 执行工具 → 结果塞回 → 再发</i>。
+    差异全在「循环外面包了多少层」：Claude Code 把容错与上下文压缩长进了循环里；OpenClaw 把这层职责<u>外包给 Pi 引擎</u>、自己专注做多渠道网关；ai 则刻意不包，换来一眼读懂的 85 行。
+  </div>
+
+  <!-- ============ 核心循环并排 ============ -->
+  <h2>核心循环（伪代码并排）</h2>
+
+  <h3><span class="fn ai">ai</span> · 一个 for 循环，全部真相都在这 85 行里</h3>
+  <pre class="code ai"><span class="kw">for</span> (<span class="kw">let</span> step = 0; step &lt; maxSteps; step++) {        <span class="cm">// 默认 25 步封顶</span>
+  <span class="kw">const</span> { content, toolCalls } = <span class="kw">await</span> <span class="fnn">chatComplete</span>(history, { tools })  <span class="cm">// 非流式一轮补全</span>
+  history.<span class="fnn">push</span>({ role:<span class="st">'assistant'</span>, content, tool_calls })
+  <span class="kw">if</span> (content) <span class="kw">yield</span> { type:<span class="st">'text'</span>, content }
+
+  <span class="kw">if</span> (!toolCalls.length) <span class="kw">return</span>                       <span class="cm">// ← 没有工具调用 = 最终答复，结束</span>
+
+  <span class="kw">for</span> (<span class="kw">const</span> tc <span class="kw">of</span> toolCalls) {                       <span class="cm">// 顺序执行（非并发）</span>
+    <span class="kw">try</span> { result = <span class="kw">await</span> <span class="fnn">runTool</span>(tc.name, args) }
+    <span class="kw">catch</span> (e) { result = <span class="st">'错误: '</span> + e.message }     <span class="cm">// 工具异常 → 字符串回灌，不中断</span>
+    history.<span class="fnn">push</span>({ role:<span class="st">'tool'</span>, tool_call_id: tc.id, content: result })
+  }
+}
+<span class="kw">yield</span> { type:<span class="st">'text'</span>, content: <span class="st">`[已达最大步数 ${maxSteps}，停止]`</span> }   <span class="cm">// 兜底</span>
+<span class="sr">ai/src/agent/engine.ts:45</span></pre>
+
+  <h3><span class="fn cc">Claude Code</span> · 同一个循环，外加每轮的上下文工程与逐级恢复</h3>
+  <pre class="code cc"><span class="kw">while</span> (<span class="kw">true</span>) {                                       <span class="cm">// queryLoop —— 单一长循环，靠 state 在迭代间传递</span>
+  messages = <span class="fnn">applyToolResultBudget</span>(messages)          <span class="cm">// ① 工具结果按 tool_use_id 限额裁剪</span>
+  messages = <span class="fnn">snipCompact</span>(messages)                     <span class="cm">// ② 轻量删减</span>
+  messages = <span class="kw">await</span> <span class="fnn">microcompact</span>(messages)             <span class="cm">// ③ 微压缩（编辑缓存，不重发）</span>
+  messages = <span class="fnn">applyCollapses</span>(messages)                  <span class="cm">// ④ context-collapse 投影视图</span>
+  ({ compactionResult } = <span class="kw">await</span> <span class="fnn">autocompact</span>(messages)) <span class="cm">// ⑤ 模型总结式压缩</span>
+  <span class="kw">if</span> (<span class="fnn">atBlockingLimit</span>()) <span class="kw">return</span> {reason:<span class="st">'blocking_limit'</span>}
+
+  <span class="kw">for await</span> (msg <span class="kw">of</span> <span class="fnn">callModel</span>({messages, tools, fallbackModel})) {
+     <span class="fnn">withhold</span>(可恢复错误)                            <span class="cm">// 暂扣 prompt-too-long / max-output-tokens</span>
+     streamingToolExecutor.<span class="fnn">addTool</span>(toolBlock)        <span class="cm">// ⑥ 工具在「流式过程中」就开跑</span>
+  }                                                  <span class="cm">// FallbackTriggeredError → 换模型重试整轮</span>
+
+  <span class="kw">if</span> (!needsFollowUp) {                              <span class="cm">// 模型没要工具 → 准备收尾，但先过一串恢复闸</span>
+     <span class="kw">if</span> (withheld413)   { <span class="fnn">collapseDrain</span>() ?? <span class="fnn">reactiveCompact</span>(); <span class="kw">continue</span> }
+     <span class="kw">if</span> (maxOutputTok)  { 8k→64k <span class="fnn">escalate</span> ?? <span class="fnn">注入恢复消息</span>; <span class="kw">continue</span> }
+     <span class="kw">if</span> (<span class="fnn">stopHook</span>.blocks) { <span class="kw">continue</span> }                    <span class="cm">// stop-hook 可挡住收尾</span>
+     <span class="kw">if</span> (<span class="fnn">tokenBudget</span>.continue) { <span class="kw">continue</span> }              <span class="cm">// +500k 自动续跑</span>
+     <span class="kw">return</span> {reason:<span class="st">'completed'</span>}
+  }
+  <span class="kw">for await</span> (r <span class="kw">of</span> <span class="fnn">runTools</span>(blocks, canUseTool)) <span class="kw">yield</span> r  <span class="cm">// 权限闸 canUseTool 逐个放行</span>
+}
+<span class="sr">claudecode/query.ts:241（queryLoop）</span></pre>
+
+  <h3><span class="fn oc">OpenClaw</span> · 循环交给 Pi 引擎，自己在外面套「重试 / 回退 / 队列」</h3>
+  <pre class="code oc"><span class="fnn">enqueueSession</span>(() =&gt; <span class="fnn">enqueueGlobal</span>(<span class="kw">async</span> () =&gt; {     <span class="cm">// 会话级 + 全局级两道串行队列</span>
+  <span class="kw">while</span> (<span class="kw">true</span>) {                                     <span class="cm">// run.ts:885 —— 这是「尝试」循环，不是 agent 循环</span>
+    attempt = <span class="kw">await</span> <span class="fnn">runEmbeddedPiSession</span>({          <span class="cm">// ← 真正的 模型↔工具 循环在 Pi 引擎内部</span>
+        model, authProfile, abortSignal,             <span class="cm">//    （流式、工具执行、auto-compaction 都由 Pi 负责）</span>
+    })
+    <span class="kw">if</span> (attempt.aborted) <span class="kw">break</span>
+    <span class="kw">if</span> (<span class="fnn">contextOverflow</span>(attempt)) {                  <span class="cm">// 上下文溢出 → 显式压缩后重试</span>
+        <span class="kw">if</span> (!attempt.alreadyCompacted) <span class="kw">await</span> <span class="fnn">compactEmbeddedPiSession</span>()
+        <span class="kw">continue</span>
+    }
+    <span class="kw">if</span> (<span class="fnn">authError</span>(attempt) &amp;&amp; nextProfile) { 轮换密钥; <span class="kw">continue</span> }  <span class="cm">// 多 API key 冷却轮换</span>
+    <span class="kw">if</span> (<span class="fnn">modelError</span>(attempt) &amp;&amp; fallbackConfigured) { 换模型; <span class="kw">continue</span> }
+    <span class="kw">break</span>
+  }
+}))
+<span class="cm">// 外层还有：EmbeddedBlockChunker 把流式块整理成「只发最终回复」给 Telegram/WhatsApp 等渠道</span>
+<span class="sr">openclaw-2026.3.23/src/agents/pi-embedded-runner/run.ts:287</span></pre>
+
+  <div class="callout">
+    <b>关键区别在「循环的边界画在哪」。</b>
+    ai 和 Claude Code 的循环边界 = agent 循环本身；OpenClaw 的 <code>run.ts</code> 循环边界 = <i>整轮的重试</i>，agent 循环被藏在 <code>runEmbeddedPiSession</code> 里。
+    所以读 OpenClaw 源码看不到「解析 tool_calls」这种代码——那一层是 Pi 引擎的。
+  </div>
+
+  <!-- ============ 逐维度对照表 ============ -->
+  <h2>逐维度对照</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:150px">维度</th>
+        <th class="cc">Claude Code</th>
+        <th class="oc">OpenClaw</th>
+        <th class="ai">ai（本项目）</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="feat">循环载体</td>
+        <td><code>while(true)</code> async generator，单文件 1730 行</td>
+        <td>外层「尝试」<code>while(true)</code>；真正 agent 循环在 Pi 引擎</td>
+        <td><code>for (step&lt;25)</code> async generator，85 行</td>
+      </tr>
+      <tr>
+        <td class="feat">模型调用</td>
+        <td>流式（SSE），<code>callModel</code> 边流边产出</td>
+        <td>流式，由 Pi 引擎驱动；外层只看最终态</td>
+        <td>非流式 <code>chatComplete</code>（<code>streamChat</code> 存在但循环未用）</td>
+      </tr>
+      <tr>
+        <td class="feat">协议</td>
+        <td>Anthropic Messages API（原生 content blocks）</td>
+        <td>多 provider（Anthropic / OpenAI / …，经 pi-ai 抽象）</td>
+        <td>任意 OpenAI 兼容 <code>/chat/completions</code>（默认 DeepSeek）</td>
+      </tr>
+      <tr>
+        <td class="feat">终止条件</td>
+        <td>无 tool_use + 过七八道恢复闸 → <code>reason: completed</code>，另有 blocking_limit / aborted / model_error / prompt_too_long…</td>
+        <td>Pi 内部正常结束；外层在溢出/认证/模型错误时重试，否则 <code>break</code></td>
+        <td>无 toolCalls → <code>return</code>；或 step 达 25 → 兜底文字</td>
+      </tr>
+      <tr>
+        <td class="feat">工具执行</td>
+        <td><b>流式并发</b>：StreamingToolExecutor 在模型仍在输出时就开跑；<code>canUseTool</code> 权限闸</td>
+        <td>由 Pi 引擎执行；openclaw 注入工具集 + before/after-tool-call 钩子</td>
+        <td><b>顺序</b> for 循环逐个 <code>await runTool</code>；<code>try/catch</code> 转错误字符串回灌</td>
+      </tr>
+      <tr>
+        <td class="feat">上下文压缩</td>
+        <td>五级：budget 裁剪 / snip / microcompact / context-collapse / 模型总结 autocompact</td>
+        <td>Pi 的 auto-compaction（按 contextTokens 上限）+ openclaw 显式 <code>compactEmbeddedPiSession</code> 重试补偿</td>
+        <td>无总结。<code>SessionStore.trim()</code> 超 60 条就从 user 边界丢最旧的几条</td>
+      </tr>
+      <tr>
+        <td class="feat">超长 / 超 token 恢复</td>
+        <td>逐级：collapse-drain → reactive compact；max-output 8k→64k 升档→注入恢复消息</td>
+        <td>contextOverflow → 压缩后整轮重试（带 diag 计数防死循环）</td>
+        <td>无专门恢复；靠 trim 提前防膨胀 + 25 步封顶兜底</td>
+      </tr>
+      <tr>
+        <td class="feat">模型回退</td>
+        <td>有：<code>FallbackTriggeredError</code> 换 <code>fallbackModel</code> 重试整轮 + 清理孤儿消息</td>
+        <td>有：模型回退链 + 认证 profile 冷却轮换</td>
+        <td>无</td>
+      </tr>
+      <tr>
+        <td class="feat">多会话 / 并发</td>
+        <td>子 agent（AgentTool）有独立 queryTracking 链；主循环单会话</td>
+        <td>会话级 + 全局级命令队列（lane）串行化；多聊天渠道并存</td>
+        <td><code>SessionStore</code> Map：私聊按用户、群按群各存一份历史</td>
+      </tr>
+      <tr>
+        <td class="feat">扩展 / 钩子</td>
+        <td>post-sampling / stop / stop-failure hooks、MCP、技能预取、记忆预取</td>
+        <td>插件系统、MCP、before/after compaction & tool-call 钩子</td>
+        <td>channel 注入的 <code>extraTools</code>（如 QQ 的 <code>send_image</code>），无钩子</td>
+      </tr>
+      <tr>
+        <td class="feat">权限</td>
+        <td><code>canUseTool</code> 逐工具放行 + permission mode（含 plan 模式）</td>
+        <td>沙箱 / 工作区挂载路径限制 + 渠道白名单</td>
+        <td>无门禁——系统提示直言「你有权限操作设备，别推辞」</td>
+      </tr>
+      <tr>
+        <td class="feat">内置工具</td>
+        <td>Bash/Edit/Read/Write/Glob/Grep/Agent/Web… 一整套 IDE 级</td>
+        <td>编码工具 + 渠道消息工具（sendMessage 等）+ 记忆 / 搜索</td>
+        <td>write_file / read_file / list_dir / run_bash / send_email / stock_quote</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ============ 复杂度量表 ============ -->
+  <h2>复杂度量表（数量级直觉）</h2>
+  <p class="sub">同一根内核，工程包裹量相差近 20 倍。下面是「循环主体代码行」的相对感受，非精确统计。</p>
+  <div class="card" style="margin-top:14px">
+    <div class="scale"><span class="lbl">循环主体行数</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">~1730</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:99%"></i></div><span class="num">~1716</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:5%"></i></div><span class="num">85</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">终止 / 恢复分支</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">多</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:55%"></i></div><span class="num">中</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:12%"></i></div><span class="num">2</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">上下文压缩层数</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">5 级</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:40%"></i></div><span class="num">2 级</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:20%"></i></div><span class="num">1 级(trim)</span></div>
+  </div>
+  <p class="src">行数为对应文件粗略规模；OpenClaw 的 1716 行是「编排壳」，真正 agent 循环在外部 Pi 引擎里，故其内核复杂度被低估。</p>
+
+  <!-- ============ 同一请求的流程 ============ -->
+  <h2>同一请求下三者怎么跑</h2>
+  <p class="sub">请求：<b>「读一下 config.ts，然后把里面的端口改成 8080」</b>（需要：读文件 → 改文件，两轮工具）</p>
+
+  <div class="grid3">
+    <div>
+      <div class="flow">
+        <div class="step ai"><div class="n">1</div><div class="body"><div class="t">chatComplete</div><div class="d">模型回 tool_call: read_file</div></div></div>
+        <div class="step ai"><div class="n">2</div><div class="body"><div class="t">runTool 顺序执行</div><div class="d">读到内容，回灌为 tool 消息</div></div></div>
+        <div class="step ai"><div class="n">3</div><div class="body"><div class="t">chatComplete</div><div class="d">模型回 tool_call: write_file</div></div></div>
+        <div class="step ai"><div class="n">4</div><div class="body"><div class="t">runTool</div><div class="d">写盘，回灌结果</div></div></div>
+        <div class="step ai"><div class="n">5</div><div class="body"><div class="t">chatComplete</div><div class="d">无 toolCalls → <b>return</b></div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot ai"></i>ai：5 步，零额外加工</p>
+    </div>
+
+    <div>
+      <div class="flow">
+        <div class="step cc"><div class="n">1</div><div class="body"><div class="t">压缩 5 件套 + 预取</div><div class="d">budget/snip/micro/collapse/autocompact</div></div></div>
+        <div class="step cc"><div class="n">2</div><div class="body"><div class="t">流式 callModel</div><div class="d">Read 工具边流边执行</div></div></div>
+        <div class="step cc"><div class="n">3</div><div class="body"><div class="t">canUseTool 放行</div><div class="d">Edit 命中权限 → 经确认后写入</div></div></div>
+        <div class="step cc"><div class="n">4</div><div class="body"><div class="t">收尾闸</div><div class="d">stop-hook / token-budget 检查</div></div></div>
+        <div class="step cc"><div class="n">5</div><div class="body"><div class="t">reason: completed</div><div class="d">每轮都重跑全部压缩与恢复检查</div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot cc"></i>Claude Code：同样两轮工具，外裹上下文工程</p>
+    </div>
+
+    <div>
+      <div class="flow">
+        <div class="step oc"><div class="n">1</div><div class="body"><div class="t">入队（会话+全局 lane）</div><div class="d">保证同会话不并发</div></div></div>
+        <div class="step oc"><div class="n">2</div><div class="body"><div class="t">runEmbeddedPiSession</div><div class="d">Pi 引擎内部跑完读→改两轮</div></div></div>
+        <div class="step oc"><div class="n">3</div><div class="body"><div class="t">attempt 返回</div><div class="d">检查溢出 / 认证 / 模型错误</div></div></div>
+        <div class="step oc"><div class="n">4</div><div class="body"><div class="t">无异常 → break</div><div class="d">否则压缩/换 key/换模型后重试</div></div></div>
+        <div class="step oc"><div class="n">5</div><div class="body"><div class="t">BlockChunker 整流</div><div class="d">只把最终回复推给聊天渠道</div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot oc"></i>OpenClaw：循环细节被 Pi 封装，外层管调度</p>
+    </div>
+  </div>
+
+  <!-- ============ 给 ai 的启示 ============ -->
+  <h2>对照之后，<span class="fn ai">ai</span> 可以借鉴什么</h2>
+  <p>当前 85 行的取舍是对的——简单、可读、对「单可信用户」场景够用。若要往前走，按性价比排序：</p>
+  <table>
+    <thead><tr><th style="width:170px">改进点</th><th>现状</th><th>可借鉴谁 · 怎么做</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="feat">① 流式输出</td>
+        <td>循环用非流式 <code>chatComplete</code>；<code>streamChat</code> 已写好却没接进 loop</td>
+        <td><span class="fn cc">CC</span> 边流边产出。终端/QQ 体验立刻变好——把 <code>chatComplete</code> 换成流式聚合即可，工具调用仍在流末统一解析。</td>
+      </tr>
+      <tr>
+        <td class="feat">② 总结式压缩</td>
+        <td>只有 <code>trim()</code> 丢最旧消息——长对话会直接丢上下文</td>
+        <td><span class="fn cc">CC</span> 的 <code>autocompact</code> / <span class="fn oc">OC</span> 的 compact：超阈值时调一次模型把旧历史总结成一段，替换原文。投入小、收益大。</td>
+      </tr>
+      <tr>
+        <td class="feat">③ 工具结果限额</td>
+        <td><code>read_file</code> 截到 20000 字符，但多个大结果叠加仍可能撑爆</td>
+        <td><span class="fn cc">CC</span> 的 <code>applyToolResultBudget</code>：对「聚合后」的工具结果设总预算，而非逐个截断。</td>
+      </tr>
+      <tr>
+        <td class="feat">④ 模型回退</td>
+        <td>单一 provider，请求失败直接抛错</td>
+        <td><span class="fn oc">OC</span> 的回退链：主模型 5xx/限流时自动切备用 baseURL/model，对你的多 provider 配置天然契合。</td>
+      </tr>
+      <tr>
+        <td class="feat">⑤ 工具并发</td>
+        <td>多个 toolCalls 顺序 await</td>
+        <td><span class="fn cc">CC</span> 流式并发偏复杂；轻量做法：对<u>无副作用</u>的只读工具（read_file/list_dir/stock_quote）用 <code>Promise.all</code> 并发，写类工具仍串行。</td>
+      </tr>
+      <tr>
+        <td class="feat">⑥ 会话串行</td>
+        <td>同一会话若并发收到两条消息，会同时改同一份 history</td>
+        <td><span class="fn oc">OC</span> 的 lane 队列：给每个 session 加一把串行锁，避免 history 被并发追加写花。</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <b>别照抄 Claude Code 的循环。</b> 它那 1730 行里大部分是为「无人值守、超长会话、多模型、严格权限」付的税。
+    ai 的场景（可信用户、短会话、手机端简洁回复）只需<u>选摘①②④</u>三项，就能在不牺牲可读性的前提下显著变稳。
+  </div>
+
+  <p class="foot">
+    依据源码：<code>ai/src/agent/engine.ts</code>、<code>ai/src/agent/session.ts</code>、<code>ai/src/llm.ts</code>、<code>ai/src/tools.ts</code>；
+    <code>claudecode/query.ts</code>（queryLoop）；<code>openclaw-2026.3.23/src/agents/pi-embedded-runner/run.ts</code> 及 <code>compact.ts</code>。
+    OpenClaw 的真正 agent 循环位于其依赖 <code>@mariozechner/pi-agent-core / pi-coding-agent</code>（本仓库未安装 node_modules，故按其调用壳与文档行为描述）。
+  </p>
+
+</div>
+</body>
+</html>

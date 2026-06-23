@@ -34,12 +34,13 @@ function getLogDir(): string {
   return join(projectRoot, 'log')
 }
 
-export type LogChannel = 'terminal' | 'qq' | 'wechat'
+export type LogChannel = 'terminal' | 'qq' | 'wechat' | 'watch'
 
 const CHANNEL_LABEL: Record<LogChannel, string> = {
   terminal: 'PC（终端）',
   qq: 'QQ',
   wechat: '企业微信',
+  watch: '美股监控',
 }
 
 // 每个会话第一条用户消息作为该会话「话题」，后续轮次沿用，直到 /clear 重置。

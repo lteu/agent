@@ -1,7 +1,7 @@
 // 多会话存储：QQ 是多人/多群场景，不能像终端那样只用一份全局历史。
 // 每个会话（私聊按用户、群聊按群）各持有一份独立的对话历史。
 
-import type { ChatMessage } from '../deepseek.js'
+import type { ChatMessage } from '../llm.js'
 
 export function buildSystemPrompt(cwd: string, channel: 'terminal' | 'qq' | 'wechat'): string {
   const via =

@@ -85,7 +85,7 @@ export function startQQ(): void {
   const qq = loadQQConfig()
 
   if (!cfg.apiKey) {
-    console.error('缺少 DeepSeek API key。先运行: ai --set-key sk-xxxx')
+    console.error('缺少 API key。先运行: ai --set-key <KEY>')
     process.exit(1)
   }
   if (!qq.appId || !qq.secret) {
@@ -221,6 +221,7 @@ export function startQQ(): void {
         apiKey: cfg.apiKey!,
         model: cfg.model,
         baseURL: cfg.baseURL,
+        provider: cfg.provider,
         extraTools: {
           schemas: [SEND_IMAGE_SCHEMA],
           run: (_name, args) => sendImage(target, msgId, String(args.path ?? '')),
