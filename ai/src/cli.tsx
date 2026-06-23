@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, memo } from 'react'
+import { useState, useRef, useCallback, useEffect, memo, useMemo } from 'react'
 import { render, Box, Text, useApp, useInput } from 'ink'
 import MultilineInput from './MultilineInput.js'
 import { type ChatMessage } from './llm.js'
@@ -318,11 +318,11 @@ if (argv[0] === 'watch') {
 const config = loadConfig()
 
 // ———————————————————————————————————————————————
-// 界面
+// 界面组件
 // ———————————————————————————————————————————————
 type UIMessage = { id: number; role: 'user' | 'assistant' | 'tool'; content: string }
 
-// 消息行：memo 化，role/content 不变就不重绘，根除 Spinner/流式追加导致的闪烁。
+// 单条消息行：memo 化，role/content 不变就不重绘。
 const MessageRow = memo(({ role, content }: { role: string; content: string }) => {
   if (role === 'user') {
     return (
@@ -347,6 +347,41 @@ const MessageRow = memo(({ role, content }: { role: string; content: string }) =
       <Text>{content}</Text>
     </Box>
   )
+})
+
+// 消息列表：整体 memo，只要 messages 引用不变就完全不重渲染。
+// 这样 Spinner tick 不会触发消息区的 reconciliation。
+const MessageList = memo(({ messages }: { messages: UIMessage[] }) => (
+  <>
+    {messages.map(m => (
+      <MessageRow key={m.id} role={m.role} content={m.content} />
+    ))}
+  </>
+))
+
+// 头部信息：memo，只有 model/baseURL 变化才重绘（基本不会）。
+const Header = memo(({ model, baseURL }: { model: string; baseURL: string }) => (
+  <Box marginBottom={1} flexDirection="column">
+    <Text color="cyan" bold>
+      ✦ ai
+    </Text>
+    <Text dimColor>
+      {model} · {baseURL} — Enter 发送，行尾 \ 换行，Ctrl+C 两次退出
+    </Text>
+  </Box>
+))
+
+// Spinner：用 ref 代替 state 来跟踪帧索引，避免每 150ms 触发父组件重渲染。
+// 仅通过直接调度自身重渲染来更新画面。
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+const Spinner = memo(() => {
+  const [i, setI] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setI(x => (x + 1) % SPINNER_FRAMES.length), 150)
+    return () => clearInterval(id)
+  }, [])
+  return <Text color="cyan">{SPINNER_FRAMES[i]}</Text>
 })
 
 function App() {
@@ -427,6 +462,12 @@ function App() {
     [apiKey],
   )
 
+  // header props 用 useMemo 稳定引用，避免传给 memo(Header) 时每帧都是新对象
+  const headerProps = useMemo(
+    () => ({ model: config.model, baseURL: config.baseURL }),
+    [config.model, config.baseURL],
+  )
+
   // 缺少 key：启动时引导用户输入并保存
   if (!apiKey) {
     return (
@@ -441,20 +482,11 @@ function App() {
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      {/* 头部 */}
-      <Box marginBottom={1} flexDirection="column">
-        <Text color="cyan" bold>
-          ✦ ai
-        </Text>
-        <Text dimColor>
-          {config.model} · {config.baseURL} — Enter 发送，行尾 \ 换行，Ctrl+C 两次退出
-        </Text>
-      </Box>
+      {/* 头部 — memo 后只在 model/baseURL 变化时重绘 */}
+      <Header {...headerProps} />
 
-      {/* 历史消息：每条用 memo 隔离，只有自己内容变才重绘 */}
-      {messages.map(m => (
-        <MessageRow key={m.id} role={m.role} content={m.content} />
-      ))}
+      {/* 历史消息 — 整个列表 memo，只在 messages 数组引用变化时才重绘 */}
+      <MessageList messages={messages} />
 
       {/* 正在工作 */}
       {busy && (
@@ -532,17 +564,6 @@ function KeyPrompt({ onSave }: { onSave: (key: string) => void }) {
       </Box>
     </Box>
   )
-}
-
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-function Spinner() {
-  const [i, setI] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setI(x => (x + 1) % SPINNER_FRAMES.length), 120)
-    return () => clearInterval(id)
-  }, [])
-  return <Text color="cyan">{SPINNER_FRAMES[i]}</Text>
 }
 
 if (argv[0] === 'serve') {
