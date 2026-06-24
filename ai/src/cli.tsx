@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo } from 'react'
-import { render, Box, Text, useApp, useInput } from 'ink'
+import { render, Box, Text, useApp, useInput, Static } from 'ink'
 import MultilineInput from './MultilineInput.js'
 import { type ChatMessage } from './llm.js'
 import {
@@ -351,14 +351,6 @@ const MessageRow = memo(({ role, content }: { role: string; content: string }) =
 
 // 消息列表：整体 memo，只要 messages 引用不变就完全不重渲染。
 // 这样 Spinner tick 不会触发消息区的 reconciliation。
-const MessageList = memo(({ messages }: { messages: UIMessage[] }) => (
-  <>
-    {messages.map(m => (
-      <MessageRow key={m.id} role={m.role} content={m.content} />
-    ))}
-  </>
-))
-
 // 头部信息：memo，只有 model/baseURL 变化才重绘（基本不会）。
 const Header = memo(({ model, baseURL }: { model: string; baseURL: string }) => (
   <Box marginBottom={1} flexDirection="column">
@@ -468,6 +460,14 @@ function App() {
     [config.model, config.baseURL],
   )
 
+  // Static 的数据源：头部固定为第一行，其后是所有历史消息。
+  // 每个元素只会被 Ink 写入终端一次，因此这部分永远不参与重绘。
+  type StaticRow = { kind: 'header' } | { kind: 'msg'; msg: UIMessage }
+  const staticRows = useMemo<StaticRow[]>(
+    () => [{ kind: 'header' }, ...messages.map(msg => ({ kind: 'msg' as const, msg }))],
+    [messages],
+  )
+
   // 缺少 key：启动时引导用户输入并保存
   if (!apiKey) {
     return (
@@ -482,11 +482,18 @@ function App() {
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      {/* 头部 — memo 后只在 model/baseURL 变化时重绘 */}
-      <Header {...headerProps} />
-
-      {/* 历史消息 — 整个列表 memo，只在 messages 数组引用变化时才重绘 */}
-      <MessageList messages={messages} />
+      {/* 头部 + 历史消息 — 用 Static 渲染：每条只往终端写一次，永不重绘。
+          这才是根除闪烁的关键：Spinner 每 120ms 触发的重渲染只会重画下方
+          的动态区（spinner + 输入框），不再连带重画整段历史。 */}
+      <Static items={staticRows}>
+        {row =>
+          row.kind === 'header' ? (
+            <Header key="header" {...headerProps} />
+          ) : (
+            <MessageRow key={row.msg.id} role={row.msg.role} content={row.msg.content} />
+          )
+        }
+      </Static>
 
       {/* 正在工作 */}
       {busy && (
