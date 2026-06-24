@@ -32,6 +32,8 @@ export type EngineDeps = {
   maxSteps?: number
   /** channel 专属工具：与内置 TOOL_SCHEMAS 合并，执行时优先用它。 */
   extraTools?: ExtraTools
+  /** 子 agent 递归深度，由 run_agent 工具派生时自增，用于限制嵌套层数。 */
+  depth?: number
 }
 
 export async function* runAgent(
@@ -73,7 +75,14 @@ export async function* runAgent(
       try {
         result = extraNames.has(tc.function.name)
           ? await deps.extraTools!.run(tc.function.name, args)
-          : await runTool(tc.function.name, args)
+          : await runTool(tc.function.name, args, {
+              apiKey: deps.apiKey,
+              model: deps.model,
+              baseURL: deps.baseURL,
+              provider: deps.provider,
+              signal: deps.signal,
+              depth: deps.depth ?? 0,
+            })
       } catch (e: any) {
         result = '错误: ' + (e?.message ?? String(e))
       }
