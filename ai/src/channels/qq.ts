@@ -17,6 +17,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { runAgent } from '../agent/engine.js'
+import { isStopCommand } from './stopwords.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadQQConfig } from '../config.js'
@@ -107,6 +108,7 @@ export function startQQ(): void {
   const tokens = new TokenManager(qq.appId, qq.secret)
   const sessions = new SessionStore(buildSystemPrompt(process.cwd(), 'qq'))
   const busy = new Set<string>() // 正在处理的会话，避免并发
+  const controllers = new Map<string, AbortController>() // 每个在跑会话的中断句柄，供「叫停」用
   const seqOf = new Map<string, number>() // 每个 msg_id 的回复序号（官方要求 msg_seq 唯一）
 
   const authHeader = async () => ({ Authorization: `QQBot ${await tokens.get()}`, 'Content-Type': 'application/json' })
@@ -207,10 +209,18 @@ export function startQQ(): void {
     }
 
     if (busy.has(sessionId)) {
-      await sendReply(target, msgId, '上一条还在处理中，稍等…')
+      // 任务进行中又收到消息：若是「等一下/停/暂停/stop」之类，中断当前任务并反馈；否则照旧提示稍等。
+      if (isStopCommand(text)) {
+        controllers.get(sessionId)?.abort()
+        await sendReply(target, msgId, '🛑 已停止当前任务。')
+      } else {
+        await sendReply(target, msgId, '上一条还在处理中，稍等…（发「停」可中断）')
+      }
       return
     }
     busy.add(sessionId)
+    const controller = new AbortController()
+    controllers.set(sessionId, controller)
 
     const history = sessions.get(sessionId)
     history.push({ role: 'user', content: text })
@@ -222,6 +232,7 @@ export function startQQ(): void {
         model: cfg.model,
         baseURL: cfg.baseURL,
         provider: cfg.provider,
+        signal: controller.signal,
         extraTools: {
           schemas: [SEND_IMAGE_SCHEMA],
           run: (_name, args) => sendImage(target, msgId, String(args.path ?? '')),
@@ -238,10 +249,16 @@ export function startQQ(): void {
       logChat({ channel: 'qq', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {
-      await sendReply(target, msgId, '⚠ 出错了: ' + (err?.message ?? String(err)))
-      logChat({ channel: 'qq', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
+      // 用户主动叫停：已在叫停时反馈过「已停止」，这里只记日志，不再回报“出错”。
+      if (controller.signal.aborted) {
+        logChat({ channel: 'qq', sessionId, question: text, answer: '[已中断]' })
+      } else {
+        await sendReply(target, msgId, '⚠ 出错了: ' + (err?.message ?? String(err)))
+        logChat({ channel: 'qq', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
+      }
     } finally {
       busy.delete(sessionId)
+      controllers.delete(sessionId)
     }
   }
 

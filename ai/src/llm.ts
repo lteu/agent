@@ -33,10 +33,13 @@ function errLabel(opts: StreamOptions): string {
   return opts.provider ? `${opts.provider} 请求失败` : '模型请求失败'
 }
 
-// 一轮（非流式）补全的结果：要么是给用户的文字，要么是想调用的工具。
+// 一轮补全的结果：要么是给用户的文字，要么是想调用的工具。
+// finishReason 是服务商给出的本轮停止原因（'stop' | 'length' | 'tool_calls' | 'content_filter' …），
+// 上层据此做「被截断就续写」等恢复（仅流式补全会填充它）。
 export type Completion = {
   content: string
   toolCalls: RawToolCall[]
+  finishReason?: string
 }
 
 /**
@@ -119,6 +122,7 @@ export async function* streamCompletion(
   const emitted = new Set<number>()
   let maxIndex = -1
   let content = ''
+  let finishReason: string | undefined
 
   // 产出所有 index < upto（'all' 表示全部）且尚未产出的、已完整的工具调用。
   function* flush(upto: number | 'all'): Generator<StreamPart> {
@@ -156,7 +160,9 @@ export async function* streamCompletion(
       } catch {
         continue // 不完整片段，忽略
       }
-      const delta = json?.choices?.[0]?.delta
+      const choice = json?.choices?.[0]
+      if (choice?.finish_reason) finishReason = choice.finish_reason
+      const delta = choice?.delta
       if (!delta) continue
       if (typeof delta.content === 'string' && delta.content) {
         content += delta.content
@@ -191,7 +197,7 @@ export async function* streamCompletion(
       type: 'function',
       function: { name: t.name, arguments: t.args },
     }))
-  return { content, toolCalls }
+  return { content, toolCalls, finishReason }
 }
 
 /**

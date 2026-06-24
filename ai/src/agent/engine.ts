@@ -14,7 +14,7 @@
 //   2. StreamingToolExecutor —— 工具在「模型还在输出」时就并发开跑；
 //   3. 每轮开头按需做上下文压缩 compactInPlace。
 
-import { streamCompletion, type ChatMessage, type RawToolCall } from '../llm.js'
+import { streamCompletion, type ChatMessage, type RawToolCall, type Completion } from '../llm.js'
 import { TOOL_SCHEMAS, runTool, describeToolCall, type ToolContext } from '../tools.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
 
@@ -102,6 +102,11 @@ export async function* runAgent(
     }
   }
 
+  // 恢复闸的状态：输出截断续写次数、本轮是否已做过被动压缩。
+  const MAX_OUTPUT_RECOVERY = 3
+  let outputRecovery = 0
+  let reactiveCompactAttempted = false
+
   for (let step = 0; step < maxSteps; step++) {
     // ① 每轮开头按需压缩历史（就地 splice，保持调用方持有的引用有效）。
     if (!deps.noCompact) {
@@ -132,22 +137,40 @@ export async function* runAgent(
       }
     }
 
-    let res = await stream.next()
-    while (!res.done) {
-      const part = res.value
-      if (part.type === 'text') {
-        textBuf += part.delta
-        yield { type: 'delta', content: part.delta }
-      } else {
-        // 工具调用先于其后内容到达时，先把已说的文本作为一段 text 收口（保证 channel 端顺序正确）。
-        yield* flushText()
-        const args = safeArgs(part.call.function.arguments)
-        yield { type: 'tool', name: part.call.function.name, summary: describeToolCall(part.call.function.name, args) }
-        executor.add(part.call) // ← 立即并发开跑，不等流结束
+    let completion: Completion
+    try {
+      let res = await stream.next()
+      while (!res.done) {
+        const part = res.value
+        if (part.type === 'text') {
+          textBuf += part.delta
+          yield { type: 'delta', content: part.delta }
+        } else {
+          // 工具调用先于其后内容到达时，先把已说的文本作为一段 text 收口（保证 channel 端顺序正确）。
+          yield* flushText()
+          const args = safeArgs(part.call.function.arguments)
+          yield { type: 'tool', name: part.call.function.name, summary: describeToolCall(part.call.function.name, args) }
+          executor.add(part.call) // ← 立即并发开跑，不等流结束
+        }
+        res = await stream.next()
       }
-      res = await stream.next()
+      completion = res.value
+    } catch (e: any) {
+      // 被动恢复（reactive compact）：API 报「上下文超长」→ 强制压缩一次后重试本轮。
+      // 只试一次（reactiveCompactAttempted 守门），压完还超就放行报错，避免死循环。
+      if (!deps.noCompact && !reactiveCompactAttempted && isContextOverflow(e)) {
+        reactiveCompactAttempted = true
+        const did = await compactInPlace(history, deps, { force: true }).catch(() => false)
+        if (did) {
+          yield { type: 'tool', name: 'system', summary: '⚠ 上下文超长，已自动压缩后重试' }
+          continue
+        }
+      }
+      throw e // 不可恢复（含用户 abort）→ 抛给上层显示/反馈
     }
-    const { content, toolCalls } = res.value
+
+    const { content, toolCalls, finishReason } = completion
+    reactiveCompactAttempted = false // 本轮模型成功应答 → 重置被动压缩闸
 
     // 收口：把整轮文本作为一段 text 产出（若前面因工具已收口过则不重复）。
     yield* flushText()
@@ -158,15 +181,40 @@ export async function* runAgent(
       tool_calls: toolCalls.length ? toolCalls : undefined,
     })
 
-    if (!executor.size) return // 没有工具调用 = 最终答复
-
-    // ③ 回收并发执行的工具结果（按调用顺序回灌，满足 OpenAI 的配对要求）。
-    for await (const { call, result } of executor.drain()) {
-      history.push({ role: 'tool', tool_call_id: call.id, content: result })
+    if (executor.size) {
+      // ③ 回收并发执行的工具结果（按调用顺序回灌，满足 OpenAI 的配对要求）。
+      for await (const { call, result } of executor.drain()) {
+        history.push({ role: 'tool', tool_call_id: call.id, content: result })
+      }
+      continue
     }
+
+    // 无工具调用：本应结束；但若回复是被「输出长度上限」截断的（finish_reason==='length'），
+    // 注入续写提示再来一轮，把没说完的话接着说完。
+    if (finishReason === 'length' && outputRecovery < MAX_OUTPUT_RECOVERY) {
+      outputRecovery++
+      history.push({
+        role: 'user',
+        content:
+          '（系统提示）你上一条回复因达到输出长度上限被截断。请直接从断点继续，' +
+          '不要重复已经输出的内容，也不要道歉或重述；剩余内容较多时可分小段输出。',
+      })
+      yield { type: 'tool', name: 'system', summary: `↻ 输出被截断，自动续写（第 ${outputRecovery} 次）` }
+      continue
+    }
+
+    return // 正常完成
   }
 
   yield { type: 'text', content: `[已达最大步数 ${maxSteps}，停止]` }
+}
+
+/** 判断一个错误是不是「上下文/提示超长」类（用于触发被动压缩重试）。 */
+function isContextOverflow(e: any): boolean {
+  const msg = String(e?.message ?? e).toLowerCase()
+  return /maximum context length|context[_ ]length|context window|prompt is too long|too long|reduce the length|exceeds? the maximum|http 413/.test(
+    msg,
+  )
 }
 
 function safeArgs(raw: string): Record<string, any> {

@@ -358,7 +358,7 @@ const Header = memo(({ model, baseURL }: { model: string; baseURL: string }) => 
       ✦ ai
     </Text>
     <Text dimColor>
-      {model} · {baseURL} — Enter 发送，行尾 \ 换行，Ctrl+C 两次退出
+      {model} · {baseURL} — Enter 发送，行尾 \ 换行，Esc 中断，Ctrl+C 两次退出
     </Text>
   </Box>
 ))
@@ -390,8 +390,15 @@ function App() {
   // 自增 id：给每条消息一个稳定 key，避免数组索引漂移引发不必要的重绘。
   const idRef = useRef(0)
 
-  // Ctrl+C：一次中断生成，连按两次退出
+  // Esc：生成中按一下即中断当前任务（不退出程序）。
+  // Ctrl+C：忙时一次中断生成，空闲时连按两次退出。
   useInput((_input, key) => {
+    if (key.escape) {
+      if (busy && abortRef.current) {
+        abortRef.current.abort()
+      }
+      return
+    }
     if (key.ctrl && _input === 'c') {
       if (busy && abortRef.current) {
         abortRef.current.abort()

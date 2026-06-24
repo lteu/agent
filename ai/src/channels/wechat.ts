@@ -20,6 +20,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createHash, createDecipheriv } from 'node:crypto'
 import { runAgent } from '../agent/engine.js'
+import { isStopCommand } from './stopwords.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadWechatConfig } from '../config.js'
@@ -109,6 +110,7 @@ export function startWechat(): void {
   const tokens = new TokenManager(wx.corpId!, wx.secret!)
   const sessions = new SessionStore(buildSystemPrompt(process.cwd(), 'wechat'))
   const busy = new Set<string>()
+  const controllers = new Map<string, AbortController>() // 每个在跑会话的中断句柄，供「叫停」用
   const whitelist = new Set((wx.whitelist ?? []).map(String))
 
   // 主动调 API 给某成员发文本。
@@ -142,16 +144,24 @@ export function startWechat(): void {
       return
     }
     if (busy.has(sessionId)) {
-      await sendText(fromUser, '上一条还在处理中，稍等…')
+      // 任务进行中又收到消息：若是「等一下/停/暂停/stop」之类，中断当前任务并反馈；否则照旧提示稍等。
+      if (isStopCommand(text)) {
+        controllers.get(sessionId)?.abort()
+        await sendText(fromUser, '🛑 已停止当前任务。')
+      } else {
+        await sendText(fromUser, '上一条还在处理中，稍等…（发「停」可中断）')
+      }
       return
     }
     busy.add(sessionId)
+    const controller = new AbortController()
+    controllers.set(sessionId, controller)
     const history = sessions.get(sessionId)
     history.push({ role: 'user', content: text })
     try {
       let said = false
       const answers: string[] = []
-      for await (const out of runAgent(history, { apiKey: cfg.apiKey!, model: cfg.model, baseURL: cfg.baseURL, provider: cfg.provider })) {
+      for await (const out of runAgent(history, { apiKey: cfg.apiKey!, model: cfg.model, baseURL: cfg.baseURL, provider: cfg.provider, signal: controller.signal })) {
         if (out.type === 'text' && out.content.trim()) {
           await sendText(fromUser, out.content)
           answers.push(out.content)
@@ -162,10 +172,16 @@ export function startWechat(): void {
       logChat({ channel: 'wechat', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {
-      await sendText(fromUser, '⚠ 出错了: ' + (err?.message ?? String(err)))
-      logChat({ channel: 'wechat', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
+      // 用户主动叫停：已在叫停时反馈过「已停止」，这里只记日志，不再回报“出错”。
+      if (controller.signal.aborted) {
+        logChat({ channel: 'wechat', sessionId, question: text, answer: '[已中断]' })
+      } else {
+        await sendText(fromUser, '⚠ 出错了: ' + (err?.message ?? String(err)))
+        logChat({ channel: 'wechat', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
+      }
     } finally {
       busy.delete(sessionId)
+      controllers.delete(sessionId)
     }
   }
 

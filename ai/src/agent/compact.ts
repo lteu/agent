@@ -48,9 +48,14 @@ function renderForSummary(m: ChatMessage): string {
  *   cut 会对齐到 user 边界，避免把 assistant(tool_calls) 与其 tool 结果拆散。
  * 失败时（模型报错等）静默返回 false，让上层继续用原历史，绝不因压缩失败而中断主流程。
  */
-export async function compactInPlace(history: ChatMessage[], deps: CompactDeps): Promise<boolean> {
+export async function compactInPlace(
+  history: ChatMessage[],
+  deps: CompactDeps,
+  opts: { force?: boolean } = {},
+): Promise<boolean> {
+  // force=true：不看阈值，直接尝试压缩（用于「API 报上下文超长」后的被动补救）。
   const threshold = deps.compactThreshold ?? 40000
-  if (estimateTokens(history) < threshold) return false
+  if (!opts.force && estimateTokens(history) < threshold) return false
 
   const keepRecent = deps.keepRecent ?? 12
   const hasSystem = history[0]?.role === 'system'
