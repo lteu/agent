@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Loop 三方对比 · v2（ai 进化后）· Claude Code vs OpenClaw vs ai</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d2129; --ink:#e6e9ef; --muted:#9aa3b2;
+    --cc:#d97757; --oc:#5b9bd5; --ai:#5fb878; --line:#2a2f3a; --warn:#e0b341; --new:#a679f0;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;
+    line-height:1.7;font-size:15px}
+  .wrap{max-width:1140px;margin:0 auto;padding:48px 24px 96px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:.5px}
+  .sub{color:var(--muted);margin:0 0 8px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:28px}
+  h2{font-size:21px;margin:52px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:26px 0 10px}
+  code,.fn{font-family:var(--mono);font-size:.86em;background:#0b0d11;border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;color:#cbd3e1}
+  .fn.cc{color:var(--cc);border-color:#42302a}
+  .fn.oc{color:var(--oc);border-color:#28384a}
+  .fn.ai{color:var(--ai);border-color:#26402f}
+  p{margin:10px 0}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .card.cc{border-top:3px solid var(--cc)}
+  .card.oc{border-top:3px solid var(--oc)}
+  .card.ai{border-top:3px solid var(--ai)}
+  .tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 10px;border-radius:20px;margin-bottom:8px}
+  .tag.cc{background:#3a2620;color:var(--cc)}
+  .tag.oc{background:#1d2c3c;color:var(--oc)}
+  .tag.ai{background:#1c2e22;color:var(--ai)}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:600}
+  th.cc{color:var(--cc)} th.oc{color:var(--oc)} th.ai{color:var(--ai)}
+  td.feat{color:var(--muted);font-weight:600;background:#13161c;white-space:nowrap}
+  .flow{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 0;margin:14px 0}
+  .step{display:flex;gap:14px;padding:11px 20px;border-bottom:1px dashed var(--line)}
+  .step:last-child{border-bottom:none}
+  .step .n{flex:0 0 26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:12px}
+  .step.cc .n{background:#3a2620;color:var(--cc)}
+  .step.oc .n{background:#1d2c3c;color:var(--oc)}
+  .step.ai .n{background:#1c2e22;color:var(--ai)}
+  .step .body{flex:1}
+  .step .t{font-weight:600;margin-bottom:2px}
+  .step .d{color:var(--muted);font-size:13.5px}
+  .callout{background:#13161c;border-left:3px solid var(--warn);border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:16px 0;color:#dfe4ec}
+  .callout b{color:var(--warn)}
+  .callout.new{border-left-color:var(--new)}
+  .callout.new b{color:var(--new)}
+  .src{font-family:var(--mono);font-size:12px;color:#6b7585}
+  .legend{display:flex;gap:24px;flex-wrap:wrap;margin:10px 0 0}
+  .legend span{font-size:13px;color:var(--muted)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  .dot.cc{background:var(--cc)} .dot.oc{background:var(--oc)} .dot.ai{background:var(--ai)}
+  hr{border:none;border-top:1px solid var(--line);margin:40px 0}
+  .foot{color:var(--muted);font-size:12.5px;margin-top:40px}
+  pre.code{font-family:var(--mono);font-size:12px;line-height:1.55;background:#0b0d11;
+    border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;
+    margin:10px 0;color:#cdd6e4;white-space:pre}
+  pre.code.cc{border-left:3px solid var(--cc)}
+  pre.code.oc{border-left:3px solid var(--oc)}
+  pre.code.ai{border-left:3px solid var(--ai)}
+  pre.code .kw{color:#c678dd}
+  pre.code .fnn{color:#61afef;font-style:normal}
+  pre.code .vr{color:#e0b341}
+  pre.code .st{color:#98c379}
+  pre.code .cm{color:#5c6675;font-style:italic}
+  pre.code .sr{color:#4a5263;font-size:.9em}
+  pre.code .hl{background:#1c2e22;border-radius:3px;padding:0 2px}
+  .scale{display:flex;align-items:center;gap:10px;margin:6px 0}
+  .scale .lbl{flex:0 0 120px;color:var(--muted);font-size:13px}
+  .bar{flex:1;height:14px;background:#0b0d11;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .bar i{display:block;height:100%}
+  .bar i.cc{background:var(--cc)} .bar i.oc{background:var(--oc)} .bar i.ai{background:var(--ai)}
+  .num{flex:0 0 90px;text-align:right;color:var(--muted);font-size:12.5px;font-family:var(--mono)}
+  .lead{font-size:16px}
+  .vpill{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.4px;padding:2px 9px;border-radius:20px;
+    background:#241b33;color:var(--new);border:1px solid #3a2c52;vertical-align:middle;margin-left:8px}
+  .delta{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:4px;
+    background:#1c2e22;color:var(--ai);border:1px solid #26402f;margin-left:6px}
+  .was{color:#6b7585;text-decoration:line-through;font-size:.92em}
+  .upgrade{background:linear-gradient(180deg,#19211b,#171a21);border:1px solid #26402f;border-left:3px solid var(--ai);
+    border-radius:10px;padding:14px 18px;margin:10px 0}
+  .upgrade .h{font-weight:700;color:var(--ai);margin-bottom:4px}
+  .upgrade .h .n{color:var(--muted);font-weight:600;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Agent Loop 三方对比 <span class="vpill">v2 · ai 进化后</span></h1>
+  <p class="sub">同一个「模型 ↔ 工具反复交互」内核——但 <code>ai</code> 这轮把 v1 标记的「可借鉴项」真的实现了：流式调用、流式并发工具、上下文压缩、一整套 IDE 级工具。</p>
+  <p class="meta">对象：<code>claudecode</code>（泄露源码）· <code>openclaw-2026.3.23</code>（内核代号 <b>Pi</b>）· <code>ai/</code>（本项目）· v2 生成日期：2026-06-24（v1：2026-06-23）</p>
+  <div class="legend">
+    <span><i class="dot cc"></i>Claude Code — 软件工程 CLI，<code>claudecode/query.ts</code>（~1730 行单循环）</span>
+    <span><i class="dot oc"></i>OpenClaw — 多渠道私人助理，<code>src/agents/pi-embedded-runner/run.ts</code>（~1716 行编排壳）</span>
+    <span><i class="dot ai"></i>ai — 你的本地编码 agent，<code>ai/src/agent/engine.ts</code>（178 行）+ <code>compact.ts</code>（103 行）</span>
+  </div>
+
+  <!-- ============ 本版变化 ============ -->
+  <h2>v1 → v2：<span class="fn ai">ai</span> 这轮补上了什么</h2>
+  <p>v1 的结论是「ai 把循环还原成最朴素的样子，并按性价比挑 ①②④⑤ 来抄」。v2 已落地其中四项——而且<b>没有牺牲可读性</b>：循环主体仍是一个 <code>for</code> 生成器，只是从 85 行长到 178 行。</p>
+
+  <div class="upgrade">
+    <div class="h">① 模型调用：非流式 → 流式 <span class="n">llm.ts · streamCompletion</span></div>
+    <p style="margin:6px 0 0">新写的 <code>streamCompletion</code> 边收 SSE 边产出：<code>content</code> 片段实时吐 <code>delta</code>；并且能解析 <b>tool_calls 的增量</b>，在某个工具参数刚拼完整时立刻把它作为一次工具调用产出（依据「出现更大的 tool index」或「流结束」判定）。</p>
+  </div>
+  <div class="upgrade">
+    <div class="h">③ 工具执行：顺序 await → 流式并发 <span class="n">engine.ts · StreamingToolExecutor</span></div>
+    <p style="margin:6px 0 0">拿到一个工具调用就 <code>add()</code> 立即开跑（不 await），把 Promise 记下；本轮流结束后 <code>drain()</code> 按提交顺序回收结果。效果 = <b>模型还在吐后续 token / 后续工具调用时，先到的工具已经在并发执行</b>——这正是 Claude Code 的 StreamingToolExecutor 思路。</p>
+  </div>
+  <div class="upgrade">
+    <div class="h">② 上下文压缩：只会丢最旧 → 模型总结式 autocompact <span class="n">agent/compact.ts</span></div>
+    <p style="margin:6px 0 0">每轮开头 <code>compactInPlace</code>：估算 token 超阈值（默认 40k）时，调一次模型把较旧那段历史<b>总结成一条摘要</b>，就地 <code>splice</code> 替换，只完整保留 system 与最近若干条；cut 对齐到 user 边界，绝不拆散 <code>assistant(tool_calls)</code> 与其 <code>tool</code> 结果。压缩失败静默回退，不影响主流程。</p>
+  </div>
+  <div class="upgrade">
+    <div class="h">⑤ 内置工具：6 个 → IDE 级一整套 <span class="n">tools.ts</span></div>
+    <p style="margin:6px 0 0">新增 <code>edit_file</code>(精确替换) · <code>glob</code> · <code>grep</code> · <code>web_fetch</code> · <code>run_agent</code>(子 agent)，与原有 <code>write/read/list/bash/email/stock</code> 合并，凑齐了 <b>Bash/Edit/Read/Write/Glob/Grep/Agent/Web</b> 这条 Claude Code 同款主线。</p>
+  </div>
+
+  <div class="callout new">
+    <b>仍未补（且有意不补）：</b> 模型回退（单 provider，失败即抛）、逐工具权限闸（场景是单可信用户，系统提示直言「你有权限」）、多 provider 抽象层。
+    这几项是为「无人值守 / 多模型 / 严格权限」付的税，ai 的场景用不上——继续留白以保住可读性。
+  </div>
+
+  <!-- ============ 一句话结论 ============ -->
+  <h2>一句话结论（v2）</h2>
+  <div class="grid3">
+    <div class="card cc">
+      <span class="tag cc">Claude Code</span>
+      <p class="lead">把循环本身做成产品。</p>
+      <p>一个 <code>while(true)</code> 生成器里塞进了全部上下文工程与容错：多级压缩、模型回退、流式工具并发、对超长/超 token 的逐级恢复。终止有七八种 <code>reason</code>。</p>
+    </div>
+    <div class="card oc">
+      <span class="tag oc">OpenClaw</span>
+      <p class="lead">自己不写循环，而是包住一个循环。</p>
+      <p>真正的「模型↔工具」迭代交给内嵌引擎 <code>@mariozechner/pi-coding-agent</code>；<code>run.ts</code> 是它外面的<b>调度壳</b>：会话队列、密钥轮换、模型回退、溢出补偿、多聊天渠道。</p>
+    </div>
+    <div class="card ai">
+      <span class="tag ai">ai（v2）</span>
+      <p class="lead">朴素循环 + 三样关键升级，仍一眼读懂。</p>
+      <p>同一个 <code>for (step&lt;25)</code> 生成器，现在每轮：<b>压缩历史 → 流式调模型 → 工具边流边并发跑 → 按序回灌</b>。把 Claude Code 最值钱的三招（流式 / 流式并发 / 压缩）摘了过来，省下其余 1500 行的税。</p>
+    </div>
+  </div>
+  <div class="callout">
+    <b>同源，差距缩小。</b> 三者内核仍完全一致——<i>发消息 → 模型要么回话要么调工具 → 执行工具 → 结果塞回 → 再发</i>。
+    v1 里 ai 与 Claude Code 的差距在「流式 / 并发 / 压缩」三处最扎眼；v2 后这三处已对齐<u>机制</u>（只是层数更少、没有逐级恢复闸）。剩余差距主要是容错深度（模型回退、超长恢复、权限）。
+  </div>
+
+  <!-- ============ 核心循环并排 ============ -->
+  <h2>核心循环（伪代码并排）</h2>
+
+  <h3><span class="fn ai">ai · v2</span> · 仍是一个 for 循环，但每轮多了压缩 / 流式 / 并发三件事</h3>
+  <pre class="code ai"><span class="kw">for</span> (<span class="kw">let</span> step = 0; step &lt; maxSteps; step++) {            <span class="cm">// 默认 25 步封顶</span>
+  <span class="hl"><span class="kw">await</span> <span class="fnn">compactInPlace</span>(history, deps)</span>                  <span class="cm">// ① 超阈值→模型总结式压缩（就地 splice，保留 system+近况）</span>
+
+  <span class="kw">const</span> exec = <span class="kw">new</span> <span class="fnn">StreamingToolExecutor</span>(execTool)     <span class="cm">// 拿到工具就立即开跑的执行器</span>
+  <span class="kw">const</span> stream = <span class="fnn">streamCompletion</span>(history, { tools })  <span class="cm">// ② 流式：content + tool_calls 都是增量</span>
+
+  <span class="kw">for await</span> (<span class="kw">const</span> part <span class="kw">of</span> stream) {
+    <span class="kw">if</span> (part.type === <span class="st">'text'</span>) <span class="kw">yield</span> { type:<span class="st">'delta'</span>, content: part.delta }  <span class="cm">// 文本边流边出（终端打字机）</span>
+    <span class="kw">else</span> { <span class="kw">yield</span> { type:<span class="st">'tool'</span>, … }; <span class="hl">exec.<span class="fnn">add</span>(part.call)</span> }            <span class="cm">// ③ 参数一拼完整就并发开跑</span>
+  }
+  <span class="kw">const</span> { content, toolCalls } = stream.<span class="vr">return</span>      <span class="cm">// 生成器返回值 = 组装好的整轮结果</span>
+  history.<span class="fnn">push</span>({ role:<span class="st">'assistant'</span>, content, tool_calls: toolCalls })
+
+  <span class="kw">if</span> (!exec.size) <span class="kw">return</span>                            <span class="cm">// ← 没有工具调用 = 最终答复，结束</span>
+
+  <span class="kw">for await</span> (<span class="kw">const</span> { call, result } <span class="kw">of</span> <span class="hl">exec.<span class="fnn">drain</span>()</span>)   <span class="cm">// 回收并发结果（多半早已跑完），按序回灌</span>
+    history.<span class="fnn">push</span>({ role:<span class="st">'tool'</span>, tool_call_id: call.id, content: result })
+}
+<span class="kw">yield</span> { type:<span class="st">'text'</span>, content: <span class="st">`[已达最大步数 ${maxSteps}，停止]`</span> }   <span class="cm">// 兜底</span>
+<span class="sr">ai/src/agent/engine.ts:90 · llm.ts:streamCompletion · agent/compact.ts</span></pre>
+
+  <h3><span class="fn cc">Claude Code</span> · 同一个循环，外加每轮的上下文工程与逐级恢复</h3>
+  <pre class="code cc"><span class="kw">while</span> (<span class="kw">true</span>) {                                       <span class="cm">// queryLoop —— 单一长循环，靠 state 在迭代间传递</span>
+  messages = <span class="fnn">applyToolResultBudget</span>(messages)          <span class="cm">// ① 工具结果按 tool_use_id 限额裁剪</span>
+  messages = <span class="fnn">snipCompact</span>(messages)                     <span class="cm">// ② 轻量删减</span>
+  messages = <span class="kw">await</span> <span class="fnn">microcompact</span>(messages)             <span class="cm">// ③ 微压缩（编辑缓存，不重发）</span>
+  messages = <span class="fnn">applyCollapses</span>(messages)                  <span class="cm">// ④ context-collapse 投影视图</span>
+  ({ compactionResult } = <span class="kw">await</span> <span class="fnn">autocompact</span>(messages)) <span class="cm">// ⑤ 模型总结式压缩 ← ai 的压缩对标这一层</span>
+  <span class="kw">if</span> (<span class="fnn">atBlockingLimit</span>()) <span class="kw">return</span> {reason:<span class="st">'blocking_limit'</span>}
+
+  <span class="kw">for await</span> (msg <span class="kw">of</span> <span class="fnn">callModel</span>({messages, tools, fallbackModel})) {
+     <span class="fnn">withhold</span>(可恢复错误)                            <span class="cm">// 暂扣 prompt-too-long / max-output-tokens</span>
+     streamingToolExecutor.<span class="fnn">addTool</span>(toolBlock)        <span class="cm">// ⑥ 工具在「流式过程中」就开跑 ← ai 的 StreamingToolExecutor 对标这一招</span>
+  }                                                  <span class="cm">// FallbackTriggeredError → 换模型重试整轮</span>
+
+  <span class="kw">if</span> (!needsFollowUp) {                              <span class="cm">// 模型没要工具 → 准备收尾，但先过一串恢复闸</span>
+     <span class="kw">if</span> (withheld413)   { <span class="fnn">collapseDrain</span>() ?? <span class="fnn">reactiveCompact</span>(); <span class="kw">continue</span> }
+     <span class="kw">if</span> (maxOutputTok)  { 8k→64k <span class="fnn">escalate</span> ?? <span class="fnn">注入恢复消息</span>; <span class="kw">continue</span> }
+     <span class="kw">if</span> (<span class="fnn">stopHook</span>.blocks) { <span class="kw">continue</span> }                    <span class="cm">// stop-hook 可挡住收尾</span>
+     <span class="kw">if</span> (<span class="fnn">tokenBudget</span>.continue) { <span class="kw">continue</span> }              <span class="cm">// +500k 自动续跑</span>
+     <span class="kw">return</span> {reason:<span class="st">'completed'</span>}
+  }
+  <span class="kw">for await</span> (r <span class="kw">of</span> <span class="fnn">runTools</span>(blocks, canUseTool)) <span class="kw">yield</span> r  <span class="cm">// 权限闸 canUseTool 逐个放行 ← ai 仍无此闸</span>
+}
+<span class="sr">claudecode/query.ts:241（queryLoop）</span></pre>
+
+  <div class="callout">
+    <b>v2 后的对位关系。</b> ai 的 <code>compactInPlace</code> ≈ CC 的 <code>autocompact</code>（仅这一层，没有 budget/snip/micro/collapse 那四层前置裁剪）；
+    ai 的 <code>StreamingToolExecutor</code> ≈ CC 的 <code>streamingToolExecutor.addTool</code>（机制相同，但 ai 无 <code>canUseTool</code> 权限闸、无 <code>withhold</code> 恢复）。
+    内核招式对齐，容错深度仍是 CC 厚得多。
+  </div>
+
+  <!-- ============ 逐维度对照表 ============ -->
+  <h2>逐维度对照（v2）</h2>
+  <p class="sub"><span class="delta">绿色</span> = 本版 ai 相比 v1 的变化。</p>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:150px">维度</th>
+        <th class="cc">Claude Code</th>
+        <th class="oc">OpenClaw</th>
+        <th class="ai">ai（v2）</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="feat">循环载体</td>
+        <td><code>while(true)</code> async generator，单文件 1730 行</td>
+        <td>外层「尝试」<code>while(true)</code>；真正 agent 循环在 Pi 引擎</td>
+        <td><code>for (step&lt;25)</code> async generator <span class="delta">178 行（v1: 85）</span></td>
+      </tr>
+      <tr>
+        <td class="feat">模型调用</td>
+        <td>流式（SSE），<code>callModel</code> 边流边产出</td>
+        <td>流式，由 Pi 引擎驱动；外层只看最终态</td>
+        <td><span class="delta">流式 <code>streamCompletion</code>：content + tool_calls 增量边解析边产出</span> <span class="was">（v1: 非流式 chatComplete）</span></td>
+      </tr>
+      <tr>
+        <td class="feat">协议</td>
+        <td>Anthropic Messages API（原生 content blocks）</td>
+        <td>多 provider（Anthropic / OpenAI / …，经 pi-ai 抽象）</td>
+        <td>任意 OpenAI 兼容 <code>/chat/completions</code>（默认 DeepSeek）</td>
+      </tr>
+      <tr>
+        <td class="feat">终止条件</td>
+        <td>无 tool_use + 过七八道恢复闸 → <code>reason: completed</code>，另有 blocking_limit / aborted / model_error / prompt_too_long…</td>
+        <td>Pi 内部正常结束；外层在溢出/认证/模型错误时重试，否则 <code>break</code></td>
+        <td>本轮无工具调用（<code>exec.size===0</code>）→ <code>return</code>；或 step 达 25 → 兜底文字</td>
+      </tr>
+      <tr>
+        <td class="feat">工具执行</td>
+        <td><b>流式并发</b>：StreamingToolExecutor 在模型仍在输出时就开跑；<code>canUseTool</code> 权限闸</td>
+        <td>由 Pi 引擎执行；openclaw 注入工具集 + before/after-tool-call 钩子</td>
+        <td><span class="delta"><b>流式并发</b>：StreamingToolExecutor，工具参数拼完即 <code>add()</code> 开跑，<code>drain()</code> 按序回收</span> <span class="was">（v1: 顺序 await）</span>；无权限闸</td>
+      </tr>
+      <tr>
+        <td class="feat">上下文压缩</td>
+        <td>五级：budget 裁剪 / snip / microcompact / context-collapse / 模型总结 autocompact</td>
+        <td>Pi 的 auto-compaction（按 contextTokens 上限）+ openclaw 显式 <code>compactEmbeddedPiSession</code> 重试补偿</td>
+        <td><span class="delta">两级：超 token 阈值 → 模型总结 <code>compactInPlace</code>（就地 splice）；+ <code>SessionStore.trim()</code> 超 60 条丢最旧</span> <span class="was">（v1: 仅 trim）</span></td>
+      </tr>
+      <tr>
+        <td class="feat">超长 / 超 token 恢复</td>
+        <td>逐级：collapse-drain → reactive compact；max-output 8k→64k 升档→注入恢复消息</td>
+        <td>contextOverflow → 压缩后整轮重试（带 diag 计数防死循环）</td>
+        <td><span class="delta">主动防膨胀：每轮开头按阈值压缩</span> + 25 步封顶兜底；无「报错后逐级恢复」</td>
+      </tr>
+      <tr>
+        <td class="feat">模型回退</td>
+        <td>有：<code>FallbackTriggeredError</code> 换 <code>fallbackModel</code> 重试整轮 + 清理孤儿消息</td>
+        <td>有：模型回退链 + 认证 profile 冷却轮换</td>
+        <td>无（仍是单 provider，失败即抛）</td>
+      </tr>
+      <tr>
+        <td class="feat">多会话 / 并发</td>
+        <td>子 agent（AgentTool）有独立 queryTracking 链；主循环单会话</td>
+        <td>会话级 + 全局级命令队列（lane）串行化；多聊天渠道并存</td>
+        <td><code>SessionStore</code> Map：私聊按用户、群按群各存一份历史<span class="delta">；新增 <code>run_agent</code> 子 agent（独立历史、深度上限 2）</span></td>
+      </tr>
+      <tr>
+        <td class="feat">扩展 / 钩子</td>
+        <td>post-sampling / stop / stop-failure hooks、MCP、技能预取、记忆预取</td>
+        <td>插件系统、MCP、before/after compaction & tool-call 钩子</td>
+        <td>channel 注入的 <code>extraTools</code>（如 QQ 的 <code>send_image</code>），无钩子</td>
+      </tr>
+      <tr>
+        <td class="feat">权限</td>
+        <td><code>canUseTool</code> 逐工具放行 + permission mode（含 plan 模式）</td>
+        <td>沙箱 / 工作区挂载路径限制 + 渠道白名单</td>
+        <td>无门禁——系统提示直言「你有权限操作设备，别推辞」</td>
+      </tr>
+      <tr>
+        <td class="feat">内置工具</td>
+        <td>Bash/Edit/Read/Write/Glob/Grep/Agent/Web… 一整套 IDE 级</td>
+        <td>编码工具 + 渠道消息工具（sendMessage 等）+ 记忆 / 搜索</td>
+        <td><span class="delta">Bash/Edit/Read/Write/Glob/Grep/Agent/Web 全套 + email / stock</span> <span class="was">（v1: 仅 write/read/list/bash/email/stock 六个）</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ============ 复杂度量表 ============ -->
+  <h2>复杂度量表（v2 · 数量级直觉）</h2>
+  <p class="sub">ai 的「循环主体行」从 85 涨到 178（engine 178 + compact 103 ≈ 281），仍是 CC/OC 的零头；但压缩与并发的「机制层数」明显追上来了。</p>
+  <div class="card" style="margin-top:14px">
+    <div class="scale"><span class="lbl">循环主体行数</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">~1730</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:99%"></i></div><span class="num">~1716</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:10%"></i></div><span class="num">178 (v1:85)</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">终止 / 恢复分支</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">多</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:55%"></i></div><span class="num">中</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:16%"></i></div><span class="num">少</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">上下文压缩层数</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">5 级</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:40%"></i></div><span class="num">2 级</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:40%"></i></div><span class="num">2 级 (v1:1)</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">工具执行模型</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">流式并发</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:100%"></i></div><span class="num">引擎并发</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:85%"></i></div><span class="num">流式并发 (v1:顺序)</span></div>
+  </div>
+  <p class="src">行数为对应文件粗略规模；OpenClaw 的 1716 行是「编排壳」，真正 agent 循环在外部 Pi 引擎里，故其内核复杂度被低估。</p>
+
+  <!-- ============ 同一请求的流程 ============ -->
+  <h2>同一请求下三者怎么跑（v2）</h2>
+  <p class="sub">请求：<b>「读一下 config.ts，然后把里面的端口改成 8080」</b>（需要：读文件 → 改文件，两轮工具）</p>
+
+  <div class="grid3">
+    <div>
+      <div class="flow">
+        <div class="step ai"><div class="n">1</div><div class="body"><div class="t">compactInPlace</div><div class="d">历史没超阈值 → 跳过</div></div></div>
+        <div class="step ai"><div class="n">2</div><div class="body"><div class="t">streamCompletion（流式）</div><div class="d">文本边出 delta；tool_call: read_file 参数拼完 → <b>立即 exec.add 开跑</b></div></div></div>
+        <div class="step ai"><div class="n">3</div><div class="body"><div class="t">drain 回收 + 回灌</div><div class="d">read_file 结果按序塞回 tool 消息</div></div></div>
+        <div class="step ai"><div class="n">4</div><div class="body"><div class="t">streamCompletion</div><div class="d">这轮改用 edit_file 精确替换端口 → add → drain</div></div></div>
+        <div class="step ai"><div class="n">5</div><div class="body"><div class="t">streamCompletion</div><div class="d">无 toolCalls（exec.size===0）→ <b>return</b></div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot ai"></i>ai v2：流式 + 工具边流边跑，改文件用 edit_file 而非整篇重写</p>
+    </div>
+
+    <div>
+      <div class="flow">
+        <div class="step cc"><div class="n">1</div><div class="body"><div class="t">压缩 5 件套 + 预取</div><div class="d">budget/snip/micro/collapse/autocompact</div></div></div>
+        <div class="step cc"><div class="n">2</div><div class="body"><div class="t">流式 callModel</div><div class="d">Read 工具边流边执行</div></div></div>
+        <div class="step cc"><div class="n">3</div><div class="body"><div class="t">canUseTool 放行</div><div class="d">Edit 命中权限 → 经确认后写入</div></div></div>
+        <div class="step cc"><div class="n">4</div><div class="body"><div class="t">收尾闸</div><div class="d">stop-hook / token-budget 检查</div></div></div>
+        <div class="step cc"><div class="n">5</div><div class="body"><div class="t">reason: completed</div><div class="d">每轮都重跑全部压缩与恢复检查</div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot cc"></i>Claude Code：同样两轮工具，外裹上下文工程</p>
+    </div>
+
+    <div>
+      <div class="flow">
+        <div class="step oc"><div class="n">1</div><div class="body"><div class="t">入队（会话+全局 lane）</div><div class="d">保证同会话不并发</div></div></div>
+        <div class="step oc"><div class="n">2</div><div class="body"><div class="t">runEmbeddedPiSession</div><div class="d">Pi 引擎内部跑完读→改两轮</div></div></div>
+        <div class="step oc"><div class="n">3</div><div class="body"><div class="t">attempt 返回</div><div class="d">检查溢出 / 认证 / 模型错误</div></div></div>
+        <div class="step oc"><div class="n">4</div><div class="body"><div class="t">无异常 → break</div><div class="d">否则压缩/换 key/换模型后重试</div></div></div>
+        <div class="step oc"><div class="n">5</div><div class="body"><div class="t">BlockChunker 整流</div><div class="d">只把最终回复推给聊天渠道</div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot oc"></i>OpenClaw：循环细节被 Pi 封装，外层管调度</p>
+    </div>
+  </div>
+
+  <div class="callout new">
+    <b>关键差异点的演化。</b> v1 里 ai 的流程是「读→改」两轮纯顺序、无压缩、整篇 write_file 覆盖；
+    v2 后变成「流式产出 + 工具边流边并发 + 改文件用 edit_file 精确替换 + 每轮先按阈值压缩」。
+    流程图的步数没变（仍 5 步），但每一步内部的工程含量，已经从「裸调用」升到「带流式与压缩的小型 agent loop」。
+  </div>
+
+  <!-- ============ 还能再做什么 ============ -->
+  <h2>v2 之后，<span class="fn ai">ai</span> 还剩哪些可选项</h2>
+  <p>v1 清单里的 ①②③⑤ 已落地（流式 / 压缩 / 工具结果可在压缩里间接收敛 / 并发 / 工具集）。剩下两项按性价比：</p>
+  <table>
+    <thead><tr><th style="width:170px">改进点</th><th>现状</th><th>可借鉴谁 · 怎么做</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="feat">④ 模型回退</td>
+        <td>单一 provider，请求失败直接抛错（流式与非流式都是）</td>
+        <td><span class="fn oc">OC</span> 的回退链：主模型 5xx/限流时自动切备用 <code>baseURL/model</code>，对多 provider 配置天然契合。流式下需处理「已吐一半再切」的清理。</td>
+      </tr>
+      <tr>
+        <td class="feat">⑥ 会话串行</td>
+        <td>QQ/微信已用 <code>busy</code> 集挡住同会话并发；但仅「拒绝」而非「排队」</td>
+        <td><span class="fn oc">OC</span> 的 lane 队列：给每个 session 一把串行锁<u>排队</u>执行，而非直接回「上一条还在处理中」。</td>
+      </tr>
+      <tr>
+        <td class="feat">＋ 工具结果总预算</td>
+        <td>单个结果截到 20000 字符；多个大结果叠加仍可能偏大（压缩会兜底但偏被动）</td>
+        <td><span class="fn cc">CC</span> 的 <code>applyToolResultBudget</code>：对「聚合后」的工具结果设总预算，比逐个截断更稳。</td>
+      </tr>
+      <tr>
+        <td class="feat">＋ 只读工具真并发收益验证</td>
+        <td>StreamingToolExecutor 已并发；但若 provider 把 tool_calls 一次性吐出，并发收益取决于工具自身耗时</td>
+        <td>对 <code>read_file/glob/grep/web_fetch</code> 这类无副作用、可能慢的只读工具，并发收益最大——已天然受益于现机制。</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <b>取舍没变，只是天平更靠中间了。</b> ai 依然不打算抄 Claude Code 那 1730 行的全部容错；
+    但 v2 证明：流式、流式并发、总结式压缩这三招，<u>各自只要几十行</u>就能落进一个仍然「一眼读懂」的循环里。剩下的 ④⑥ 属于「多 provider / 多并发会话」才需要的税，按需再加。
+  </div>
+
+  <p class="foot">
+    依据源码：<code>ai/src/agent/engine.ts</code>（runAgent + StreamingToolExecutor）、<code>ai/src/agent/compact.ts</code>、<code>ai/src/llm.ts</code>（streamCompletion）、<code>ai/src/tools.ts</code>、<code>ai/src/agent/session.ts</code>；
+    <code>claudecode/query.ts</code>（queryLoop）；<code>openclaw-2026.3.23/src/agents/pi-embedded-runner/run.ts</code> 及 <code>compact.ts</code>。
+    OpenClaw 的真正 agent 循环位于其依赖 <code>@mariozechner/pi-agent-core / pi-coding-agent</code>（本仓库未安装 node_modules，故按其调用壳与文档行为描述）。
+    本页为 v2，与 v1（<code>对比-agent-loop-三方.html</code>）并存、未覆盖原文件。
+  </p>
+
+</div>
+</body>
+</html>
