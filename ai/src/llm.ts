@@ -76,6 +76,124 @@ export async function chatComplete(
   }
 }
 
+// 流式补全产出的事件：文本增量，或「已组装完整」的一次工具调用。
+// tool 事件在该工具的参数刚拼完整时立刻产出（不必等整段流结束）——
+// 这正是上层 StreamingToolExecutor「模型还在输出就开跑」的前提。
+export type StreamPart =
+  | { type: 'text'; delta: string }
+  | { type: 'tool'; call: RawToolCall }
+
+/**
+ * 流式补全，支持 function calling。
+ * 边收 SSE 边产出：content 片段实时吐出；每个 tool_call 的参数一旦拼完整，
+ * 立即作为 { type:'tool' } 产出（依据「出现更大的 tool index」或「流结束」判定完整）。
+ * 生成器的「返回值」是组装好的整轮结果 { content, toolCalls }，供上层落历史。
+ */
+export async function* streamCompletion(
+  messages: ChatMessage[],
+  opts: StreamOptions & { tools?: readonly unknown[] },
+): AsyncGenerator<StreamPart, Completion, unknown> {
+  const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
+  const res = await fetch(`${baseURL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${opts.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: opts.model,
+      messages,
+      stream: true,
+      ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
+    }),
+    signal: opts.signal,
+  })
+
+  if (!res.ok || !res.body) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
+  }
+
+  // 按 index 累积各工具调用的 id/name/arguments 片段。
+  const acc = new Map<number, { id: string; name: string; args: string }>()
+  const emitted = new Set<number>()
+  let maxIndex = -1
+  let content = ''
+
+  // 产出所有 index < upto（'all' 表示全部）且尚未产出的、已完整的工具调用。
+  function* flush(upto: number | 'all'): Generator<StreamPart> {
+    for (const idx of [...acc.keys()].sort((a, b) => a - b)) {
+      if (emitted.has(idx)) continue
+      if (upto !== 'all' && idx >= upto) continue
+      const t = acc.get(idx)!
+      emitted.add(idx)
+      yield {
+        type: 'tool',
+        call: { id: t.id || `call_${idx}`, type: 'function', function: { name: t.name, arguments: t.args } },
+      }
+    }
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let nl: number
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim()
+      buffer = buffer.slice(nl + 1)
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (payload === '[DONE]') break
+      let json: any
+      try {
+        json = JSON.parse(payload)
+      } catch {
+        continue // 不完整片段，忽略
+      }
+      const delta = json?.choices?.[0]?.delta
+      if (!delta) continue
+      if (typeof delta.content === 'string' && delta.content) {
+        content += delta.content
+        yield { type: 'text', delta: delta.content }
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx: number = tc.index ?? 0
+          let cur = acc.get(idx)
+          if (!cur) {
+            cur = { id: '', name: '', args: '' }
+            acc.set(idx, cur)
+          }
+          if (tc.id) cur.id = tc.id
+          if (tc.function?.name) cur.name += tc.function.name
+          if (typeof tc.function?.arguments === 'string') cur.args += tc.function.arguments
+          if (idx > maxIndex) {
+            maxIndex = idx
+            yield* flush(idx) // 更大的 index 出现 → 之前的都已完整，立刻放行
+          }
+        }
+      }
+    }
+  }
+
+  yield* flush('all') // 流结束 → 放行剩余工具调用
+
+  const toolCalls: RawToolCall[] = [...acc.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([idx, t]) => ({
+      id: t.id || `call_${idx}`,
+      type: 'function',
+      function: { name: t.name, arguments: t.args },
+    }))
+  return { content, toolCalls }
+}
+
 /**
  * 向模型发送一轮对话，逐段产出助手回复文本（增量）。
  * 用法：for await (const delta of streamChat(messages, opts)) { ... }

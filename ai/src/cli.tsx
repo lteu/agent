@@ -380,6 +380,8 @@ function App() {
   const { exit } = useApp()
   const [apiKey, setApiKey] = useState<string | undefined>(config.apiKey)
   const [messages, setMessages] = useState<UIMessage[]>([])
+  // 正在流式输出的助手草稿：实时打字机效果，定稿后并入 messages（Static）并清空。
+  const [streaming, setStreaming] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastCtrlC = useRef(0)
@@ -427,11 +429,18 @@ function App() {
           provider: config.provider,
           signal: controller.signal,
         })) {
-          if (ev.type === 'text') {
+          if (ev.type === 'delta') {
+            // 流式增量：累进到草稿区，先不落 Static。
+            setStreaming(prev => prev + ev.content)
+          } else if (ev.type === 'text') {
+            // 一段文本定稿：并入 Static 历史，清空草稿。
             const mid = ++idRef.current
             setMessages(prev => [...prev, { id: mid, role: 'assistant', content: ev.content }])
+            setStreaming('')
             answers.push(ev.content)
           } else {
+            // 工具进度：定稿前文本已先行 flush，这里草稿应已为空，稳妥起见再清一次。
+            setStreaming('')
             const mid = ++idRef.current
             setMessages(prev => [...prev, { id: mid, role: 'tool', content: ev.summary }])
           }
@@ -448,6 +457,7 @@ function App() {
         }
       } finally {
         setBusy(false)
+        setStreaming('')
         abortRef.current = null
       }
     },
@@ -494,6 +504,13 @@ function App() {
           )
         }
       </Static>
+
+      {/* 流式草稿 — 助手正在打字（定稿后并入上方 Static 历史并清空） */}
+      {streaming && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text>{streaming}</Text>
+        </Box>
+      )}
 
       {/* 正在工作 */}
       {busy && (
