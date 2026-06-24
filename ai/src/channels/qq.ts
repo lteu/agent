@@ -243,6 +243,9 @@ export function startQQ(): void {
           await sendReply(target, msgId, out.content)
           answers.push(out.content)
           said = true
+        } else if (out.type === 'limit') {
+          await sendReply(target, msgId, `⏸ 已连续执行 ${out.steps} 步仍未结束。回复「继续」可接着跑。`)
+          said = true
         }
       }
       if (!said) await sendReply(target, msgId, '(已完成，无文字输出)')

@@ -445,6 +445,14 @@ function App() {
             setMessages(prev => [...prev, { id: mid, role: 'assistant', content: ev.content }])
             setStreaming('')
             answers.push(ev.content)
+          } else if (ev.type === 'limit') {
+            // 撞到步数上限：提示而非硬停，回复「继续」即可再跑一轮。
+            setStreaming('')
+            const mid = ++idRef.current
+            setMessages(prev => [
+              ...prev,
+              { id: mid, role: 'tool', content: `⏸ 已连续执行 ${ev.steps} 步仍未结束。回复「继续」可再跑一轮。` },
+            ])
           } else {
             // 工具进度：定稿前文本已先行 flush，这里草稿应已为空，稳妥起见再清一次。
             setStreaming('')
@@ -616,7 +624,9 @@ if (argv[0] === 'serve') {
   const { startWatch } = await import('./channels/watch.js')
   startWatch()
 } else {
-  const instance = render(<App />)
+  // exitOnCtrlC: false —— 关掉 Ink 内置的「Ctrl+C 即退出」，把控制权交给 useInput，
+  // 否则第一次 Ctrl+C 就被 Ink 直接退出了，下面的「连按两次才退出」逻辑根本来不及生效。
+  const instance = render(<App />, { exitOnCtrlC: false })
 
   const bail = (label: string) => (err: unknown) => {
     const logPath = writeCrash(label, err)

@@ -24,6 +24,8 @@ export type AgentEvent =
   // 一整段助手文本（一轮里 content 的最终态）：channel/日志按段消费。
   | { type: 'text'; content: string }
   | { type: 'tool'; name: string; summary: string }
+  // 撞到最大步数：不直接结束，而是问一句「要不要继续」，由消费方提示用户回复「继续」接着跑。
+  | { type: 'limit'; steps: number }
 
 /** 由具体 channel 注入的额外工具（如 QQ 的 send_image），与内置工具合并提供给模型。 */
 export type ExtraTools = {
@@ -72,7 +74,7 @@ export async function* runAgent(
   history: ChatMessage[],
   deps: EngineDeps,
 ): AsyncGenerator<AgentEvent, void, unknown> {
-  const maxSteps = deps.maxSteps ?? 25
+  const maxSteps = deps.maxSteps ?? 200
   const extraNames = new Set((deps.extraTools?.schemas ?? []).map(s => s.function.name))
   const tools = [...TOOL_SCHEMAS, ...(deps.extraTools?.schemas ?? [])]
 
@@ -206,7 +208,9 @@ export async function* runAgent(
     return // 正常完成
   }
 
-  yield { type: 'text', content: `[已达最大步数 ${maxSteps}，停止]` }
+  // 没有 return 而是走到这里 = 连跑 maxSteps 步仍未收尾。不硬停，问一句让用户决定。
+  // 历史此刻停在「工具结果已回灌」的干净状态，用户回复「继续」即作为新一轮自然接着跑。
+  yield { type: 'limit', steps: maxSteps }
 }
 
 /** 判断一个错误是不是「上下文/提示超长」类（用于触发被动压缩重试）。 */

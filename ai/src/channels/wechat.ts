@@ -166,6 +166,9 @@ export function startWechat(): void {
           await sendText(fromUser, out.content)
           answers.push(out.content)
           said = true
+        } else if (out.type === 'limit') {
+          await sendText(fromUser, `⏸ 已连续执行 ${out.steps} 步仍未结束。回复「继续」可接着跑。`)
+          said = true
         }
       }
       if (!said) await sendText(fromUser, '(已完成，无文字输出)')
