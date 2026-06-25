@@ -14,6 +14,8 @@ export type QQConfig = {
   whitelist?: string[]
   /** 是否用沙箱环境（默认 false，走正式环境 api.sgroup.qq.com） */
   sandbox?: boolean
+  /** 语音回复用的本机 macOS `say` 音色名（如 Meijia / Flo / Tingting）。留空用系统默认。 */
+  voice?: string
 }
 
 export type WechatConfig = {
@@ -179,6 +181,7 @@ export function loadQQConfig(): QQConfig {
     secret: process.env.AI_QQ_SECRET || file.secret,
     whitelist: envWhitelist ?? file.whitelist ?? [],
     sandbox: process.env.AI_QQ_SANDBOX === '1' || file.sandbox || false,
+    voice: process.env.AI_QQ_VOICE || file.voice,
   }
 }
 

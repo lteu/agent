@@ -21,11 +21,23 @@ import { isStopCommand } from './stopwords.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadQQConfig } from '../config.js'
+import { synthesizeWav } from '../tts.js'
 
 type Target = { kind: 'group'; id: string } | { kind: 'c2c'; id: string }
 
 const TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
 const GROUP_AND_C2C_INTENT = 1 << 25 // 33554432：群@消息 + 单聊消息
+
+// QQ 富媒体语音附件：QQ 侧已做好 ASR(asr_refer_text)，并给出 wav 链接(voice_wav_url)。
+type Attachment = { content_type?: string; asr_refer_text?: string; voice_wav_url?: string; url?: string }
+const isVoiceAtt = (x: Attachment): boolean =>
+  x.asr_refer_text != null || x.voice_wav_url != null || /voice|audio|silk|amr/i.test(x.content_type ?? '')
+const pickVoice = (attachments?: Attachment[]): Attachment | undefined => attachments?.find(isVoiceAtt)
+
+// 用户「明确要求用语音回复」的触发词：命中才合成语音回，否则一律文字回。
+const VOICE_REPLY_RE =
+  /语音(回复|回答|播报|说|讲)|用(语音|声音)(回|说|讲|答|播)|读给我听|念给我听|说给我听|voice\s*reply/i
+const wantsVoiceReply = (text: string): boolean => VOICE_REPLY_RE.test(text)
 
 // access_token 管理：带缓存，过期前自动续。
 class TokenManager {
@@ -168,6 +180,36 @@ export function startQQ(): void {
     return `已通过 QQ 发送图片：${source}`
   }
 
+  // 发语音：把 WAV 字节以 base64 上传富媒体(file_type:3)拿 file_info，再以 msg_type:3 被动回复。
+  // 与 sendImage 同一套「先传后发」流程，区别只在 file_type 和 msg_type。
+  async function sendVoice(target: Target, msgId: string, wav: Buffer): Promise<boolean> {
+    const up = await fetch(filesUrl(target), {
+      method: 'POST',
+      headers: await authHeader(),
+      body: JSON.stringify({ file_type: 3, file_data: wav.toString('base64'), srv_send_msg: false }),
+    })
+    const upJson: any = await up.json().catch(() => ({}))
+    if (!up.ok || !upJson.file_info) {
+      console.error(`发语音失败(上传阶段 HTTP ${up.status}): ${JSON.stringify(upJson).slice(0, 200)}`)
+      return false
+    }
+    const seq = (seqOf.get(msgId) ?? 0) + 1
+    seqOf.set(msgId, seq)
+    // 富媒体消息 msg_type 一律为 7（图片/语音/视频通用），用上传时的 file_type 区分类型。
+    const res = await fetch(msgUrl(target), {
+      method: 'POST',
+      headers: await authHeader(),
+      body: JSON.stringify({ msg_type: 7, media: { file_info: upJson.file_info }, msg_id: msgId, msg_seq: seq }),
+    })
+    const body = await res.text().catch(() => '')
+    if (!res.ok) {
+      console.error(`发语音失败(发送阶段 HTTP ${res.status}): ${body.slice(0, 200)}`)
+      return false
+    }
+    console.log(`🔊 已发送语音(${wav.length}B)`)
+    return true
+  }
+
   const SEND_IMAGE_SCHEMA = {
     type: 'function',
     function: {
@@ -184,15 +226,29 @@ export function startQQ(): void {
   } as const
 
   // 处理一条进来的消息（群@ 或 单聊）。
-  async function handleMessage(target: Target, senderOpenid: string, msgId: string, rawContent: string) {
-    const text = (rawContent ?? '').trim()
+  async function handleMessage(
+    target: Target,
+    senderOpenid: string,
+    msgId: string,
+    rawContent: string,
+    attachments?: Attachment[],
+  ) {
+    // 语音消息：QQ 已把转写放在 asr_refer_text，文本为空时用它作为输入。
+    const voiceAtt = pickVoice(attachments)
+    const asr = voiceAtt?.asr_refer_text?.trim()
+    let text = (rawContent ?? '').trim()
+    if (!text && asr) text = asr
 
     // 未授权：回显 openid 引导加白名单，绝不执行任何 agent 动作。
     if (!whitelist.has(senderOpenid)) {
       await sendReply(target, msgId, `⛔ 未授权。你的标识(openid)：\n${senderOpenid}\n授权请在机器上运行：\nai --qq-allow ${senderOpenid}`)
       return
     }
-    if (!text) return
+    if (!text) {
+      // 收到语音但 QQ 没给出转写：提示重试，避免静默吞掉。
+      if (voiceAtt) await sendReply(target, msgId, '🎤 没太听清这条语音，能再说一遍或直接打字吗？')
+      return
+    }
 
     // 会话隔离：单聊按用户 openid，群聊按群 openid（同群共享上下文）。
     const sessionId = target.kind === 'group' ? `g:${target.id}` : `c:${target.id}`
@@ -222,8 +278,18 @@ export function startQQ(): void {
     const controller = new AbortController()
     controllers.set(sessionId, controller)
 
+    // 仅当用户在(语音/文字)消息里明确要求「用语音回复」时，才合成语音回；否则照常文字回。
+    const voiceReply = wantsVoiceReply(text)
+    console.log(`← [${target.kind}] ${voiceAtt ? '🎤语音' : '文字'} | 语音回复=${voiceReply} | "${text.slice(0, 40)}"`)
+
     const history = sessions.get(sessionId)
-    history.push({ role: 'user', content: text })
+    // 语音回复模式：模型本是纯文本助手，被要求「语音回复」会老实答「我不能语音」，
+    // 这句话再被合成成语音发出去就很荒诞。给它一句提示：文字会被自动转语音，
+    // 它具备语音能力，直接回答问题本身即可，别声称不能语音。
+    const agentInput = voiceReply
+      ? `${text}\n\n[系统提示：请直接、简洁地回答上面的问题本身。你的文字回答会被系统自动合成为语音发送给用户，因此你具备语音回复能力，切勿回复“没有语音能力/不能语音”之类的话。]`
+      : text
+    history.push({ role: 'user', content: agentInput })
     try {
       let said = false
       const answers: string[] = []
@@ -240,12 +306,25 @@ export function startQQ(): void {
       })) {
         // 官方被动回复对单条 msg_id 的回复条数有限制，所以只回「文字结果」，跳过工具进度噪音。
         if (out.type === 'text' && out.content.trim()) {
-          await sendReply(target, msgId, out.content)
+          // 语音模式：先攒着，循环结束再合成整段语音发一次（逐段合成会发出一串碎语音）。
+          if (!voiceReply) await sendReply(target, msgId, out.content)
           answers.push(out.content)
           said = true
         } else if (out.type === 'limit') {
           await sendReply(target, msgId, `⏸ 已连续执行 ${out.steps} 步仍未结束。回复「继续」可接着跑。`)
           said = true
+        }
+      }
+      // 语音回复：把整段答案合成语音发出；TTS/发送失败或被截断时回退/补发文字，保证用户拿得到内容。
+      if (voiceReply && answers.length) {
+        const full = answers.join('\n')
+        try {
+          const { wav, truncated } = await synthesizeWav(full, qq.voice)
+          const ok = await sendVoice(target, msgId, wav)
+          if (!ok || truncated) await sendReply(target, msgId, full)
+        } catch (e: any) {
+          console.error('TTS 合成失败，回退文字:', e?.message ?? e)
+          await sendReply(target, msgId, full)
         }
       }
       if (!said) await sendReply(target, msgId, '(已完成，无文字输出)')
@@ -336,6 +415,7 @@ export function startQQ(): void {
             d.author?.member_openid ?? '',
             d.id,
             d.content,
+            d.attachments,
           )
         } else if (t === 'C2C_MESSAGE_CREATE') {
           await handleMessage(
@@ -343,6 +423,7 @@ export function startQQ(): void {
             d.author?.user_openid ?? '',
             d.id,
             d.content,
+            d.attachments,
           )
         }
       }
