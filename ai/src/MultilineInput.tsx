@@ -128,7 +128,7 @@ export default function MultilineInput({ onSubmit, disabled, placeholder }: Prop
 
   return (
     <Box borderStyle="round" borderColor={disabled ? 'gray' : 'cyan'} paddingX={1}>
-      <Text color="cyan">{'› '}</Text>
+      <Text color={disabled ? 'gray' : 'cyan'} bold>{'❯ '}</Text>
       <Box flexGrow={1}>
         {value.length === 0 && !disabled ? (
           <Text>

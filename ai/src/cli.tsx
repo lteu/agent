@@ -320,30 +320,49 @@ const config = loadConfig()
 // ———————————————————————————————————————————————
 // 界面组件
 // ———————————————————————————————————————————————
-type UIMessage = { id: number; role: 'user' | 'assistant' | 'tool'; content: string }
+// role 说明：
+//   user           —— 用户输入
+//   assistant      —— 一整段助手文本（中断/兜底等少数场景）
+//   assistant-line —— 助手流式文本被「逐行沉淀」进历史的单行（动态区只留未完成的尾巴）
+//   tool           —— 工具进度
+// gap：该行底部是否留一行间距（段落收尾用）。
+type UIMessage = {
+  id: number
+  role: 'user' | 'assistant' | 'assistant-line' | 'tool'
+  content: string
+  gap?: boolean
+}
 
-// 单条消息行：memo 化，role/content 不变就不重绘。
-const MessageRow = memo(({ role, content }: { role: string; content: string }) => {
+// 单条消息行：memo 化，props 不变就不重绘。
+const MessageRow = memo(({ role, content, gap }: { role: string; content: string; gap?: boolean }) => {
   if (role === 'user') {
     return (
-      <Box flexDirection="column" marginBottom={1}>
+      <Box marginBottom={1}>
         <Text color="cyan" bold>
-          › {content}
+          ❯ {content}
         </Text>
       </Box>
     )
   }
   if (role === 'tool') {
     return (
-      <Box flexDirection="column" marginBottom={0}>
+      <Box marginBottom={0}>
         <Text color="yellow" dimColor>
           ⚙ {content}
         </Text>
       </Box>
     )
   }
+  if (role === 'assistant-line') {
+    // 空行也要占一行高度，保留段落间的视觉间隔。
+    return (
+      <Box marginBottom={gap ? 1 : 0}>
+        <Text>{content.length ? content : ' '}</Text>
+      </Box>
+    )
+  }
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box marginBottom={1}>
       <Text>{content}</Text>
     </Box>
   )
@@ -358,7 +377,7 @@ const Header = memo(({ model, baseURL }: { model: string; baseURL: string }) => 
       ✦ ai
     </Text>
     <Text dimColor>
-      {model} · {baseURL} — Enter 发送，行尾 \ 换行，Esc 中断，Ctrl+C 两次退出
+      {model} · {baseURL}
     </Text>
   </Box>
 ))
@@ -376,6 +395,25 @@ const Spinner = memo(() => {
   return <Text color="cyan">{SPINNER_FRAMES[i]}</Text>
 })
 
+// 取文本「末尾若干行」，按终端列宽把自动换行也算进占用行数。
+// 用途：底部那截「正在生成、尚未成行」的流式尾巴限高，绝不让它撑爆动态区、
+// 把输入框顶到屏幕最上方。完整内容会逐行沉淀进上方历史，这里只截断实时预览，不丢信息。
+function tailByRows(text: string, maxRows: number, cols: number): { shown: string; truncated: boolean } {
+  const logical = text.split('\n')
+  const width = Math.max(1, cols)
+  const out: string[] = []
+  let used = 0
+  for (let i = logical.length - 1; i >= 0; i--) {
+    const line = logical[i]
+    const wrapped = Math.max(1, Math.ceil(line.length / width)) // 空行也占 1 行
+    if (used + wrapped > maxRows && out.length > 0) break
+    out.unshift(line)
+    used += wrapped
+    if (used >= maxRows) break
+  }
+  return { shown: out.join('\n'), truncated: out.length < logical.length }
+}
+
 function App() {
   const { exit } = useApp()
   const [apiKey, setApiKey] = useState<string | undefined>(config.apiKey)
@@ -389,6 +427,9 @@ function App() {
   const historyRef = useRef<ChatMessage[]>([{ role: 'system', content: SYSTEM_PROMPT }])
   // 自增 id：给每条消息一个稳定 key，避免数组索引漂移引发不必要的重绘。
   const idRef = useRef(0)
+  // 流式「未完成的最后一行」。完整行随到随沉淀进上方 Static 历史，动态区只留这截尾巴，
+  // 让底部输入框高度恒定、使用过程中不跳顶（对标 Claude Code）。ref 同步、避免批处理丢字。
+  const streamTailRef = useRef('')
 
   // Esc：生成中按一下即中断当前任务（不退出程序）。
   // Ctrl+C：忙时一次中断生成，空闲时连按两次退出。
@@ -428,6 +469,19 @@ function App() {
       const controller = new AbortController()
       abortRef.current = controller
       const answers: string[] = []
+
+      // 往 Static 历史追加一行（统一分配稳定 key）。
+      const pushRow = (role: UIMessage['role'], content: string, gap = false) =>
+        setMessages(prev => [...prev, { id: ++idRef.current, role, content, gap }])
+      // 把「未完成的尾巴」收口：作为一行沉淀进历史，清空动态区。gap=true 段尾留白。
+      const commitTail = (gap: boolean) => {
+        const t = streamTailRef.current
+        streamTailRef.current = ''
+        setStreaming('')
+        if (t.length) pushRow('assistant-line', t, gap)
+      }
+
+      streamTailRef.current = ''
       try {
         for await (const ev of runAgent(history, {
           apiKey: apiKey!,
@@ -437,41 +491,47 @@ function App() {
           signal: controller.signal,
         })) {
           if (ev.type === 'delta') {
-            // 流式增量：累进到草稿区，先不落 Static。
-            setStreaming(prev => prev + ev.content)
+            // 流式增量：拼到尾巴上，每凑满一整行（遇 \n）就立刻沉淀进 Static 历史，
+            // 动态区永远只剩最后一截没写完的行 —— 这是底部输入框使用中不跳顶的关键。
+            let tail = streamTailRef.current + ev.content
+            let nl = tail.indexOf('\n')
+            while (nl !== -1) {
+              pushRow('assistant-line', tail.slice(0, nl))
+              tail = tail.slice(nl + 1)
+              nl = tail.indexOf('\n')
+            }
+            streamTailRef.current = tail
+            setStreaming(tail)
           } else if (ev.type === 'text') {
-            // 一段文本定稿：并入 Static 历史，清空草稿。
-            const mid = ++idRef.current
-            setMessages(prev => [...prev, { id: mid, role: 'assistant', content: ev.content }])
-            setStreaming('')
+            // 一段文本收口：把剩余尾巴沉淀，段尾留一行间距。完整内容已逐行进历史，
+            // 这里不再重复 push 整段，只取 ev.content 做日志。
+            commitTail(true)
             answers.push(ev.content)
           } else if (ev.type === 'limit') {
             // 撞到步数上限：提示而非硬停，回复「继续」即可再跑一轮。
-            setStreaming('')
-            const mid = ++idRef.current
-            setMessages(prev => [
-              ...prev,
-              { id: mid, role: 'tool', content: `⏸ 已连续执行 ${ev.steps} 步仍未结束。回复「继续」可再跑一轮。` },
-            ])
+            commitTail(true)
+            pushRow('tool', `⏸ 已连续执行 ${ev.steps} 步仍未结束。回复「继续」可再跑一轮。`)
           } else {
-            // 工具进度：定稿前文本已先行 flush，这里草稿应已为空，稳妥起见再清一次。
-            setStreaming('')
-            const mid = ++idRef.current
-            setMessages(prev => [...prev, { id: mid, role: 'tool', content: ev.summary }])
+            // 工具进度：先把已说的话收口，再追加进度行。
+            commitTail(true)
+            pushRow('tool', ev.summary)
           }
         }
         logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: answers.join('\n') })
       } catch (e: any) {
         if (controller.signal.aborted) {
-          const mid = ++idRef.current
-          setMessages(prev => [...prev, { id: mid, role: 'assistant', content: '[已中断]' }])
+          commitTail(true) // 中断前先把已生成的尾巴留住
+          pushRow('assistant', '[已中断]')
           logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: '[已中断]' })
         } else {
+          commitTail(true)
           setError(e?.message ?? String(e))
           logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: `[错误] ${e?.message ?? String(e)}` })
         }
       } finally {
+        commitTail(true) // 兜底：任何残留尾巴都不丢
         setBusy(false)
+        streamTailRef.current = ''
         setStreaming('')
         abortRef.current = null
       }
@@ -492,6 +552,15 @@ function App() {
     () => [{ kind: 'header' }, ...messages.map(msg => ({ kind: 'msg' as const, msg }))],
     [messages],
   )
+
+  // 流式尾巴正常只有一行；但模型若长时间不吐换行，这一「逻辑行」也可能很长，
+  // 自动换行后撑高动态区。按终端高度兜底截断，保证动态区永不超出屏幕、输入框不跳顶。
+  // 预留 ~9 行给 spinner、错误行、带边框输入框、页脚提示和各处 margin。
+  const termRows = process.stdout.rows || 24
+  const termCols = (process.stdout.columns || 80) - 2 // 容器 paddingX=1，左右各 1
+  const stream = streaming
+    ? tailByRows(streaming, Math.max(3, termRows - 9), termCols)
+    : { shown: '', truncated: false }
 
   // 缺少 key：启动时引导用户输入并保存
   if (!apiKey) {
@@ -515,23 +584,25 @@ function App() {
           row.kind === 'header' ? (
             <Header key="header" {...headerProps} />
           ) : (
-            <MessageRow key={row.msg.id} role={row.msg.role} content={row.msg.content} />
+            <MessageRow key={row.msg.id} role={row.msg.role} content={row.msg.content} gap={row.msg.gap} />
           )
         }
       </Static>
 
-      {/* 流式草稿 — 助手正在打字（定稿后并入上方 Static 历史并清空） */}
+      {/* —— 动态区：高度恒定的底栏，已生成内容都已逐行沉淀进上方 Static —— */}
+
+      {/* 流式尾巴 — 当前正在打字、尚未凑满一整行的最后一截（已成行的都在上方历史里）。 */}
       {streaming && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text>{streaming}</Text>
+        <Box marginBottom={1}>
+          <Text>{stream.shown}</Text>
         </Box>
       )}
 
-      {/* 正在工作 */}
+      {/* 正在工作 — 细长一行，紧贴输入框上方 */}
       {busy && (
-        <Box flexDirection="column" marginBottom={1}>
+        <Box marginBottom={streaming ? 0 : 1}>
           <Text dimColor>
-            <Spinner /> 工作中…
+            <Spinner /> 思考中…（Esc 中断）
           </Text>
         </Box>
       )}
@@ -544,11 +615,14 @@ function App() {
       )}
 
       {/* 输入框 */}
-      <MultilineInput
-        onSubmit={send}
-        disabled={busy}
-        placeholder="问点什么…（Ctrl+C 两次退出）"
-      />
+      <MultilineInput onSubmit={send} disabled={busy} placeholder="问点什么…" />
+
+      {/* 常驻页脚提示 */}
+      <Box paddingX={1}>
+        <Text dimColor>
+          {config.model} · Enter 发送 · 行尾 \ 换行 · Esc 中断 · Ctrl+C×2 退出
+        </Text>
+      </Box>
     </Box>
   )
 }
