@@ -60,6 +60,9 @@ export function startWatch(): void {
 
   // 每条规则的「已告警」状态：true=条件当前满足且已通知过，等它恢复后再武装。
   const armed = new Map<string, boolean>()
+  // 每条规则最近一次告警的日期（YYYY-MM-DD），用于同一天不重复告警。
+  const lastAlertDate = new Map<string, string>()
+  const todayStr = (): string => new Date().toISOString().slice(0, 10)
 
   async function alert(rule: StockRule, q: Quote, reasons: string[]) {
     const ts = new Date().toLocaleString('zh-CN', { hour12: false })
@@ -92,10 +95,20 @@ export function startWatch(): void {
       }
       const reasons = evaluate(rule, q)
       const hit = reasons.length > 0
+      const today = todayStr()
+      // 跨天：重置 armed，让持续触发的条件在新一天也能告警一次
+      if (lastAlertDate.get(rule.symbol) !== today) {
+        armed.set(rule.symbol, false)
+      }
       const wasArmed = armed.get(rule.symbol) ?? false
-      if (hit && !wasArmed) {
-        armed.set(rule.symbol, true) // 武装→触发，告警一次
+      const alreadyAlertedToday = lastAlertDate.get(rule.symbol) === today
+      if (hit && !wasArmed && !alreadyAlertedToday) {
+        armed.set(rule.symbol, true)
+        lastAlertDate.set(rule.symbol, today)
         await alert(rule, q, reasons)
+      } else if (hit && !wasArmed && alreadyAlertedToday) {
+        // 条件满足但今天已告警过：武装以防跨日后需要再告警，但不再重复通知
+        armed.set(rule.symbol, true)
       } else if (!hit && wasArmed) {
         armed.set(rule.symbol, false) // 条件恢复，重新武装
       }
