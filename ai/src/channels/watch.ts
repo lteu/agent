@@ -62,7 +62,22 @@ export function startWatch(): void {
   const armed = new Map<string, boolean>()
   // 每条规则最近一次告警的日期（YYYY-MM-DD），用于同一天不重复告警。
   const lastAlertDate = new Map<string, string>()
-  const todayStr = (): string => new Date().toISOString().slice(0, 10)
+  // 「当天」以各股票交易所所在时区为准（美股按美东、港股按香港），而非 UTC：
+  // 这样一个交易日不会被从中间切开，跨日重置也落在收盘后的自然边界上。
+  const dateInTz = (tz: string): string => {
+    try {
+      // en-CA 直接输出 YYYY-MM-DD
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date())
+    } catch {
+      // 时区名非法时回退到 UTC，至少保证不崩
+      return new Date().toISOString().slice(0, 10)
+    }
+  }
 
   async function alert(rule: StockRule, q: Quote, reasons: string[]) {
     const ts = new Date().toLocaleString('zh-CN', { hour12: false })
@@ -95,7 +110,7 @@ export function startWatch(): void {
       }
       const reasons = evaluate(rule, q)
       const hit = reasons.length > 0
-      const today = todayStr()
+      const today = dateInTz(q.timezone)
       // 跨天：重置 armed，让持续触发的条件在新一天也能告警一次
       if (lastAlertDate.get(rule.symbol) !== today) {
         armed.set(rule.symbol, false)

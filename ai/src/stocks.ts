@@ -12,6 +12,7 @@ export type Quote = {
   changePct: number // 涨跌幅 %
   currency: string
   exchange: string
+  timezone: string // 交易所所在时区（IANA，如 America/New_York / Asia/Hong_Kong）
   time: number // 报价时间（unix 秒）
 }
 
@@ -63,6 +64,7 @@ export async function getQuote(symbol: string): Promise<Quote> {
     changePct: prevClose ? (change / prevClose) * 100 : 0,
     currency: meta.currency ?? 'USD',
     exchange: meta.exchangeName ?? '',
+    timezone: meta.exchangeTimezoneName ?? 'UTC',
     time: meta.regularMarketTime ?? Math.floor(Date.now() / 1000),
   }
 }
