@@ -363,10 +363,29 @@ export function startQQ(): void {
     const ws = new WebSocket(gatewayUrl)
     let heartbeat: ReturnType<typeof setInterval> | null = null
     let lastSeq: number | null = null
+    let awaitingAck = false // 已发心跳但还没等到 op:11 ACK
+    let lastInbound = Date.now() // 最后一次收到任何网关报文的时刻
+    let hbInterval = 30000
+    let reconnected = false // 防止 watchdog 与 close 事件重复重连
 
     const stop = () => {
       if (heartbeat) clearInterval(heartbeat)
       heartbeat = null
+    }
+
+    // 统一的「判定连接已死 → 重连」入口，幂等。close 事件与 watchdog 都走这里。
+    const reconnect = (why: string) => {
+      if (reconnected) return
+      reconnected = true
+      stop()
+      console.error(`QQ 网关${why}，${backoff / 1000}s 后重连…`)
+      setTimeout(connect, backoff)
+      backoff = Math.min(backoff * 2, 30000)
+      try {
+        ws.close()
+      } catch {
+        /* 已经断了就忽略 */
+      }
     }
 
     ws.addEventListener('open', () => {
@@ -374,6 +393,7 @@ export function startQQ(): void {
     })
 
     ws.addEventListener('message', async (e: MessageEvent) => {
+      lastInbound = Date.now()
       let pkt: any
       try {
         pkt = JSON.parse(typeof e.data === 'string' ? e.data : String(e.data))
@@ -382,7 +402,18 @@ export function startQQ(): void {
       }
       if (typeof pkt.s === 'number') lastSeq = pkt.s
 
-      // op:10 Hello → 发 Identify 并开始心跳
+      // op:11 心跳 ACK：收到才算这一拍连接是活的。
+      if (pkt.op === 11) {
+        awaitingAck = false
+        return
+      }
+      // op:7 服务端要求重连 / op:9 会话失效：都直接重连。
+      if (pkt.op === 7 || pkt.op === 9) {
+        reconnect(pkt.op === 7 ? '收到 op:7 要求重连' : '收到 op:9 会话失效')
+        return
+      }
+
+      // op:10 Hello → 发 Identify 并开始心跳 + 看门狗
       if (pkt.op === 10) {
         const token = await tokens.get()
         ws.send(
@@ -391,10 +422,20 @@ export function startQQ(): void {
             d: { token: `QQBot ${token}`, intents: GROUP_AND_C2C_INTENT, shard: [0, 1] },
           }),
         )
-        const interval = pkt.d?.heartbeat_interval ?? 30000
+        hbInterval = pkt.d?.heartbeat_interval ?? 30000
+        awaitingAck = false
         heartbeat = setInterval(() => {
-          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ op: 1, d: lastSeq }))
-        }, interval)
+          // 上一拍心跳没等到 ACK，或长时间没收到任何报文（PC 休眠/网络半开导致的「僵尸连接」，
+          // close 事件不会触发）→ 主动判死并重连，否则手机端会一直连不上。
+          if (awaitingAck || Date.now() - lastInbound > hbInterval * 2) {
+            reconnect('心跳无响应(疑似僵尸连接)')
+            return
+          }
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ op: 1, d: lastSeq }))
+            awaitingAck = true
+          }
+        }, hbInterval)
         return
       }
 
@@ -430,17 +471,10 @@ export function startQQ(): void {
     })
 
     ws.addEventListener('close', () => {
-      stop()
-      console.error(`QQ 网关断开，${backoff / 1000}s 后重连…`)
-      setTimeout(connect, backoff)
-      backoff = Math.min(backoff * 2, 30000)
+      reconnect('断开')
     })
     ws.addEventListener('error', () => {
-      try {
-        ws.close()
-      } catch {
-        /* 触发 close 重连 */
-      }
+      reconnect('出错')
     })
   }
 
