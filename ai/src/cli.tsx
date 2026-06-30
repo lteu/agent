@@ -353,10 +353,12 @@ const MessageRow = memo(({ role, content, gap }: { role: string; content: string
     )
   }
   if (role === 'tool') {
+    // 失败行（✗ 开头）用红色凸显，普通进度行维持暗黄。
+    const failed = content.startsWith('✗')
     return (
       <Box marginBottom={0}>
-        <Text color="yellow" dimColor>
-          ⚙ {content}
+        <Text color={failed ? 'red' : 'yellow'} dimColor={!failed}>
+          {failed ? '' : '⚙ '}{content}
         </Text>
       </Box>
     )

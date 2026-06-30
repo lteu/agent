@@ -131,8 +131,13 @@ export const TOOL_SCHEMAS = [
         type: 'object',
         properties: {
           command: { type: 'string', description: '要执行的 shell 命令' },
+          intent: {
+            type: 'string',
+            description:
+              '这条命令想达成什么，用一句简短中文说明（≤16 字），如「安装缺失依赖」「查看阶段四报错详情」。会显示给用户，让进度可读。',
+          },
         },
-        required: ['command'],
+        required: ['command', 'intent'],
       },
     },
   },
@@ -293,14 +298,20 @@ export async function runTool(
     }
     case 'run_bash': {
       const command = String(args.command ?? '')
+      if (ctx?.signal?.aborted) return '（已中断，未执行）'
       return await new Promise<string>(res => {
         execFile(
           '/bin/sh',
           ['-c', command],
-          { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 },
+          // 把 signal 传给 execFile：用户按 Esc/Ctrl+C 时 Node 会直接 kill 掉子进程（含其子孙），
+          // 否则长跑脚本（如 python 训练）会一直占着、loop 卡在 await 上，Esc 形同虚设。
+          { timeout: 60_000, maxBuffer: 10 * 1024 * 1024, signal: ctx?.signal, killSignal: 'SIGKILL' },
           (err, stdout, stderr) => {
             const out = [stdout, stderr].filter(Boolean).join('\n').trim()
-            if (err && (err as any).code !== 0) {
+            // 被 Esc 中断（AbortError）：明确告知，别把它当成普通命令失败。
+            if (err && (err as any).name === 'AbortError') {
+              res(`命令已被用户中断${out ? `\n${out}` : ''}`)
+            } else if (err && (err as any).code !== 0) {
               res(`命令退出码 ${(err as any).code ?? 1}\n${out || (err as Error).message}`)
             } else {
               res(out || '(无输出)')
@@ -476,6 +487,59 @@ export async function runTool(
   }
 }
 
+// 把命令裁到 max 字符，超出补省略号（让用户知道还有后续）。
+function clip(s: string, max: number): string {
+  s = s.trim()
+  return s.length > max ? s.slice(0, max - 1) + '…' : s
+}
+
+// 把 run_bash 命令渲染成命令标签：模型每次都在新 shell 里跑，习惯加 `cd <长路径> && 真命令` 前缀，
+// 直接截断会把所有行都截成同一段 cd、把真正干的事全切掉。这里把 cd 前缀剥成「目录名」标签，
+// 余下的真命令完整展示，让每一行都各有其义。分隔符 `&&`、`;`、换行都认（模型也常用换行串多条命令）。
+// 只返回命令部分，不含「运行」动词——动词留给 describeToolCall 按是否有 intent 决定。
+function bashLabel(raw: string): string {
+  const command = raw.trim()
+  // 匹配前导 `cd <路径>` + 分隔符（&&、; 或换行），路径支持引号包裹。
+  // 分隔符前只吃同行空白（[ \t]*），这样裸换行也能当分隔符，不会被 \s* 提前吞掉。
+  const m = command.match(/^cd\s+(?:'([^']*)'|"([^"]*)"|(\S+))[ \t]*(?:&&|;|\n)\s*([\s\S]+)$/)
+  if (m) {
+    const dir = (m[1] ?? m[2] ?? m[3] ?? '').replace(/\/+$/, '')
+    const base = dir.split('/').filter(Boolean).pop() || dir || '/'
+    // 余下若还是多行脚本，只取第一条有内容的命令，省略号示意还有后续。
+    const rest = m[4].split('\n').map(s => s.trim()).filter(Boolean)
+    const head = rest[0] + (rest.length > 1 ? ' …' : '')
+    return `[${base}] \`${clip(head, 72)}\``
+  }
+  // 纯 cd（没有后续命令）本身没什么信息量，直接说进了哪个目录。
+  const onlyCd = command.match(/^cd\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*$/)
+  if (onlyCd) {
+    const dir = (onlyCd[1] ?? onlyCd[2] ?? onlyCd[3] ?? '').replace(/\/+$/, '')
+    return `进入目录 ${dir.split('/').filter(Boolean).pop() || dir}`
+  }
+  return `\`${clip(command, 80)}\``
+}
+
+// 从工具结果里判断是否「失败」并提炼一句给用户看的原因；非失败返回 null。
+// 工具结果本来只回灌给模型，用户在终端只看到调用前的进度行，脚本一旦失败就只剩一片茫然。
+// 这里把失败原因捞出来，供 UI 紧跟在进度行后面显示。
+export function summarizeToolFailure(name: string, result: string): string | null {
+  const r = result.trim()
+  if (!r) return null
+  // run_bash：失败时是 `命令退出码 N\n<stdout+stderr>`，真正的原因一般在输出最后一行
+  // （Python traceback 的最后一行就是异常本身）。
+  const exit = r.match(/^命令退出码\s+(\S+)\n([\s\S]*)$/)
+  if (exit) {
+    const lines = exit[2].split('\n').map(s => s.trim()).filter(Boolean)
+    const reason = lines[lines.length - 1] ?? ''
+    return `退出码 ${exit[1]}` + (reason ? `：${clip(reason, 100)}` : '')
+  }
+  // execTool 捕获的抛错，以及各工具返回的软失败文案（取首行即可）。
+  if (/^错误[:：]/.test(r) || /^(发送失败|抓取失败|无效正则|未找到|路径不存在)/.test(r)) {
+    return clip(r.split('\n')[0], 120)
+  }
+  return null
+}
+
 // 给状态栏/历史显示用的一句话摘要。
 export function describeToolCall(name: string, args: Record<string, any>): string {
   switch (name) {
@@ -485,8 +549,13 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return `读文件 ${args.path}`
     case 'list_dir':
       return `列目录 ${args.path ?? '.'}`
-    case 'run_bash':
-      return `运行 \`${String(args.command ?? '').slice(0, 80)}\``
+    case 'run_bash': {
+      // 模型用 intent 声明「这条命令想干嘛」，把它当成动词放命令前面，让进度行先说清意图。
+      const intent = String(args.intent ?? '').trim()
+      const label = bashLabel(String(args.command ?? ''))
+      if (label.startsWith('进入目录')) return label // 纯 cd 本身已自解释，无需再缀意图
+      return intent ? `${intent} · ${label}` : `运行 ${label}`
+    }
     case 'send_email':
       return `发邮件给 ${args.to}`
     case 'stock_quote':

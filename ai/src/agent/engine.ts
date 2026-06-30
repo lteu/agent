@@ -15,7 +15,7 @@
 //   3. 每轮开头按需做上下文压缩 compactInPlace。
 
 import { streamCompletion, type ChatMessage, type RawToolCall, type Completion } from '../llm.js'
-import { TOOL_SCHEMAS, runTool, describeToolCall, type ToolContext } from '../tools.js'
+import { TOOL_SCHEMAS, runTool, describeToolCall, summarizeToolFailure, type ToolContext } from '../tools.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
 
 export type AgentEvent =
@@ -110,6 +110,9 @@ export async function* runAgent(
   let reactiveCompactAttempted = false
 
   for (let step = 0; step < maxSteps; step++) {
+    // ⓪ 用户已中断（Esc/Ctrl+C）：立刻收手，别再压缩历史或发起下一次模型调用。
+    if (deps.signal?.aborted) throw new DOMException('已中断', 'AbortError')
+
     // ① 每轮开头按需压缩历史（就地 splice，保持调用方持有的引用有效）。
     if (!deps.noCompact) {
       try {
@@ -187,6 +190,9 @@ export async function* runAgent(
       // ③ 回收并发执行的工具结果（按调用顺序回灌，满足 OpenAI 的配对要求）。
       for await (const { call, result } of executor.drain()) {
         history.push({ role: 'tool', tool_call_id: call.id, content: result })
+        // 工具结果只回灌给模型，用户看不到——失败时把原因冒泡成一条进度行，省得「报错没说为什么」。
+        const fail = summarizeToolFailure(call.function.name, result)
+        if (fail) yield { type: 'tool', name: call.function.name, summary: `✗ ${fail}` }
       }
       continue
     }
