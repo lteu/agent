@@ -22,6 +22,7 @@ import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadQQConfig } from '../config.js'
 import { synthesizeWav } from '../tts.js'
+import { keepAwake } from '../keepawake.js'
 
 type Target = { kind: 'group'; id: string } | { kind: 'c2c'; id: string }
 
@@ -114,6 +115,7 @@ export function startQQ(): void {
   }
 
   writeLogBanner('qq', 'QQ 机器人启动')
+  keepAwake() // 阻止系统空闲休眠，否则人一离开机器休眠 → 进程冻结 → 手机端连不上
 
   const apiBase = qq.sandbox ? 'https://sandbox.api.sgroup.qq.com' : 'https://api.sgroup.qq.com'
   const whitelist = new Set((qq.whitelist ?? []).map(String))
@@ -362,15 +364,17 @@ export function startQQ(): void {
 
     const ws = new WebSocket(gatewayUrl)
     let heartbeat: ReturnType<typeof setInterval> | null = null
+    let watchdog: ReturnType<typeof setInterval> | null = null
     let lastSeq: number | null = null
-    let awaitingAck = false // 已发心跳但还没等到 op:11 ACK
-    let lastInbound = Date.now() // 最后一次收到任何网关报文的时刻
+    let lastInbound = Date.now() // 最后一次收到任何网关报文（含心跳 ACK）的时刻
     let hbInterval = 30000
     let reconnected = false // 防止 watchdog 与 close 事件重复重连
 
     const stop = () => {
       if (heartbeat) clearInterval(heartbeat)
+      if (watchdog) clearInterval(watchdog)
       heartbeat = null
+      watchdog = null
     }
 
     // 统一的「判定连接已死 → 重连」入口，幂等。close 事件与 watchdog 都走这里。
@@ -402,11 +406,8 @@ export function startQQ(): void {
       }
       if (typeof pkt.s === 'number') lastSeq = pkt.s
 
-      // op:11 心跳 ACK：收到才算这一拍连接是活的。
-      if (pkt.op === 11) {
-        awaitingAck = false
-        return
-      }
+      // op:11 心跳 ACK：lastInbound 已在上面更新，收到即视为这一拍连接是活的。
+      if (pkt.op === 11) return
       // op:7 服务端要求重连 / op:9 会话失效：都直接重连。
       if (pkt.op === 7 || pkt.op === 9) {
         reconnect(pkt.op === 7 ? '收到 op:7 要求重连' : '收到 op:9 会话失效')
@@ -423,19 +424,15 @@ export function startQQ(): void {
           }),
         )
         hbInterval = pkt.d?.heartbeat_interval ?? 30000
-        awaitingAck = false
         heartbeat = setInterval(() => {
-          // 上一拍心跳没等到 ACK，或长时间没收到任何报文（PC 休眠/网络半开导致的「僵尸连接」，
-          // close 事件不会触发）→ 主动判死并重连，否则手机端会一直连不上。
-          if (awaitingAck || Date.now() - lastInbound > hbInterval * 2) {
-            reconnect('心跳无响应(疑似僵尸连接)')
-            return
-          }
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ op: 1, d: lastSeq }))
-            awaitingAck = true
-          }
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ op: 1, d: lastSeq }))
         }, hbInterval)
+        // 看门狗：用更短的周期独立巡检「最后收到报文的时刻」。长时间收不到任何报文（含心跳 ACK）
+        // 即判为僵尸连接（PC 休眠/网络半开时 close 事件未必触发）→ 重连。短周期巡检让 PC 唤醒后
+        // 能在数秒内恢复，而不必干等下一拍 30s 心跳，否则那段时间手机端一直连不上。
+        watchdog = setInterval(() => {
+          if (Date.now() - lastInbound > hbInterval * 2) reconnect('心跳无响应(疑似僵尸连接)')
+        }, Math.min(hbInterval, 5000))
         return
       }
 
