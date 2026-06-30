@@ -2,6 +2,7 @@
 // 每个会话（私聊按用户、群聊按群）各持有一份独立的对话历史。
 
 import type { ChatMessage } from '../llm.js'
+import { skillCatalog } from '../skills.js'
 
 export function buildSystemPrompt(cwd: string, channel: 'terminal' | 'qq' | 'wechat'): string {
   const via =
@@ -18,7 +19,7 @@ ${via}
 - list_dir 列目录、glob 按通配找文件、grep 在内容里正则检索；
 - run_bash 执行 shell 命令、web_fetch 抓网页、run_agent 派生子 agent 处理较复杂的子任务。
 当用户要求建文件、建目录、写/改代码、跑命令、查代码、查网页等本地操作时，必须直接调用相应工具去完成，
-**绝对不要**回答"我没有权限操作你的设备"——你有。完成后用简洁的中文说明你做了什么。`
+**绝对不要**回答"我没有权限操作你的设备"——你有。完成后用简洁的中文说明你做了什么。${skillCatalog(cwd)}`
 }
 
 export class SessionStore {

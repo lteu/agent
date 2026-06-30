@@ -51,6 +51,84 @@ ai
 | `Esc` | 清空输入 |
 | `Ctrl+C` | 生成中按一次中断；空闲时连按两次退出 |
 
+## 技能（Skills）
+
+技能 = 一段**可复用的操作手册**，存成带 frontmatter 的 markdown。对标 Claude Code 的「渐进式披露」(progressive disclosure)：
+
+- 启动时只把每个技能的**名字 + 一句话描述**塞进系统提示（几乎不占 token）；
+- 模型判断某个技能与当下需求相关时，才用 `skill` 工具把**完整正文**拉进上下文，按其步骤执行。
+
+技能从两处加载（项目本地覆盖用户全局的同名技能）：
+
+| 位置 | 用途 |
+| --- | --- |
+| `~/.ai/skills/<名字>/SKILL.md` | 用户全局，所有项目通用 |
+| `<项目>/.ai/skills/<名字>/SKILL.md` | 项目本地，随仓库走、团队共享 |
+
+也支持单文件形式 `<dir>/<名字>.md`。一个 `SKILL.md` 形如：
+
+```markdown
+---
+name: release-notes
+description: 根据 git 提交历史生成发布说明
+---
+
+# 生成发布说明
+在这里写给模型看的操作步骤（分阶段、可执行）……
+```
+
+正文里可以引用同目录下的脚本/资源（用相对路径）。命令：
+
+```bash
+ai --skills                 # 列出已安装技能（名字 / 来源 / 路径）
+ai --skill-show <名字>       # 打印模型实际会读到的完整正文（审查 / 测试用）
+ai --skill-new <名字>        # 在 ~/.ai/skills/<名字>/SKILL.md 生成一个模板
+```
+
+本仓库自带一个示例技能 `.ai/skills/release-notes/`，可直接照搬改写。技能改完下次对话即生效，QQ / 企业微信 channel 同样适用。
+
+### 安装网上下载的技能
+
+一个技能要么是「目录 + `SKILL.md`」，要么是单个 `.md` 文件。安装 = **把它放进技能目录**即可，没有注册步骤：
+
+```bash
+# 全局安装（所有项目可用）：解压 / 克隆 / 拷贝到 ~/.ai/skills/ 下
+mkdir -p ~/.ai/skills
+unzip some-skill.zip -d ~/.ai/skills/            # 压缩包
+git clone https://example.com/foo-skill ~/.ai/skills/foo-skill   # git 仓库
+cp -r ./download/bar-skill ~/.ai/skills/         # 本地拷贝
+
+# 只给当前项目用、并随仓库提交：放到项目里
+cp -r ./download/bar-skill <项目>/.ai/skills/
+```
+
+要点：
+
+- **目录名不重要，frontmatter 里的 `name` 才是技能名**（决定模型怎么称呼它、`skill` 工具用哪个名字调用）。`name` 缺省时才回退用目录/文件名。
+- 目录式技能只认其**顶层的 `SKILL.md`**；多嵌一层（如 `foo/foo/SKILL.md`）会扫不到——装完务必 `ai --skills` 确认能列出来。
+- 同名技能**项目本地覆盖用户全局**，可借此在某个项目里临时改写一个全局技能。
+
+### ⚠️ 注意事项（安全）
+
+技能正文是**模型会直接照做的指令**，且本 agent 的 `run_bash` 在你本机**无沙箱**执行。一个恶意技能可以诱导模型删文件、把 `~/.ai/config.json` 里的 **API key / QQ token 外传**、或 `curl xxx | sh`。所以**装之前一定先读**：
+
+- 技能就是纯文本，安装前 `cat ~/.ai/skills/<名>/SKILL.md` 通读一遍，警惕这类内容：
+  - 让你 / 让模型 `curl ... | sh`、`eval`、下载并执行二进制；
+  - 读取或发送 `~/.ssh`、`~/.ai/config.json`、`.env`、各种 token / 密钥；
+  - `rm -rf`、改 `~/.zshrc` / `crontab` 之类的持久化动作；
+  - 往陌生地址 `web_fetch` / 发邮件（外带数据）。
+- **连同附带的脚本一起看**：`grep -rIn "curl\|wget\|eval\|rm -rf\|config.json\|token\|secret" ~/.ai/skills/<名>/`。
+- 只装可信来源的技能；不确定就先放**项目本地**目录、在不含敏感配置的环境里试。
+- 技能没有自动更新；`git clone` 来的技能 `git pull` 后**重新审一遍 diff** 再用。
+
+### 测试方法
+
+装好后按这三步验证：
+
+1. **能被发现**——`ai --skills` 里出现它，且 `name` / 描述 / 路径都对（列不出 = frontmatter 没解析到，多半是目录层级或 `---` 分隔符写错）。
+2. **正文如预期**——`ai --skill-show <名字>` 打印模型实际会收到的整段内容；确认没有上面那些可疑指令，描述能让模型在「该用时」想起它。
+3. **真能被调用**——`ai` 进对话，说一句**贴着该技能描述**的需求，观察进度行是否出现 `技能 <名字>`（即模型调了 `skill` 工具），再看它是否按正文步骤执行。没被触发通常是 `description` 写得太泛或与需求对不上，回去把描述写具体。
+
 ## 稳定性与崩溃日志
 
 输入框过去在**快速打字、粘贴、或方向键/退格和字符混在一起**时偶发「卡住/字符错乱」。
@@ -251,7 +329,8 @@ src/
     watch.ts        美股/港股监控守护：轮询行情、边沿触发、每日去重、邮件/终端告警
   stocks.ts         Yahoo 行情客户端：取价、计算当日涨跌幅、交易所时区
   smtp.ts           零依赖 SMTP 客户端（node:net/tls 手写，支持 465 隐式 TLS / 587 STARTTLS）
-  tools.ts          本地工具：write_file / read_file / list_dir / run_bash
+  tools.ts          本地工具：write_file / read_file / list_dir / run_bash / skill 等
+  skills.ts         技能管理：扫描 ~/.ai/skills 与 项目 .ai/skills，渐进式披露给模型，按需取正文
   MultilineInput.tsx 可编辑的多行输入框（光标、删除、快捷键）；状态用 ref 承载，避免快速输入丢字符
   deepseek.ts       DeepSeek 客户端：流式聊天 + 带工具的非流式补全
   config.ts         API key / 模型 / QQ（AppID、AppSecret、openid 白名单）的读取与保存

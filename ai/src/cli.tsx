@@ -26,6 +26,7 @@ import { sendMail } from './smtp.js'
 import { getQuotes, formatQuote } from './stocks.js'
 import { runAgent } from './agent/engine.js'
 import { buildSystemPrompt } from './agent/session.js'
+import { loadSkills, readSkill, scaffoldSkill } from './skills.js'
 import { logChat, writeLogBanner } from './agent/chatlog.js'
 import { writeCrash } from './crashlog.js'
 
@@ -64,6 +65,9 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai --set-qq-app <ID> <SECRET>  保存 QQ 机器人 AppID 和 AppSecret
   ai --qq-allow <openid>   往 QQ 白名单追加一个 openid（可多次；未授权用户发消息会回显其 openid）
   ai --config              查看当前生效的完整配置（含默认值、文件值、环境变量）
+  ai --skills              列出已安装的技能（skill，可复用的操作手册）
+  ai --skill-show <名字>    打印某个技能的完整正文（审查/测试下载来的技能用）
+  ai --skill-new <名字>     新建一个技能模板到 ~/.ai/skills/<名字>/SKILL.md
   ai --help                显示帮助
 
 切换服务商 / 模型（OpenAI 兼容即可，如 OpenAI、通义千问、Moonshot、OpenRouter、本地 Ollama）:
@@ -102,6 +106,60 @@ if (argv[0] === '--config') {
   console.log(`  apiKey   = ${effective.apiKey ? '****' + effective.apiKey.slice(-4) : '(未设置)'}`)
   console.log(`  model    = ${effective.model}`)
   console.log(`  baseURL  = ${effective.baseURL}`)
+  process.exit(0)
+}
+
+if (argv[0] === '--skills') {
+  const skills = loadSkills()
+  if (!skills.length) {
+    console.log(
+      '暂无技能。\n用 ai --skill-new <名字> 新建一个，或在 ~/.ai/skills/<名字>/SKILL.md（全局）' +
+        '、<项目>/.ai/skills/<名字>/SKILL.md（项目本地）放一个带 frontmatter 的 markdown。',
+    )
+  } else {
+    console.log(`已安装 ${skills.length} 个技能：\n`)
+    for (const s of skills) {
+      console.log(`  ${s.name}  [${s.source === 'project' ? '项目本地' : '用户全局'}]`)
+      console.log(`    ${s.description || '(无描述)'}`)
+      console.log(`    ${s.path}\n`)
+    }
+  }
+  process.exit(0)
+}
+
+if (argv[0] === '--skill-show') {
+  const name = argv[1]
+  if (!name) {
+    console.error('用法: ai --skill-show <名字>    （打印模型实际会读到的完整正文，便于审查/测试下载来的技能）')
+    process.exit(1)
+  }
+  const found = readSkill(name)
+  if (!found) {
+    console.error(`未找到技能「${name}」。先用 ai --skills 看已安装的技能名。`)
+    process.exit(1)
+  }
+  console.log(`名字: ${found.meta.name}`)
+  console.log(`来源: ${found.meta.source === 'project' ? '项目本地' : '用户全局'}`)
+  console.log(`描述: ${found.meta.description || '(无描述 —— 缺 description，模型清单里会显示“无描述”)'}`)
+  console.log(`路径: ${found.meta.path}`)
+  console.log('\n──────── 正文（skill 工具返回给模型的内容） ────────\n')
+  console.log(found.body || '(正文为空)')
+  process.exit(0)
+}
+
+if (argv[0] === '--skill-new') {
+  const name = argv[1]
+  if (!name) {
+    console.error('用法: ai --skill-new <名字>    例: ai --skill-new release-notes')
+    process.exit(1)
+  }
+  try {
+    const file = scaffoldSkill(name)
+    console.log(`已创建技能模板: ${file}\n用编辑器打开它，填好 description 与正文步骤即可（下次对话自动生效）。`)
+  } catch (e: any) {
+    console.error(e?.message ?? String(e))
+    process.exit(1)
+  }
   process.exit(0)
 }
 

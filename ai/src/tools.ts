@@ -261,6 +261,21 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'skill',
+      description:
+        '读取一个已安装「技能」(skill) 的完整操作说明。系统提示里列出了可用技能的名字与用途；当用户需求匹配其中某个技能时，先用本工具按名字把手册取进上下文，再照其步骤执行。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '技能名（见系统提示中的技能清单）' },
+        },
+        required: ['name'],
+      },
+    },
+  },
 ] as const
 
 export type ToolCall = {
@@ -482,6 +497,19 @@ export async function runTool(
       }
       return texts.join('\n').trim() || '(子 agent 无输出)'
     }
+    case 'skill': {
+      const { readSkill } = await import('./skills.js')
+      const skillName = String(args.name ?? '').trim()
+      if (!skillName) return '未提供技能名'
+      const found = readSkill(skillName)
+      if (!found) return `未找到技能「${skillName}」。可用 ai --skills 查看已安装技能。`
+      const skillDir = dirname(found.meta.path)
+      return (
+        `# 技能：${found.meta.name}\n` +
+        `（技能目录：${skillDir}，正文里提到的脚本/资源可用相对路径在此目录下引用）\n\n` +
+        found.body
+      )
+    }
     default:
       return `未知工具: ${name}`
   }
@@ -570,6 +598,8 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return `抓取 ${args.url}`
     case 'run_agent':
       return `子 agent：${args.description ?? ''}`
+    case 'skill':
+      return `技能 ${args.name ?? ''}`
     default:
       return name
   }
