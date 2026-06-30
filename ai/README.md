@@ -109,6 +109,88 @@ ai serve
 因此 QQ 入口做了**强制 openid 白名单**：只有 `--qq-allow` 加过的 openid 能操控，未授权者只会收到「回显 openid」的提示，**不触发任何 agent 动作**。
 请只把**你自己的 openid** 加进白名单，并妥善保管 AppSecret。
 
+## 美股 / 港股监控（`ai watch`）
+
+按自选规则轮询 Yahoo 行情，触发条件时**发邮件 + 终端打印**告警。
+
+```bash
+ai watch add 3690.HK chg=5 email=lteu@icloud.com   # 单日涨跌幅 ±5% 时告警，发给指定邮箱
+ai watch add AAPL above=300 below=250 chg=5         # 价格突破/跌破/涨跌幅，任一命中即告警
+ai watch list                                       # 查看当前规则
+ai watch rm AAPL                                     # 删除一条规则
+ai watch                                             # 前台启动守护进程（持续轮询）
+```
+
+规则字段：`above=N`（价格 ≥ N）、`below=N`（价格 ≤ N）、`chg=P`（**当日**涨跌幅绝对值 ≥ P%）、`email=addr`（本规则专属收件人，不设则用全局）。
+
+> ⚠️ `chg` 比较的是**当日相对昨收**的涨跌幅，不是多日累计涨幅。若标的连续几天慢涨、但每天都不到阈值，则不会告警。
+
+先配好发件邮箱（SMTP）和全局收件人：
+
+```bash
+ai --set-smtp                         # 配置 SMTP 发件邮箱（Gmail/iCloud/QQ 需用「应用专用密码」）
+ai --set-stocks-notify email,terminal # 告警渠道，默认 email+terminal
+```
+
+可选环境变量：`AI_STOCK_POLL`（轮询秒数，默认 60）、`AI_STOCK_EMAIL`（全局收件人）。
+
+### 让监控常驻后台（macOS LaunchAgent）
+
+`ai watch` 是前台进程，关掉终端就停了。要让它**登录即启动、崩溃自动拉起**，用 LaunchAgent。
+
+新建 `~/Library/LaunchAgents/com.<你的名字>.ai-watch.plist`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>com.lteu.ai-watch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>  <!-- which node -->
+        <string>/opt/homebrew/bin/ai</string>     <!-- which ai -->
+        <string>watch</string>
+    </array>
+    <key>RunAtLoad</key>        <true/>           <!-- 登录即启动 -->
+    <key>KeepAlive</key>        <true/>           <!-- 崩溃/退出自动拉起 -->
+    <key>ThrottleInterval</key> <integer>30</integer> <!-- 防止配置错误时疯狂重启 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key> <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key> <string>/Users/你/Library/Logs/ai-watch.out.log</string>
+    <key>StandardErrorPath</key> <string>/Users/你/Library/Logs/ai-watch.err.log</string>
+</dict>
+</plist>
+```
+
+> 路径按 `which node` / `which ai` 的实际结果填。Intel 机型 homebrew 通常在 `/usr/local/bin`。
+
+加载并启动：
+
+```bash
+plutil -lint ~/Library/LaunchAgents/com.lteu.ai-watch.plist        # 校验格式
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lteu.ai-watch.plist
+launchctl enable    gui/$(id -u)/com.lteu.ai-watch
+launchctl kickstart -p gui/$(id -u)/com.lteu.ai-watch              # 立即跑一次
+```
+
+常用管理命令：
+
+```bash
+# 查看状态 / PID
+launchctl print gui/$(id -u)/com.lteu.ai-watch | grep -E 'state|pid'
+# 看日志
+tail -f ~/Library/Logs/ai-watch.out.log
+# 改了代码（npm run build）或改了规则后，重启生效（规则在启动时读取）
+launchctl kickstart -k gui/$(id -u)/com.lteu.ai-watch
+# 停止 / 卸载
+launchctl bootout gui/$(id -u)/com.lteu.ai-watch
+```
+
+> 注意：LaunchAgent 只在**你登录后**运行（登录界面/注销时不跑）；机器睡眠时轮询也会暂停。
+
 ## 开发
 
 ```bash
@@ -166,6 +248,9 @@ src/
     session.ts      多会话存储（QQ 多人/多群各持一份历史）+ system prompt 构建
   channels/
     qq.ts           QQ channel：对接 QQ 官方机器人 v2 API（鉴权/网关 WS/收发），openid 白名单
+    watch.ts        美股/港股监控守护：轮询行情、边沿触发、每日去重、邮件/终端告警
+  stocks.ts         Yahoo 行情客户端：取价、计算当日涨跌幅、交易所时区
+  smtp.ts           零依赖 SMTP 客户端（node:net/tls 手写，支持 465 隐式 TLS / 587 STARTTLS）
   tools.ts          本地工具：write_file / read_file / list_dir / run_bash
   MultilineInput.tsx 可编辑的多行输入框（光标、删除、快捷键）；状态用 ref 承载，避免快速输入丢字符
   deepseek.ts       DeepSeek 客户端：流式聊天 + 带工具的非流式补全

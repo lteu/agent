@@ -41,10 +41,18 @@ export function startWatch(): void {
     process.exit(1)
   }
   // 收件人支持多个（逗号分隔）；留空则默认发给自己（SMTP 发件邮箱）。
-  const emailTo = (cfg.emailTo || smtp?.from || smtp?.user || '')
+  // 解析全局收件人（兜底用）。
+  const globalEmailTo = (cfg.emailTo || smtp?.from || smtp?.user || '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean)
+
+  // 按规则解析收件人：优先用规则级的 emailTo，否则用全局。
+  function emailsFor(rule: StockRule): string[] {
+    const raw = rule.emailTo ?? ''
+    if (raw.trim()) return raw.split(',').map(s => s.trim()).filter(Boolean)
+    return globalEmailTo
+  }
 
   writeLogBanner('watch', '美股监控启动')
   console.log(`✦ ai · 美股监控已启动`)
@@ -55,7 +63,8 @@ export function startWatch(): void {
       r.below != null ? `≤${r.below}` : '',
       r.chgPct != null ? `±${r.chgPct}%` : '',
     ].filter(Boolean).join(' / ')
-    console.log(`  · ${r.symbol}  ${cond || '(无条件，仅取价)'}`)
+    const email = r.emailTo ? `→ ${r.emailTo}` : `(全局收件人)`
+    console.log(`  · ${r.symbol}  ${cond || '(无条件，仅取价)'}  ${email}`)
   }
 
   // 每条规则的「已告警」状态：true=条件当前满足且已通知过，等它恢复后再武装。
@@ -87,11 +96,12 @@ export function startWatch(): void {
     if (cfg.notify.includes('terminal')) {
       console.log(`\n🔔 ${body}\n`)
     }
-    if (wantEmail && emailTo.length) {
+    const to = emailsFor(rule)
+    if (wantEmail && to.length) {
       try {
         await sendMail(
           { host: smtp!.host, port: smtp!.port, secure: smtp!.secure, user: smtp!.user!, pass: smtp!.pass!, from: smtp!.from! },
-          { to: emailTo, subject: `📈 ${rule.symbol} 触发告警 (${q.price.toFixed(2)} ${q.currency})`, text: body },
+          { to, subject: `📈 ${rule.symbol} 触发告警 (${q.price.toFixed(2)} ${q.currency})`, text: body },
         )
       } catch (e: any) {
         console.error(`  邮件告警发送失败: ${e?.message ?? e}`)

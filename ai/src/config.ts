@@ -60,6 +60,8 @@ export type StockRule = {
   below?: number
   /** 当日涨跌幅绝对值 >= chgPct(%) 时告警 */
   chgPct?: number
+  /** 该规则的邮件收件人（逗号分隔），不设则用全局 emailTo */
+  emailTo?: string
 }
 
 export type StocksConfig = {

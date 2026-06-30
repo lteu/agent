@@ -50,7 +50,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai stock <代码[,代码...]>  查询美股实时报价（Yahoo Finance），例: ai stock AAPL,TSLA
   ai watch                 启动美股监控守护进程（按自选规则轮询，触发告警）
   ai watch list            查看当前监控规则
-  ai watch add <代码> [above=N] [below=N] [chg=P]  添加/更新一条监控规则
+  ai watch add <代码> [above=N] [below=N] [chg=P] [email=addr]  添加/更新一条监控规则（email=addr 指定本规则专属收件人，不设则用全局）
   ai watch rm <代码>       删除一条监控规则
   ai --set-stocks-notify <email|terminal|both>  设置告警渠道（默认 both）
   ai --set-stocks-email <邮箱[,邮箱...]>  设置告警邮件收件人（多个用逗号分隔）
@@ -276,7 +276,8 @@ if (argv[0] === 'watch') {
       console.log(`监控 ${cfg.watch.length} 只 · 每 ${cfg.pollSeconds}s · 告警: ${cfg.notify.join('+')}`)
       for (const r of cfg.watch) {
         const cond = [r.above != null ? `≥${r.above}` : '', r.below != null ? `≤${r.below}` : '', r.chgPct != null ? `±${r.chgPct}%` : ''].filter(Boolean).join(' / ')
-        console.log(`  · ${r.symbol}  ${cond || '(无条件)'}`)
+        const email = r.emailTo ? `→ ${r.emailTo}` : `(全局收件人)`
+        console.log(`  · ${r.symbol}  ${cond || '(无条件)'}  ${email}`)
       }
     }
     process.exit(0)
@@ -285,12 +286,19 @@ if (argv[0] === 'watch') {
   if (sub === 'add') {
     const symbol = argv[2]
     if (!symbol) {
-      console.error('用法: ai watch add <代码> [above=N] [below=N] [chg=P]')
+      console.error('用法: ai watch add <代码> [above=N] [below=N] [chg=P] [email=addr]')
       process.exit(1)
     }
     const rule: Record<string, unknown> = { symbol }
     for (const tok of argv.slice(3)) {
-      const [k, raw] = tok.split('=')
+      const eq = tok.indexOf('=')
+      if (eq === -1) continue
+      const k = tok.slice(0, eq)
+      const raw = tok.slice(eq + 1)
+      if (k === 'email') {
+        rule.emailTo = raw
+        continue
+      }
       const n = Number(raw)
       if (Number.isNaN(n)) continue
       if (k === 'above') rule.above = n
