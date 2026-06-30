@@ -45,11 +45,33 @@ export default function MultilineInput({ onSubmit, disabled, placeholder }: Prop
   const cursorRef = useRef(0)
   const [, bump] = useReducer((n: number) => n + 1, 0)
 
+  // —— 命令历史 ——
+  // historyRef：已提交过的输入，最新的在末尾。
+  // histPosRef：当前浏览位置；等于 history.length 表示「正在编辑新内容」。
+  // draftRef：进入历史浏览前，把正在编辑的草稿暂存起来，翻回最底时还原。
+  const historyRef = useRef<string[]>([])
+  const histPosRef = useRef(0)
+  const draftRef = useRef('')
+
   // 统一的状态写入：钳制光标到合法范围，再触发一次重渲染。
   const set = (value: string, cursor: number) => {
     valueRef.current = value
     cursorRef.current = Math.max(0, Math.min(cursor, value.length))
     bump()
+  }
+
+  // 翻历史：dir = -1 往旧翻，+1 往新翻。返回 true 表示已处理。
+  const navigateHistory = (dir: -1 | 1): boolean => {
+    const history = historyRef.current
+    if (history.length === 0) return false
+    let pos = histPosRef.current
+    // 第一次往上翻时，把当前草稿存起来
+    if (pos === history.length) draftRef.current = valueRef.current
+    pos = Math.max(0, Math.min(history.length, pos + dir))
+    histPosRef.current = pos
+    const next = pos === history.length ? draftRef.current : history[pos]
+    set(next, next.length)
+    return true
   }
 
   useInput(
@@ -66,6 +88,11 @@ export default function MultilineInput({ onSubmit, disabled, placeholder }: Prop
           return
         }
         if (value.trim().length === 0) return
+        // 记入历史（与上一条相同则不重复），并把浏览位置复位到底部
+        const history = historyRef.current
+        if (history[history.length - 1] !== value) history.push(value)
+        histPosRef.current = history.length
+        draftRef.current = ''
         set('', 0)
         onSubmit(value)
         return
@@ -82,6 +109,14 @@ export default function MultilineInput({ onSubmit, disabled, placeholder }: Prop
       }
       if (key.upArrow || key.downArrow) {
         const [line, col] = offsetToLineCol(value, cursor)
+        const lastLine = value.split('\n').length - 1
+        // 光标在第一行按 ↑ / 在最后一行按 ↓：翻命令历史；否则在多行内移动光标。
+        if (key.upArrow && line === 0) {
+          if (navigateHistory(-1)) return
+        }
+        if (key.downArrow && line === lastLine) {
+          if (navigateHistory(1)) return
+        }
         set(value, lineColToOffset(value, line + (key.upArrow ? -1 : 1), col))
         return
       }
