@@ -17,6 +17,24 @@ npm link           # 让全局可用 `ai`（或见下方“免 link”）
 
 > 不想 `npm link`，可加别名：`alias ai="node /Users/lteu/progetto/claude/ai/dist/cli.js"`
 
+#### 换台 Mac 装时报 `EEXIST: file already exists /usr/local/bin/ai`
+
+说明 `/usr/local/bin/ai` 已被占用——多半是之前 `npm link` / `.pkg` 装过留下的旧链接（或别的程序也叫 `ai`）。`npm link` 不肯覆盖已存在的文件，于是报错。先看一眼那个文件是什么：
+
+```bash
+ls -la /usr/local/bin/ai
+readlink /usr/local/bin/ai     # 指向本项目旧路径 = 旧链接，可放心删
+```
+
+确认是旧链接后删掉重链（权限不够就加 `sudo`）：
+
+```bash
+rm /usr/local/bin/ai           # 或 sudo rm ...
+npm link
+```
+
+> 偷懒版：`npm link --force` 直接覆盖。仅在确认 `ai` 这名字没被别的程序占用时用，否则会覆盖掉人家的命令。
+
 ## 配置 API key
 
 二选一：
@@ -186,6 +204,66 @@ ai serve
 `ai` 自带 `run_bash` / `write_file`，**等于把你机器的 shell 暴露给能操控 bot 的人**。
 因此 QQ 入口做了**强制 openid 白名单**：只有 `--qq-allow` 加过的 openid 能操控，未授权者只会收到「回显 openid」的提示，**不触发任何 agent 动作**。
 请只把**你自己的 openid** 加进白名单，并妥善保管 AppSecret。
+
+### 让 QQ 机器人常驻后台（macOS LaunchAgent）
+
+`ai serve` 是前台进程，关掉终端就停了。要让它**登录即启动、崩溃自动拉起**，用 LaunchAgent。
+
+> ⚠️ LaunchAgent 只保证「进程不死、登录自启」。`serve` 运行时会自动 `caffeinate -i` 阻止系统**空闲**休眠，但**合上笔记本盖子的强制休眠不受约束**（除非接电源 + 外接显示器）。想真正 7×24 常驻，请保持开盖或外接电源+显示器。
+
+新建 `~/Library/LaunchAgents/com.<你的名字>.ai-qq.plist`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>com.lteu.ai-qq</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>  <!-- which node -->
+        <string>/opt/homebrew/bin/ai</string>     <!-- which ai -->
+        <string>serve</string>
+    </array>
+    <key>RunAtLoad</key>        <true/>           <!-- 登录即启动 -->
+    <key>KeepAlive</key>        <true/>           <!-- 崩溃/退出自动拉起 -->
+    <key>ThrottleInterval</key> <integer>15</integer> <!-- 防止配置错误时疯狂重启 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key> <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key> <string>/Users/你/Library/Logs/ai-qq.out.log</string>
+    <key>StandardErrorPath</key> <string>/Users/你/Library/Logs/ai-qq.err.log</string>
+</dict>
+</plist>
+```
+
+> 路径按 `which node` / `which ai` 的实际结果填。Intel 机型 homebrew 通常在 `/usr/local/bin`。
+> 环境变量（`DEEPSEEK_API_KEY`、`AI_QQ_APPID` 等）如果没写进 `~/.zshrc`，需要加到 `EnvironmentVariables` 字典里。
+
+加载并启动：
+
+```bash
+plutil -lint ~/Library/LaunchAgents/com.lteu.ai-qq.plist        # 校验格式
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lteu.ai-qq.plist
+launchctl enable    gui/$(id -u)/com.lteu.ai-qq
+launchctl kickstart -p gui/$(id -u)/com.lteu.ai-qq              # 立即跑一次
+```
+
+常用管理命令：
+
+```bash
+# 查看状态 / PID / 最近一次退出码
+launchctl print gui/$(id -u)/com.lteu.ai-qq | grep -E 'state|pid|last exit'
+# 看日志
+tail -f ~/Library/Logs/ai-qq.out.log
+# 重启（改了配置、白名单或代码后）
+launchctl kickstart -k gui/$(id -u)/com.lteu.ai-qq
+# 停止 / 卸载
+launchctl bootout gui/$(id -u)/com.lteu.ai-qq
+```
+
+> 注意：LaunchAgent 只在**你登录后**运行（登录界面/注销时不跑）；机器睡眠时 WebSocket 也会断开，唤醒后 `KeepAlive` 会自动重新连接。
 
 ## 美股 / 港股监控（`ai watch`）
 

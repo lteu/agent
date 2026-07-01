@@ -12,8 +12,9 @@ import {
 } from 'node:fs'
 import { resolve, dirname, relative, sep } from 'node:path'
 import { loadSmtpConfig } from './config.js'
-import { sendMail } from './smtp.js'
+import { sendMail, type Attachment } from './smtp.js'
 import { getQuotes, formatQuote } from './stocks.js'
+import { termOpen, termSend, termRead, termList, termKill } from './term.js'
 import type { ChatMessage } from './llm.js'
 
 /** 执行工具时主进程注入的上下文：让 run_agent 这类工具能反过来调用模型。 */
@@ -32,6 +33,23 @@ const IGNORE_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', 'out',
   'coverage', '.cache', '.turbo', '.venv', '__pycache__',
 ])
+
+// 邮件附件按扩展名猜 MIME 类型，猜不到就用通用二进制类型。
+const MIME_TYPES: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  json: 'application/json',
+  zip: 'application/zip',
+}
+function guessMime(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase() ?? ''
+  return MIME_TYPES[ext] ?? 'application/octet-stream'
+}
 
 /** 递归列出目录下所有文件的绝对路径（自动跳过 IGNORE_DIRS）。 */
 function* walkFiles(dir: string): Generator<string> {
@@ -146,13 +164,17 @@ export const TOOL_SCHEMAS = [
     function: {
       name: 'send_email',
       description:
-        '通过已配置的 SMTP 邮箱发送一封纯文本邮件。用于「发邮件/把结果邮件给我」等需求。需先用 ai --set-smtp 配置发件邮箱。',
+        '通过已配置的 SMTP 邮箱发送一封邮件，可选带附件（如 PDF）。用于「发邮件/把结果邮件给我/把 PDF 发到邮箱」等需求。需先用 ai --set-smtp 配置发件邮箱。',
       parameters: {
         type: 'object',
         properties: {
           to: { type: 'string', description: '收件人邮箱；多个用英文逗号分隔' },
           subject: { type: 'string', description: '邮件主题' },
           body: { type: 'string', description: '邮件正文（纯文本）' },
+          attachment_path: {
+            type: 'string',
+            description: '可选：要附带发送的本地文件路径（如 PDF），多个用英文逗号分隔',
+          },
         },
         required: ['to', 'subject', 'body'],
       },
@@ -276,6 +298,93 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'term_open',
+      description:
+        '开一个「常驻终端会话」（基于 tmux），跨多轮对话存活。用于启动 claude code 等交互式/长跑程序——run_bash 是一次性、60 秒就超时、每次新 shell，撑不住这类场景，这时改用本工具。开好后用 term_read 看输出、term_send 发后续指令。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名（自取，如 cc、build）。同名已存在则不重开。' },
+          command: { type: 'string', description: '可选：开好会话后立即在其中执行的命令，如 claude。留空则只开一个空 shell。' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'term_send',
+      description:
+        '向某个常驻终端会话发送输入（相当于在它键盘上打字）。默认把 input 当字面文本敲并补一个回车；要发控制键（如 C-c 中断、Up 上一条历史）时把 literal 设为 false。发完通常配合 term_read 看反应。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名（term_open 时取的名字）' },
+          input: { type: 'string', description: '要发送的文本；literal=false 时是 tmux 键名，如 C-c、Up、Enter' },
+          enter: { type: 'boolean', description: '发完是否补一个回车，默认 true' },
+          literal: { type: 'boolean', description: 'true(默认)=按字面文本敲；false=按 tmux 键名敲（发控制键用）' },
+        },
+        required: ['name', 'input'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'term_read',
+      description:
+        '读取某个常驻终端会话的当前屏幕 + 最近若干行历史（纯文本），用于「查看执行日志/程序现在输出了什么」。程序输出有延迟时，可用 wait_ms 先等一会儿再抓。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+          lines: { type: 'number', description: '往回取多少行历史，默认 200（上限 5000）' },
+          wait_ms: { type: 'number', description: '抓取前先等待的毫秒数，默认 0（上限 10000），给程序留出输出时间' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'term_list',
+      description: '列出当前所有常驻终端会话及其状态。',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'term_kill',
+      description: '结束一个常驻终端会话（会杀掉其中正在运行的程序）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'screenshot',
+      description:
+        '截取 macOS 全屏截图（静默，无需人工确认）。返回截图文件路径。用于"截图/截屏/把屏幕发给我"等需求。参数 path 可选，默认保存到 /tmp/screenshot.png。注意：本工具已内置，切勿通过 run_bash 调 screencapture，后者可能触发交互式窗口选择而卡住。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '截图保存路径，默认 /tmp/screenshot.png' },
+        },
+      },
+    },
+  },
 ] as const
 
 export type ToolCall = {
@@ -345,12 +454,27 @@ export async function runTool(
         .map(s => s.trim())
         .filter(Boolean)
       if (!to.length) return '收件人为空'
+      const attachmentPaths = String(args.attachment_path ?? '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+      let attachments: Attachment[] | undefined
+      if (attachmentPaths.length) {
+        try {
+          attachments = attachmentPaths.map(p => {
+            const full = resolve(p)
+            return { filename: full.split(sep).pop() || full, content: readFileSync(full), contentType: guessMime(full) }
+          })
+        } catch (e: any) {
+          return `附件读取失败: ${e?.message ?? String(e)}`
+        }
+      }
       try {
         const sent = await sendMail(
           { host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user, pass: smtp.pass, from: smtp.from! },
-          { to, subject: String(args.subject ?? ''), text: String(args.body ?? '') },
+          { to, subject: String(args.subject ?? ''), text: String(args.body ?? ''), attachments },
         )
-        return `邮件已发送给 ${sent.join(', ')}`
+        return `邮件已发送给 ${sent.join(', ')}${attachments ? `（附件 ${attachments.length} 个）` : ''}`
       } catch (e: any) {
         return `发送失败: ${e?.message ?? String(e)}`
       }
@@ -510,6 +634,44 @@ export async function runTool(
         found.body
       )
     }
+    case 'term_open':
+      return await termOpen(String(args.name ?? ''), args.command != null ? String(args.command) : undefined)
+    case 'term_send':
+      return await termSend(
+        String(args.name ?? ''),
+        String(args.input ?? ''),
+        args.enter !== false,
+        args.literal !== false,
+      )
+    case 'term_read':
+      return await termRead(String(args.name ?? ''), Number(args.lines) || 200, Number(args.wait_ms) || 0)
+    case 'term_list':
+      return await termList()
+    case 'term_kill':
+      return await termKill(String(args.name ?? ''))
+    case 'screenshot': {
+      const dest = resolve(String(args.path || '/tmp/screenshot.png'))
+      const dir = dirname(dest)
+      try { mkdirSync(dir, { recursive: true }) } catch { /* 目录已存在则忽略 */ }
+      // -x 静默（不发声）、-C 连光标一起截（方便定位）、不传 -i/-w/-s/-W 等任何交互参数
+      return await new Promise<string>(res => {
+        execFile(
+          '/usr/sbin/screencapture',
+          ['-x', '-C', dest],
+          { timeout: 15_000, signal: ctx?.signal, killSignal: 'SIGKILL' },
+          (err, _stdout, stderr) => {
+            if (err && (err as any).name === 'AbortError') {
+              res('截图已中断')
+            } else if (err) {
+              const msg = stderr?.trim() || (err as Error).message
+              res(`截图失败 (退出码 ${(err as any).code ?? 1}): ${msg}`)
+            } else {
+              res(`截图已保存至 ${dest}`)
+            }
+          },
+        )
+      })
+    }
     default:
       return `未知工具: ${name}`
   }
@@ -586,6 +748,10 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
     }
     case 'send_email':
       return `发邮件给 ${args.to}`
+    case 'send_image':
+      return `发图片 ${args.path}`
+    case 'send_file':
+      return `发文件 ${args.path}`
     case 'stock_quote':
       return `查行情 ${args.symbols}`
     case 'edit_file':
@@ -600,6 +766,16 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return `子 agent：${args.description ?? ''}`
     case 'skill':
       return `技能 ${args.name ?? ''}`
+    case 'term_open':
+      return args.command ? `开终端 ${args.name} ▶ ${clip(String(args.command), 40)}` : `开终端 ${args.name}`
+    case 'term_send':
+      return `→ 终端 ${args.name}: ${clip(String(args.input ?? ''), 40)}`
+    case 'term_read':
+      return `读终端 ${args.name}`
+    case 'term_list':
+      return '列出终端会话'
+    case 'term_kill':
+      return `结束终端 ${args.name}`
     default:
       return name
   }

@@ -14,7 +14,8 @@ const exec = promisify(execFile)
 
 // 语音回复的文本上限：太长既难听、合成也慢，且 QQ 语音约 60s 上限。
 // 200 字普通话约 45s，稳在限制内；超出截断并补发完整文字（见 qq.ts）。
-const MAX_TTS_CHARS = 200
+// 导出给 doubao.ts 复用，两个 TTS 引擎共用同一截断策略。
+export const MAX_TTS_CHARS = 200
 
 // macOS 默认普通话音色；config 里 qq.voice 可覆盖。
 export const DEFAULT_VOICE = 'Tingting'

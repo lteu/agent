@@ -17,10 +17,17 @@ export type SmtpOptions = {
   from: string // 发件人邮箱（一般等于 user）
 }
 
+export type Attachment = {
+  filename: string
+  content: Buffer
+  contentType?: string // 默认 application/octet-stream
+}
+
 export type Mail = {
   to: string | string[]
   subject: string
   text: string
+  attachments?: Attachment[]
 }
 
 // 一问一答地读 SMTP 响应：服务端可能返回多行（"250-xxx" 续行，"250 xxx" 末行）。
@@ -102,20 +109,51 @@ function encodeHeader(value: string): string {
   return /^[\x00-\x7F]*$/.test(value) ? value : `=?UTF-8?B?${b64(value)}?=`
 }
 
-// 正文用 base64 传输：彻底回避 UTF-8/行首点(.)等转义问题，每 76 字符折行。
+// 正文/附件都用 base64 传输：彻底回避 UTF-8/行首点(.)等转义问题，每 76 字符折行。
+const b64Wrap = (buf: Buffer | string) => (Buffer.isBuffer(buf) ? buf.toString('base64') : b64(buf)).replace(/(.{76})/g, '$1\r\n')
+
+function buildMimePart(headers: string[], body: string): string {
+  return headers.join('\r\n') + '\r\n\r\n' + body
+}
+
+// 无附件：单段 text/plain。有附件：multipart/mixed，正文 + 每个附件各一个子段。
 function buildMessage(opt: SmtpOptions, mail: Mail, recipients: string[]): string {
   const date = new Date().toUTCString()
-  const body = b64(mail.text).replace(/(.{76})/g, '$1\r\n')
-  const headers = [
+  const baseHeaders = [
     `From: ${opt.from}`,
     `To: ${recipients.join(', ')}`,
     `Subject: ${encodeHeader(mail.subject)}`,
     `Date: ${date}`,
     `MIME-Version: 1.0`,
-    `Content-Type: text/plain; charset=UTF-8`,
-    `Content-Transfer-Encoding: base64`,
   ]
-  return headers.join('\r\n') + '\r\n\r\n' + body + '\r\n'
+  const textBody = b64Wrap(mail.text)
+
+  if (!mail.attachments?.length) {
+    const headers = [...baseHeaders, `Content-Type: text/plain; charset=UTF-8`, `Content-Transfer-Encoding: base64`]
+    return headers.join('\r\n') + '\r\n\r\n' + textBody + '\r\n'
+  }
+
+  const boundary = `----ai-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
+  const textPart = buildMimePart(
+    [`Content-Type: text/plain; charset=UTF-8`, `Content-Transfer-Encoding: base64`],
+    textBody,
+  )
+  const attachmentParts = mail.attachments.map(att => {
+    const name = encodeHeader(att.filename)
+    const type = att.contentType || 'application/octet-stream'
+    return buildMimePart(
+      [
+        `Content-Type: ${type}; name="${name}"`,
+        `Content-Transfer-Encoding: base64`,
+        `Content-Disposition: attachment; filename="${name}"`,
+      ],
+      b64Wrap(att.content),
+    )
+  })
+  const parts = [textPart, ...attachmentParts]
+  const body = parts.map(p => `--${boundary}\r\n${p}`).join('\r\n') + `\r\n--${boundary}--\r\n`
+  const headers = [...baseHeaders, `Content-Type: multipart/mixed; boundary="${boundary}"`]
+  return headers.join('\r\n') + '\r\n\r\n' + body
 }
 
 // 升级为 TLS（STARTTLS 之后），在已有 socket 上套一层。

@@ -18,6 +18,19 @@ export type QQConfig = {
   voice?: string
 }
 
+export type DoubaoTtsConfig = {
+  /** 火山引擎「语音技术」应用的 appid */
+  appId?: string
+  /** 该应用的 access token（控制台「服务接口认证信息」里获取），对应请求头 X-Api-Access-Key */
+  token?: string
+  /** 音色代码(speaker/voice_type)，如 zh_female_linjianvhai_moon_bigtts；控制台「音色列表」可查 */
+  voiceType?: string
+  /** 请求头 X-Api-Resource-Id，一般按 voiceType 后缀自动推断，填了则覆盖自动推断结果 */
+  resourceId?: string
+  /** 控制台给的 secret key；当前版本 API 未用到（认证只需 appid+token），先存着以防以后要签名 */
+  secretKey?: string
+}
+
 export type WechatConfig = {
   /** 企业 ID（CorpID，「我的企业」页底部） */
   corpId?: string
@@ -85,6 +98,7 @@ export type Config = {
   wechat?: WechatConfig
   smtp?: SmtpConfig
   stocks?: StocksConfig
+  doubaoTts?: DoubaoTtsConfig
 }
 
 const CONFIG_DIR = join(homedir(), '.ai')
@@ -248,6 +262,24 @@ export function loadSmtpConfig(): Required<Pick<SmtpConfig, 'host' | 'port' | 's
 export function saveSmtpConfig(patch: Partial<SmtpConfig>): void {
   const current = readFile()
   writeConfig({ ...current, smtp: { ...current.smtp, ...patch } })
+}
+
+/** 读取豆包(火山引擎)语音合成配置：环境变量优先，其次 config.json，再套用默认集群名。 */
+export function loadDoubaoTtsConfig(): DoubaoTtsConfig {
+  const file = readFile().doubaoTts ?? {}
+  return {
+    appId: process.env.AI_DOUBAO_TTS_APPID || file.appId,
+    token: process.env.AI_DOUBAO_TTS_TOKEN || file.token,
+    voiceType: process.env.AI_DOUBAO_TTS_VOICE || file.voiceType,
+    resourceId: process.env.AI_DOUBAO_TTS_RESOURCE_ID || file.resourceId,
+    secretKey: process.env.AI_DOUBAO_TTS_SECRET || file.secretKey,
+  }
+}
+
+/** 合并并保存豆包 TTS 配置（传入字段覆盖，其余保留原值）。 */
+export function saveDoubaoTtsConfig(patch: Partial<DoubaoTtsConfig>): void {
+  const current = readFile()
+  writeConfig({ ...current, doubaoTts: { ...current.doubaoTts, ...patch } })
 }
 
 /** 读取美股监控配置（套用默认值）。 */

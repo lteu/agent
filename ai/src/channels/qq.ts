@@ -15,13 +15,14 @@
 // 依赖：Node 内置的 fetch 与全局 WebSocket（本项目内置 Node v24，无需额外安装）。
 
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolve, basename } from 'node:path'
 import { runAgent } from '../agent/engine.js'
 import { isStopCommand } from './stopwords.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
-import { loadConfig, loadQQConfig } from '../config.js'
+import { loadConfig, loadQQConfig, loadDoubaoTtsConfig } from '../config.js'
 import { synthesizeWav } from '../tts.js'
+import { synthesizeDoubaoWav } from '../doubao.js'
 import { keepAwake } from '../keepawake.js'
 
 type Target = { kind: 'group'; id: string } | { kind: 'c2c'; id: string }
@@ -97,6 +98,8 @@ export async function qqPush(text: string): Promise<void> {
 export function startQQ(): void {
   const cfg = loadConfig()
   const qq = loadQQConfig()
+  const doubaoTts = loadDoubaoTtsConfig()
+  const useDoubao = Boolean(doubaoTts.appId && doubaoTts.token && doubaoTts.voiceType)
 
   if (!cfg.apiKey) {
     console.error('缺少 API key。先运行: ai --set-key <KEY>')
@@ -124,6 +127,10 @@ export function startQQ(): void {
   const busy = new Set<string>() // 正在处理的会话，避免并发
   const controllers = new Map<string, AbortController>() // 每个在跑会话的中断句柄，供「叫停」用
   const seqOf = new Map<string, number>() // 每个 msg_id 的回复序号（官方要求 msg_seq 唯一）
+  // 每个在跑会话的「最新进度」：begin=任务开始时刻，text/at=最后一条工具进度及其时刻。
+  // 用户在任务进行中再发消息时，回这条最新进度（而非干巴巴的「还在处理中」）。
+  const progress = new Map<string, { begin: number; text: string; at: number }>()
+  const elapsed = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`)
 
   const authHeader = async () => ({ Authorization: `QQBot ${await tokens.get()}`, 'Content-Type': 'application/json' })
 
@@ -182,6 +189,46 @@ export function startQQ(): void {
     return `已通过 QQ 发送图片：${source}`
   }
 
+  // 发文件：与 sendImage 同一套「先传后发」流程，file_type:4（图片=1，视频=2，语音=3，通用文件=4，PDF 等走这里）。
+  // ⚠️ 官方富媒体上传接口（file_type/url/file_data）不接受文件名参数，file_data(base64) 上传时
+  //   服务端拿不到原始扩展名，QQ 客户端收到后文件常常没有后缀、双击打不开。查过官方文档和 botpy 官方 SDK
+  //   示例都证实没有 filename 字段可传——这是平台限制，不是我们上传逻辑的 bug。
+  //   退而求其次：额外发一条文字提示原始文件名，收到人手动重命名即可打开。
+  async function sendFile(target: Target, msgId: string, source: string): Promise<string> {
+    const isUrl = /^https?:\/\//i.test(source)
+    const filename = isUrl ? decodeURIComponent(source.split('/').pop() || source) : basename(resolve(source))
+    const uploadBody: Record<string, any> = { file_type: 4, srv_send_msg: false }
+    if (isUrl) {
+      uploadBody.url = source
+    } else {
+      const path = resolve(source)
+      uploadBody.file_data = readFileSync(path).toString('base64')
+    }
+    const up = await fetch(filesUrl(target), {
+      method: 'POST',
+      headers: await authHeader(),
+      body: JSON.stringify(uploadBody),
+    })
+    const upJson: any = await up.json().catch(() => ({}))
+    if (!up.ok || !upJson.file_info) {
+      return `发文件失败（上传阶段 HTTP ${up.status}）: ${JSON.stringify(upJson).slice(0, 200)}`
+    }
+    const seq = (seqOf.get(msgId) ?? 0) + 1
+    seqOf.set(msgId, seq)
+    const res = await fetch(msgUrl(target), {
+      method: 'POST',
+      headers: await authHeader(),
+      body: JSON.stringify({ msg_type: 7, media: { file_info: upJson.file_info }, msg_id: msgId, msg_seq: seq }),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      return `发文件失败（发送阶段 HTTP ${res.status}）: ${detail.slice(0, 200)}`
+    }
+    // 直接补一条文字，别指望模型转述会带上——QQ 官方接口不传文件名，收到的文件大概率没后缀。
+    await sendReply(target, msgId, `📎 文件名：${filename}\n（QQ 文件消息不带后缀，若收到后打不开，手动重命名成上面这个文件名即可）`)
+    return `已通过 QQ 发送文件：${source}`
+  }
+
   // 发语音：把 WAV 字节以 base64 上传富媒体(file_type:3)拿 file_info，再以 msg_type:3 被动回复。
   // 与 sendImage 同一套「先传后发」流程，区别只在 file_type 和 msg_type。
   async function sendVoice(target: Target, msgId: string, wav: Buffer): Promise<boolean> {
@@ -227,6 +274,21 @@ export function startQQ(): void {
     },
   } as const
 
+  const SEND_FILE_SCHEMA = {
+    type: 'function',
+    function: {
+      name: 'send_file',
+      description: '通过 QQ 给当前用户发送一个文件（如 PDF）。用于用户要求"发送PDF/发文件/把某份文档发过来"等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '本地文件路径，或以 http(s):// 开头的文件 URL' },
+        },
+        required: ['path'],
+      },
+    },
+  } as const
+
   // 处理一条进来的消息（群@ 或 单聊）。
   async function handleMessage(
     target: Target,
@@ -262,7 +324,11 @@ export function startQQ(): void {
       return
     }
     if (text === '/help') {
-      await sendReply(target, msgId, 'ai · QQ\n直接发消息即可让我建文件/读写/跑命令。\n/clear 清空上下文')
+      await sendReply(
+        target,
+        msgId,
+        'ai · QQ\n直接发消息即可让我建文件/读写/跑命令。\n常驻终端：说「开个终端跑 claude」「看下终端日志」「给终端发…」即可（需机器装 tmux）。\n/clear 清空上下文',
+      )
       return
     }
 
@@ -272,11 +338,23 @@ export function startQQ(): void {
         controllers.get(sessionId)?.abort()
         await sendReply(target, msgId, '🛑 已停止当前任务。')
       } else {
-        await sendReply(target, msgId, '上一条还在处理中，稍等…（发「停」可中断）')
+        // 回最新进度：当前在干什么 + 距上次进度多久 + 任务总耗时，比「还在处理中」有用得多。
+        const p = progress.get(sessionId)
+        if (p) {
+          const now = Date.now()
+          await sendReply(
+            target,
+            msgId,
+            `⏳ ${p.text}\n（该步 ${elapsed(now - p.at)}，本任务已 ${elapsed(now - p.begin)}；发「停」可中断）`,
+          )
+        } else {
+          await sendReply(target, msgId, '上一条还在处理中，稍等…（发「停」可中断）')
+        }
       }
       return
     }
     busy.add(sessionId)
+    progress.set(sessionId, { begin: Date.now(), text: '正在思考…', at: Date.now() })
     const controller = new AbortController()
     controllers.set(sessionId, controller)
 
@@ -302,8 +380,11 @@ export function startQQ(): void {
         provider: cfg.provider,
         signal: controller.signal,
         extraTools: {
-          schemas: [SEND_IMAGE_SCHEMA],
-          run: (_name, args) => sendImage(target, msgId, String(args.path ?? '')),
+          schemas: [SEND_IMAGE_SCHEMA, SEND_FILE_SCHEMA],
+          run: (name, args) =>
+            name === 'send_file'
+              ? sendFile(target, msgId, String(args.path ?? ''))
+              : sendImage(target, msgId, String(args.path ?? '')),
         },
       })) {
         // 官方被动回复对单条 msg_id 的回复条数有限制，所以只回「文字结果」，跳过工具进度噪音。
@@ -312,20 +393,35 @@ export function startQQ(): void {
           if (!voiceReply) await sendReply(target, msgId, out.content)
           answers.push(out.content)
           said = true
+        } else if (out.type === 'tool') {
+          // 工具进度不主动推给用户（噪音 + 条数限制），只记成「最新进度」，等用户来问时再回。
+          progress.set(sessionId, { begin: progress.get(sessionId)?.begin ?? Date.now(), text: out.summary, at: Date.now() })
         } else if (out.type === 'limit') {
           await sendReply(target, msgId, `⏸ 已连续执行 ${out.steps} 步仍未结束。回复「继续」可接着跑。`)
           said = true
         }
       }
-      // 语音回复：把整段答案合成语音发出；TTS/发送失败或被截断时回退/补发文字，保证用户拿得到内容。
+      // 语音回复：把整段答案合成语音发出。配了豆包就优先用豆包音色，失败时退回本机 say；
+      // 两个引擎都失败，或语音发送失败/被截断时，补发文字，保证用户总能拿到内容。
       if (voiceReply && answers.length) {
         const full = answers.join('\n')
+        let synth: { wav: Buffer; truncated: boolean } | undefined
         try {
-          const { wav, truncated } = await synthesizeWav(full, qq.voice)
-          const ok = await sendVoice(target, msgId, wav)
-          if (!ok || truncated) await sendReply(target, msgId, full)
+          synth = useDoubao ? await synthesizeDoubaoWav(full, doubaoTts) : await synthesizeWav(full, qq.voice)
         } catch (e: any) {
-          console.error('TTS 合成失败，回退文字:', e?.message ?? e)
+          console.error(`${useDoubao ? '豆包' : '本机'} TTS 合成失败${useDoubao ? '，回退本机 say' : ''}:`, e?.message ?? e)
+          if (useDoubao) {
+            try {
+              synth = await synthesizeWav(full, qq.voice)
+            } catch (e2: any) {
+              console.error('本机 TTS 也失败，回退文字:', e2?.message ?? e2)
+            }
+          }
+        }
+        if (synth) {
+          const ok = await sendVoice(target, msgId, synth.wav)
+          if (!ok || synth.truncated) await sendReply(target, msgId, full)
+        } else {
           await sendReply(target, msgId, full)
         }
       }
@@ -343,6 +439,7 @@ export function startQQ(): void {
     } finally {
       busy.delete(sessionId)
       controllers.delete(sessionId)
+      progress.delete(sessionId)
     }
   }
 

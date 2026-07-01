@@ -14,6 +14,7 @@ import {
   saveWechatConfig,
   saveSmtpConfig,
   loadSmtpConfig,
+  saveDoubaoTtsConfig,
   loadStocksConfig,
   saveStocksConfig,
   upsertStockRule,
@@ -58,6 +59,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai wechat                启动企业微信回调服务（配合 cloudflared 隧道接入企业微信）
   ai --set-wechat <CorpID> <AgentId> <Secret> <Token> <EncodingAESKey>  保存企业微信凭据
   ai --set-smtp <邮箱> <应用专用密码> [host] [port]  保存发件邮箱（默认 smtp.gmail.com:465）
+  ai --set-doubao-tts <appid> <token> <voice_type> [resource_id] [secret_key]  保存豆包(火山引擎)语音合成大模型凭据，QQ 语音回复优先用它（未配则退回本机 say）
   ai --set-key <KEY>       保存 API key 到 ${CONFIG_PATH}
   ai --set-model <MODEL>   保存模型名到 ${CONFIG_PATH}（默认 ${DEFAULT_MODEL}）
   ai --set-base-url <URL>  保存 API 地址到 ${CONFIG_PATH}（默认 ${DEFAULT_BASE_URL}）
@@ -258,6 +260,23 @@ if (argv[0] === '--set-smtp') {
   }
   saveSmtpConfig(patch)
   console.log(`已保存发件邮箱 ${user}（${host ?? 'smtp.gmail.com'}:${port ?? 465}）。`)
+  process.exit(0)
+}
+
+if (argv[0] === '--set-doubao-tts') {
+  const [, appId, token, voiceType, resourceId, secretKey] = argv
+  if (!appId || !token || !voiceType) {
+    console.error('用法: ai --set-doubao-tts <appid> <token> <voice_type> [resource_id] [secret_key]')
+    console.error('appid/token 在火山引擎控制台「语音技术」应用的服务接口认证信息里获取；')
+    console.error('voice_type(音色) 在控制台「音色列表」查，如 zh_female_xxx_moon_bigtts。')
+    console.error('resource_id 一般不用填，会按 voice_type 后缀自动推断(mars/moon→seed-tts-1.0，uranus→seed-tts-2.0)。')
+    process.exit(1)
+  }
+  const patch: Record<string, unknown> = { appId, token, voiceType }
+  if (resourceId) patch.resourceId = resourceId
+  if (secretKey) patch.secretKey = secretKey
+  saveDoubaoTtsConfig(patch)
+  console.log(`已保存豆包 TTS 凭据（voice=${voiceType}${resourceId ? `, resource_id=${resourceId}` : '（自动推断 resource_id）'}）。`)
   process.exit(0)
 }
 
