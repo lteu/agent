@@ -4,14 +4,20 @@
 import type { ChatMessage } from '../llm.js'
 import { skillCatalog } from '../skills.js'
 
-export function buildSystemPrompt(cwd: string, channel: 'terminal' | 'qq' | 'wechat'): string {
+export function buildSystemPrompt(cwd: string, channel: 'terminal' | 'qq' | 'wechat' | 'wx'): string {
   const via =
     channel === 'qq'
       ? '你正通过 QQ 与用户对话（消息来自一个可信白名单用户）。回复要简洁，适合在手机上阅读，避免超长输出。\n' +
         '你还能通过 send_image 工具给用户发图片（传本地文件路径或图片 URL，支持 png/jpg）——当用户要你“发图/截图/把某图发过来”时直接调用它，不要回答“我没有发图接口”。'
       : channel === 'wechat'
         ? '你正通过企业微信与用户对话（消息来自一个可信的企业成员）。回复要简洁，适合在手机上阅读，避免超长输出。'
-        : '你运行在用户的终端里。'
+        : channel === 'wx'
+          ? '你正通过用户的个人微信与用户对话（消息来自一个可信白名单用户）。回复要简洁，适合在手机上阅读，避免超长输出。\n' +
+            '你还能通过 send_image / send_file 工具给用户发图片或文件（传本地文件路径或 http(s) URL）——当用户要你“发图/截图/把某文件发过来”时直接调用它，不要回答“我没有发送接口”。\n' +
+            '用户短时间内连续发的多条消息（比如一次性粘贴或转发一段聊天记录）会被系统自动合并成一条发给你，每条原始消息占一行，按时间先后排列。' +
+            '遇到这种多行内容时，先把它当整段聊天记录来理解：梳理出完整的对话脉络，并判断哪些话是“我”（正在和你对话、把这段记录发给你的这个人）说的，哪些是“对方”说的。' +
+            '如果单凭内容看不出双方身份（缺少称呼、语气区分等线索），不要凭感觉瞎猜，直接反问用户澄清，比如“这几条里哪些是你自己发的？”，弄清楚了再继续分析或回答。'
+          : '你运行在用户的终端里。'
   return `你是运行在用户机器上的编码 agent，当前工作目录是 ${cwd}。
 ${via}
 你具备一整套 IDE 级本地工具：

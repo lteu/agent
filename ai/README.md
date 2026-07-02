@@ -265,6 +265,104 @@ launchctl bootout gui/$(id -u)/com.lteu.ai-qq
 
 > 注意：LaunchAgent 只在**你登录后**运行（登录界面/注销时不跑）；机器睡眠时 WebSocket 也会断开，唤醒后 `KeepAlive` 会自动重新连接。
 
+## 通过微信远程操控（`ai wx`）
+
+让 `ai` 接入你自己的**个人微信**：在微信里给绑定账号发消息，就能远程让它在你这台机器上建文件、读写、跑命令。
+走的是微信官方 **ilink 机器人协议**（`ilinkai.weixin.qq.com`，域名在 `weixin.qq.com` 官方域下，由腾讯 DNS 直接解析），
+扫码绑定、长轮询收发，不是模拟个人号登录协议，不存在被判定异常登录的风险。
+架构和 QQ 一样解耦——终端 / QQ / 微信共用同一个 agent 引擎（`src/agent/`），微信只是另一个「入口」。
+
+### 1. 扫码绑定
+
+```bash
+ai wx-login
+```
+
+终端里会打印一个二维码，用微信扫一下、在手机上确认即可（无需服务器、无需内网穿透、无需注册开发者账号）。
+绑定成功后凭据存在 `~/.ai/config.json`，绑定账号本人默认自动进白名单。
+
+### 2. 启动
+
+```bash
+ai wx
+```
+
+之后直接在微信里给绑定的账号发消息即可：
+- 短时间内连发的多条消息（比如粘贴/转发一段聊天记录）会自动合并成一条再交给 agent，避免逐条触发「还在处理中」；
+- `/clear` 清空当前会话上下文，`/help` 看用法；
+- 发「停」可中断正在执行的任务。
+
+想让其他人也能操控，追加白名单：
+
+```bash
+ai --wx-allow <ilink_user_id>   # 未授权用户发消息会自动回显自己的 ilink_user_id，抄下来加进来即可
+```
+
+### ⚠️ 安全须知
+
+同 QQ：`ai` 自带 `run_bash` / `write_file`，**等于把你机器的 shell 暴露给能操控 bot 的人**。
+微信入口做了**强制 ilink_user_id 白名单**，未授权者只会收到「回显标识」的提示，**不触发任何 agent 动作**。
+
+### 让微信服务常驻后台（macOS LaunchAgent）
+
+`ai wx` 是前台进程，关掉终端就停了。要让它**登录即启动、崩溃自动拉起**，用 LaunchAgent（和 `ai serve` 一样的套路）。
+
+> ⚠️ LaunchAgent 只保证「进程不死、登录自启」。`wx` 运行时会自动 `caffeinate -i` 阻止系统**空闲**休眠，但**合上笔记本盖子的强制休眠不受约束**（除非接电源 + 外接显示器）。想真正 7×24 常驻，请保持开盖或外接电源+显示器。
+
+新建 `~/Library/LaunchAgents/com.<你的名字>.ai-wx.plist`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>com.lteu.ai-wx</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>  <!-- which node -->
+        <string>/opt/homebrew/bin/ai</string>     <!-- which ai -->
+        <string>wx</string>
+    </array>
+    <key>RunAtLoad</key>        <true/>           <!-- 登录即启动 -->
+    <key>KeepAlive</key>        <true/>           <!-- 崩溃/退出自动拉起 -->
+    <key>ThrottleInterval</key> <integer>15</integer> <!-- 防止配置错误时疯狂重启 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key> <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key> <string>/Users/你/Library/Logs/ai-wx.out.log</string>
+    <key>StandardErrorPath</key> <string>/Users/你/Library/Logs/ai-wx.err.log</string>
+</dict>
+</plist>
+```
+
+> 路径按 `which node` / `which ai` 的实际结果填。Intel 机型 homebrew 通常在 `/usr/local/bin`。
+> 环境变量（`AI_API_KEY` 等）如果没写进 `~/.zshrc`，需要加到 `EnvironmentVariables` 字典里。
+
+加载并启动：
+
+```bash
+plutil -lint ~/Library/LaunchAgents/com.lteu.ai-wx.plist        # 校验格式
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lteu.ai-wx.plist
+launchctl enable    gui/$(id -u)/com.lteu.ai-wx
+launchctl kickstart -p gui/$(id -u)/com.lteu.ai-wx              # 立即跑一次
+```
+
+常用管理命令：
+
+```bash
+# 查看状态 / PID / 最近一次退出码
+launchctl print gui/$(id -u)/com.lteu.ai-wx | grep -E 'state|pid|last exit'
+# 看日志
+tail -f ~/Library/Logs/ai-wx.out.log
+# 重启（改了配置、白名单或代码后）
+launchctl kickstart -k gui/$(id -u)/com.lteu.ai-wx
+# 停止 / 卸载
+launchctl bootout gui/$(id -u)/com.lteu.ai-wx
+```
+
+> 注意：LaunchAgent 只在**你登录后**运行（登录界面/注销时不跑）；机器睡眠时长轮询也会断开，唤醒后 `KeepAlive` 会自动重新连接。
+
 ## 美股 / 港股监控（`ai watch`）
 
 按自选规则轮询 Yahoo 行情，触发条件时**发邮件 + 终端打印**告警。

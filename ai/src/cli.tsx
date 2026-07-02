@@ -12,6 +12,7 @@ import {
   saveQQConfig,
   addQQAllow,
   saveWechatConfig,
+  addWxAllow,
   saveSmtpConfig,
   loadSmtpConfig,
   saveDoubaoTtsConfig,
@@ -58,8 +59,11 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai --set-stocks-email <邮箱[,邮箱...]>  设置告警邮件收件人（多个用逗号分隔）
   ai wechat                启动企业微信回调服务（配合 cloudflared 隧道接入企业微信）
   ai --set-wechat <CorpID> <AgentId> <Secret> <Token> <EncodingAESKey>  保存企业微信凭据
+  ai wx-login              扫码绑定个人微信（微信官方 ilink 机器人协议，无需服务器/内网穿透）
+  ai wx                    启动个人微信服务（长轮询收发消息，白名单内可操控 agent）
+  ai --wx-allow <ilink_user_id>  往个人微信白名单追加一个用户（未授权用户发消息会回显其标识）
   ai --set-smtp <邮箱> <应用专用密码> [host] [port]  保存发件邮箱（默认 smtp.gmail.com:465）
-  ai --set-doubao-tts <appid> <token> <voice_type> [resource_id] [secret_key]  保存豆包(火山引擎)语音合成大模型凭据，QQ 语音回复优先用它（未配则退回本机 say）
+  ai --set-doubao-tts appid=.. token=.. [voice=..] [voice_zh=..] [voice_en=..] [voice_other=..]  保存豆包(火山引擎)语音合成大模型凭据，按文本语种选音色，QQ 语音回复优先用它（未配则退回本机 say）；均为 key=value，只传要改的字段
   ai --set-key <KEY>       保存 API key 到 ${CONFIG_PATH}
   ai --set-model <MODEL>   保存模型名到 ${CONFIG_PATH}（默认 ${DEFAULT_MODEL}）
   ai --set-base-url <URL>  保存 API 地址到 ${CONFIG_PATH}（默认 ${DEFAULT_BASE_URL}）
@@ -245,6 +249,16 @@ if (argv[0] === '--set-wechat') {
   process.exit(0)
 }
 
+if (argv[0] === '--wx-allow') {
+  if (!argv[1]) {
+    console.error('用法: ai --wx-allow <ilink_user_id>')
+    process.exit(1)
+  }
+  const list = addWxAllow(argv[1])
+  console.log(`白名单已更新: ${list.join(', ')}`)
+  process.exit(0)
+}
+
 if (argv[0] === '--set-smtp') {
   const [, user, pass, host, port] = argv
   if (!user || !pass) {
@@ -264,19 +278,32 @@ if (argv[0] === '--set-smtp') {
 }
 
 if (argv[0] === '--set-doubao-tts') {
-  const [, appId, token, voiceType, resourceId, secretKey] = argv
-  if (!appId || !token || !voiceType) {
-    console.error('用法: ai --set-doubao-tts <appid> <token> <voice_type> [resource_id] [secret_key]')
-    console.error('appid/token 在火山引擎控制台「语音技术」应用的服务接口认证信息里获取；')
-    console.error('voice_type(音色) 在控制台「音色列表」查，如 zh_female_xxx_moon_bigtts。')
-    console.error('resource_id 一般不用填，会按 voice_type 后缀自动推断(mars/moon→seed-tts-1.0，uranus→seed-tts-2.0)。')
+  // 全部 key=value、全部可选、只合并不整体覆盖——单独改音色时不会误把 appid/token 顶掉。
+  const kv: Record<string, string> = {}
+  for (const arg of argv.slice(1)) {
+    const eq = arg.indexOf('=')
+    if (eq > 0) kv[arg.slice(0, eq)] = arg.slice(eq + 1)
+  }
+  if (!Object.keys(kv).length) {
+    console.error(
+      '用法: ai --set-doubao-tts appid=<appid> token=<token> [voice=<默认音色>] [voice_zh=<中文音色>] [voice_en=<英文音色>] [voice_other=<其他语种音色>] [resource_id=<覆盖自动推断>] [secret_key=<预留>]',
+    )
+    console.error('appid/token 在火山引擎控制台「语音技术」应用的服务接口认证信息里获取。')
+    console.error('每项都是 key=value，只传要改的字段即可（如只改音色，不用重传 appid/token）。')
+    console.error('例: ai --set-doubao-tts appid=xxx token=xxx voice_zh=ICL_zh_male_wenrouxuezhang_tob voice_en=en_male_hades_moon_bigtts voice_other=multi_male_xudong_conversation_wvae_bigtts')
     process.exit(1)
   }
-  const patch: Record<string, unknown> = { appId, token, voiceType }
-  if (resourceId) patch.resourceId = resourceId
-  if (secretKey) patch.secretKey = secretKey
+  const patch: Record<string, unknown> = {}
+  if (kv.appid) patch.appId = kv.appid
+  if (kv.token) patch.token = kv.token
+  if (kv.voice) patch.voiceType = kv.voice
+  if (kv.voice_zh) patch.voiceTypeZh = kv.voice_zh
+  if (kv.voice_en) patch.voiceTypeEn = kv.voice_en
+  if (kv.voice_other) patch.voiceTypeOther = kv.voice_other
+  if (kv.resource_id) patch.resourceId = kv.resource_id
+  if (kv.secret_key) patch.secretKey = kv.secret_key
   saveDoubaoTtsConfig(patch)
-  console.log(`已保存豆包 TTS 凭据（voice=${voiceType}${resourceId ? `, resource_id=${resourceId}` : '（自动推断 resource_id）'}）。`)
+  console.log(`已更新豆包 TTS 配置字段: ${Object.keys(kv).join(', ')}`)
   process.exit(0)
 }
 
@@ -781,6 +808,13 @@ if (argv[0] === 'serve') {
 } else if (argv[0] === 'wechat') {
   const { startWechat } = await import('./channels/wechat.js')
   startWechat()
+} else if (argv[0] === 'wx-login') {
+  const { setupWx } = await import('./channels/wx.js')
+  await setupWx()
+  process.exit(0)
+} else if (argv[0] === 'wx') {
+  const { startWx } = await import('./channels/wx.js')
+  startWx()
 } else if (argv[0] === 'watch') {
   const { startWatch } = await import('./channels/watch.js')
   startWatch()

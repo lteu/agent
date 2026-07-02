@@ -34,12 +34,13 @@ function getLogDir(): string {
   return join(projectRoot, 'log')
 }
 
-export type LogChannel = 'terminal' | 'qq' | 'wechat' | 'watch'
+export type LogChannel = 'terminal' | 'qq' | 'wechat' | 'wx' | 'watch'
 
 const CHANNEL_LABEL: Record<LogChannel, string> = {
   terminal: 'PC（终端）',
   qq: 'QQ',
   wechat: '企业微信',
+  wx: '微信',
   watch: '美股监控',
 }
 

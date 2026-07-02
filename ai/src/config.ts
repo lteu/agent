@@ -23,8 +23,14 @@ export type DoubaoTtsConfig = {
   appId?: string
   /** 该应用的 access token（控制台「服务接口认证信息」里获取），对应请求头 X-Api-Access-Key */
   token?: string
-  /** 音色代码(speaker/voice_type)，如 zh_female_linjianvhai_moon_bigtts；控制台「音色列表」可查 */
+  /** 默认音色(speaker/voice_type)，如 zh_female_linjianvhai_moon_bigtts；未按语种细分时用这个兜底 */
   voiceType?: string
+  /** 文本含中文字符时用的音色 */
+  voiceTypeZh?: string
+  /** 文本基本是纯 ASCII(英文)时用的音色 */
+  voiceTypeEn?: string
+  /** 其他语种(非中文、非纯 ASCII)时用的音色 */
+  voiceTypeOther?: string
   /** 请求头 X-Api-Resource-Id，一般按 voiceType 后缀自动推断，填了则覆盖自动推断结果 */
   resourceId?: string
   /** 控制台给的 secret key；当前版本 API 未用到（认证只需 appid+token），先存着以防以后要签名 */
@@ -46,6 +52,21 @@ export type WechatConfig = {
   whitelist?: string[]
   /** 本地回调服务监听端口，默认 8788 */
   port?: number
+}
+
+export type WxConfig = {
+  /** ilink 机器人 token（扫码绑定后获得），用于 Authorization: Bearer */
+  botToken?: string
+  /** 绑定的机器人账号 id（ilink_bot_id），发消息时作为 from_user_id */
+  botId?: string
+  /** 绑定的本人微信在 ilink 里的 user id（ilink_user_id），也是默认白名单 */
+  userId?: string
+  /** ilink 服务 baseURL，一般不用改，默认 https://ilinkai.weixin.qq.com */
+  baseUrl?: string
+  /** 白名单 ilink 用户 id：留空则只放行绑定账号本人（userId） */
+  whitelist?: string[]
+  /** 长轮询游标（get_updates_buf），程序自动维护，无需手填 */
+  buf?: string
 }
 
 export type SmtpConfig = {
@@ -96,6 +117,7 @@ export type Config = {
   provider?: string
   qq?: QQConfig
   wechat?: WechatConfig
+  wx?: WxConfig
   smtp?: SmtpConfig
   stocks?: StocksConfig
   doubaoTts?: DoubaoTtsConfig
@@ -239,6 +261,37 @@ export function saveWechatConfig(patch: Partial<WechatConfig>): void {
   writeConfig({ ...current, wechat: { ...current.wechat, ...patch } })
 }
 
+/** 读取个人微信（ilink）配置：环境变量优先，其次 config.json。 */
+export function loadWxConfig(): WxConfig {
+  const file = readFile().wx ?? {}
+  const envWhitelist = process.env.AI_WX_WHITELIST
+    ? process.env.AI_WX_WHITELIST.split(',').map(s => s.trim()).filter(Boolean)
+    : undefined
+  return {
+    botToken: process.env.AI_WX_TOKEN || file.botToken,
+    botId: process.env.AI_WX_BOTID || file.botId,
+    userId: process.env.AI_WX_USERID || file.userId,
+    baseUrl: process.env.AI_WX_BASEURL || file.baseUrl || 'https://ilinkai.weixin.qq.com',
+    whitelist: envWhitelist ?? file.whitelist ?? [],
+    buf: file.buf,
+  }
+}
+
+/** 合并并保存个人微信配置（传入字段覆盖，其余保留原值）。 */
+export function saveWxConfig(patch: Partial<WxConfig>): void {
+  const current = readFile()
+  writeConfig({ ...current, wx: { ...current.wx, ...patch } })
+}
+
+/** 往个人微信白名单追加一个 ilink 用户 id（去重），返回更新后的白名单。 */
+export function addWxAllow(userId: string): string[] {
+  const current = readFile()
+  const list = (current.wx?.whitelist ?? []).map(String)
+  if (!list.includes(userId)) list.push(userId)
+  writeConfig({ ...current, wx: { ...current.wx, whitelist: list } })
+  return list
+}
+
 /** 读取 SMTP 配置：环境变量优先，其次 config.json，再套用 Gmail 默认值。 */
 export function loadSmtpConfig(): Required<Pick<SmtpConfig, 'host' | 'port' | 'secure'>> &
   SmtpConfig {
@@ -271,6 +324,9 @@ export function loadDoubaoTtsConfig(): DoubaoTtsConfig {
     appId: process.env.AI_DOUBAO_TTS_APPID || file.appId,
     token: process.env.AI_DOUBAO_TTS_TOKEN || file.token,
     voiceType: process.env.AI_DOUBAO_TTS_VOICE || file.voiceType,
+    voiceTypeZh: process.env.AI_DOUBAO_TTS_VOICE_ZH || file.voiceTypeZh,
+    voiceTypeEn: process.env.AI_DOUBAO_TTS_VOICE_EN || file.voiceTypeEn,
+    voiceTypeOther: process.env.AI_DOUBAO_TTS_VOICE_OTHER || file.voiceTypeOther,
     resourceId: process.env.AI_DOUBAO_TTS_RESOURCE_ID || file.resourceId,
     secretKey: process.env.AI_DOUBAO_TTS_SECRET || file.secretKey,
   }
