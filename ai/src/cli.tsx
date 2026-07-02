@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs'
 import { useState, useRef, useCallback, useEffect, memo, useMemo } from 'react'
 import { render, Box, Text, useApp, useInput, Static } from 'ink'
 import MultilineInput from './MultilineInput.js'
@@ -47,6 +48,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
 
 用法:
   ai                       进入交互对话框（缺少 key 时会在启动时引导输入）
+  ai ask <问题>             非交互单轮问答，答案直接打印到 stdout（脚本/管道场景用）
+  ai ask --file <问题文件>  同上，问题内容从文件读取
   ai serve                 启动 QQ 官方机器人（q.qq.com 开放平台，白名单内可操控 agent）
   ai push <消息>           主动给白名单用户发一条 QQ 消息（官方限单聊每月 4 条）
   ai email <收件人> <主题> <正文>  用已配置的 SMTP 邮箱发一封邮件（收件人多个用逗号分隔）
@@ -328,6 +331,67 @@ if (argv[0] === 'email') {
     process.exit(0)
   } catch (e: any) {
     console.error(`✗ 发送失败: ${e?.message ?? String(e)}`)
+    process.exit(1)
+  }
+}
+
+if (argv[0] === 'ask') {
+  const rest = argv.slice(1)
+  const fileIdx = rest.indexOf('--file')
+  let question: string
+  if (fileIdx !== -1) {
+    const filePath = rest[fileIdx + 1]
+    if (!filePath) {
+      console.error('用法: ai ask --file <问题文件路径>')
+      process.exit(1)
+    }
+    try {
+      question = readFileSync(filePath, 'utf-8')
+    } catch (e: any) {
+      console.error(`✗ 读取问题文件失败: ${e?.message ?? String(e)}`)
+      process.exit(1)
+    }
+  } else {
+    question = rest.join(' ')
+  }
+  if (!question.trim()) {
+    console.error('用法: ai ask <问题>\n      ai ask --file <问题文件路径>')
+    process.exit(1)
+  }
+
+  const cfg = loadConfig()
+  if (!cfg.apiKey) {
+    console.error('未配置 API key。先运行: ai --set-key <KEY>')
+    process.exit(1)
+  }
+
+  const history: ChatMessage[] = [
+    { role: 'system', content: buildSystemPrompt(process.cwd(), 'terminal') },
+    { role: 'user', content: question },
+  ]
+
+  const answers: string[] = []
+  try {
+    for await (const ev of runAgent(history, {
+      apiKey: cfg.apiKey,
+      model: cfg.model,
+      baseURL: cfg.baseURL,
+      provider: cfg.provider,
+    })) {
+      if (ev.type === 'text') {
+        answers.push(ev.content)
+      } else if (ev.type === 'tool') {
+        console.error(`⚙ ${ev.summary}`)
+      } else if (ev.type === 'limit') {
+        console.error(`⏸ 已连续执行 ${ev.steps} 步仍未结束。`)
+      }
+    }
+    const answer = answers.join('\n')
+    console.log(answer)
+    logChat({ channel: 'terminal', sessionId: 'ask', question, answer })
+    process.exit(0)
+  } catch (e: any) {
+    console.error(`✗ 出错: ${e?.message ?? String(e)}`)
     process.exit(1)
   }
 }
