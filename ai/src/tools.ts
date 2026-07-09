@@ -16,6 +16,9 @@ import { sendMail, type Attachment } from './smtp.js'
 import { getQuotes, formatQuote } from './stocks.js'
 import { termOpen, termSend, termRead, termList, termKill } from './term.js'
 import type { ChatMessage } from './llm.js'
+import { PDFParse } from 'pdf-parse'
+import XLSX from 'xlsx'
+import JSZip from 'jszip'
 
 /** 执行工具时主进程注入的上下文：让 run_agent 这类工具能反过来调用模型。 */
 export type ToolContext = {
@@ -117,6 +120,52 @@ export const TOOL_SCHEMAS = [
     function: {
       name: 'read_file',
       description: '读取本地一个文本文件的内容。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件路径' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'excel_read',
+      description:
+        '读取本地 Excel 文件（.xlsx/.xls/.csv）内容，按工作表转成文本表格返回。用于「看看这份表格里有什么/汇总这份 Excel」这类需求。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件路径' },
+          sheet: { type: 'string', description: '只读取指定工作表名，默认读取全部工作表' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'pdf_read',
+      description:
+        '提取本地 PDF 文件的文本内容。用于「看看这份 PDF 写了什么/总结这份 PDF」这类需求。扫描版（图片）PDF 可能提取不到文字。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件路径' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'powerpoint_read',
+      description:
+        '提取本地 PowerPoint 文件（.pptx）每页幻灯片的文本内容。用于「看看这份 PPT 讲了什么」这类需求。不支持旧版二进制 .ppt。',
       parameters: {
         type: 'object',
         properties: {
@@ -410,6 +459,55 @@ export async function runTool(
     case 'read_file': {
       const path = resolve(String(args.path))
       const text = readFileSync(path, 'utf8')
+      return text.length > 20000 ? text.slice(0, 20000) + '\n…（已截断）' : text
+    }
+    case 'excel_read': {
+      const path = resolve(String(args.path))
+      const wb = XLSX.readFile(path)
+      const only = String(args.sheet ?? '').trim()
+      const names = only ? wb.SheetNames.filter(n => n === only) : wb.SheetNames
+      if (!names.length) {
+        return only
+          ? `未找到工作表「${only}」，可用工作表：${wb.SheetNames.join('、')}`
+          : '(工作簿无工作表)'
+      }
+      const text = names
+        .map(n => `# 工作表：${n}\n` + XLSX.utils.sheet_to_csv(wb.Sheets[n]))
+        .join('\n\n')
+      return text.length > 20000 ? text.slice(0, 20000) + '\n…（已截断）' : text
+    }
+    case 'pdf_read': {
+      const path = resolve(String(args.path))
+      const parser = new PDFParse({ data: readFileSync(path) })
+      try {
+        const result = await parser.getText()
+        const text = result.text.trim()
+        if (!text) return '(未提取到文本，可能是扫描版 PDF)'
+        return text.length > 20000 ? text.slice(0, 20000) + '\n…（已截断）' : text
+      } finally {
+        await parser.destroy()
+      }
+    }
+    case 'powerpoint_read': {
+      const path = resolve(String(args.path))
+      const zip = await JSZip.loadAsync(readFileSync(path))
+      const slideFiles = Object.keys(zip.files)
+        .filter(f => /^ppt\/slides\/slide\d+\.xml$/.test(f))
+        .sort((a, b) => {
+          const na = Number(a.match(/slide(\d+)\.xml$/)?.[1] ?? 0)
+          const nb = Number(b.match(/slide(\d+)\.xml$/)?.[1] ?? 0)
+          return na - nb
+        })
+      if (!slideFiles.length) return '(未找到幻灯片，请确认文件是 .pptx 格式)'
+      const decodeXmlEntities = (s: string) =>
+        s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      const parts: string[] = []
+      for (let i = 0; i < slideFiles.length; i++) {
+        const xml = await zip.files[slideFiles[i]].async('string')
+        const texts = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map(m => decodeXmlEntities(m[1]))
+        parts.push(`# 幻灯片 ${i + 1}\n` + (texts.join('\n') || '(无文本)'))
+      }
+      const text = parts.join('\n\n')
       return text.length > 20000 ? text.slice(0, 20000) + '\n…（已截断）' : text
     }
     case 'list_dir': {
@@ -737,6 +835,12 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return `写文件 ${args.path}`
     case 'read_file':
       return `读文件 ${args.path}`
+    case 'excel_read':
+      return `读表格 ${args.path}`
+    case 'pdf_read':
+      return `读 PDF ${args.path}`
+    case 'powerpoint_read':
+      return `读 PPT ${args.path}`
     case 'list_dir':
       return `列目录 ${args.path ?? '.'}`
     case 'run_bash': {

@@ -10,6 +10,11 @@ import {
   saveModel,
   saveBaseURL,
   saveProvider,
+  loadModels,
+  saveModelProfile,
+  removeModelProfile,
+  switchModel,
+  type ModelProfile,
   saveQQConfig,
   addQQAllow,
   saveWechatConfig,
@@ -71,6 +76,12 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai --set-model <MODEL>   保存模型名到 ${CONFIG_PATH}（默认 ${DEFAULT_MODEL}）
   ai --set-base-url <URL>  保存 API 地址到 ${CONFIG_PATH}（默认 ${DEFAULT_BASE_URL}）
   ai --set-provider <名称>  保存服务商显示名（仅用于界面/报错，如 OpenAI、通义千问）
+  ai --add-model <名字> model=<模型名> baseURL=<地址> [apiKey=<key>] [provider=<服务商>]  保存一个模型预设（不传 apiKey 则切换时沿用当前已保存的 key）
+  ai --list-models         列出已保存的模型预设，标注当前生效的那个
+  ai --models              --list-models 的别名
+  ai --model-list          --list-models 的别名
+  ai --use-model <名字>    切换到某个已保存的模型预设
+  ai --rm-model <名字>     删除一个模型预设
   ai --set-qq-app <ID> <SECRET>  保存 QQ 机器人 AppID 和 AppSecret
   ai --qq-allow <openid>   往 QQ 白名单追加一个 openid（可多次；未授权用户发消息会回显其 openid）
   ai --config              查看当前生效的完整配置（含默认值、文件值、环境变量）
@@ -90,6 +101,10 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   （兼容旧名 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL）
   配置文件 ${CONFIG_PATH}
   代码默认值
+
+对话框内命令:
+  /models           列出已保存的模型预设
+  /models <序号|名字>  切换到某个预设（当场生效，无需重启）
 
 对话框内快捷键:
   Enter           发送
@@ -115,6 +130,79 @@ if (argv[0] === '--config') {
   console.log(`  apiKey   = ${effective.apiKey ? '****' + effective.apiKey.slice(-4) : '(未设置)'}`)
   console.log(`  model    = ${effective.model}`)
   console.log(`  baseURL  = ${effective.baseURL}`)
+  const models = raw.models ?? []
+  if (models.length) {
+    console.log('')
+    console.log(`──────── 模型预设（${models.length} 个，activeModel = ${effective.activeModel || '(未设置)'}） ────────`)
+    for (const m of models) {
+      console.log(`  ${m.name}  ${m.model} @ ${m.baseURL}${m.provider ? `  (${m.provider})` : ''}`)
+    }
+  }
+  process.exit(0)
+}
+
+if (argv[0] === '--add-model') {
+  const name = argv[1]
+  if (!name) {
+    console.error('用法: ai --add-model <名字> model=<模型名> baseURL=<地址> [apiKey=<key>] [provider=<服务商>]')
+    console.error('例:   ai --add-model qwen model=qwen-plus baseURL=https://dashscope.aliyuncs.com/compatible-mode/v1 apiKey=sk-xxx provider=通义千问')
+    process.exit(1)
+  }
+  const kv: Record<string, string> = {}
+  for (const arg of argv.slice(2)) {
+    const eq = arg.indexOf('=')
+    if (eq > 0) kv[arg.slice(0, eq)] = arg.slice(eq + 1)
+  }
+  if (!kv.model || !kv.baseURL) {
+    console.error('至少要传 model=<模型名> 和 baseURL=<地址>；apiKey/provider 可选（不传 apiKey 则切换时沿用当前已保存的 apiKey）。')
+    process.exit(1)
+  }
+  const profile: ModelProfile = { name, model: kv.model, baseURL: kv.baseURL }
+  if (kv.apiKey) profile.apiKey = kv.apiKey
+  if (kv.provider) profile.provider = kv.provider
+  const list = saveModelProfile(profile)
+  console.log(`✓ 已保存模型「${name}」。当前共 ${list.length} 个预设，用 ai --use-model ${name}（或对话框内 /models）切换。`)
+  process.exit(0)
+}
+
+if (argv[0] === '--list-models' || argv[0] === '--models' || argv[0] === '--model-list') {
+  const list = loadModels()
+  const effective = loadConfig()
+  if (!list.length) {
+    console.log('暂无已保存的模型预设。用 ai --add-model <名字> model=.. baseURL=.. [apiKey=..] [provider=..] 添加。')
+  } else {
+    console.log(`已保存 ${list.length} 个模型预设：\n`)
+    list.forEach((m, i) => {
+      const cur = m.name === effective.activeModel ? '  ← 当前' : ''
+      console.log(`  ${i + 1}. ${m.name}  ${m.model} @ ${m.baseURL}${m.provider ? `  (${m.provider})` : ''}${cur}`)
+    })
+  }
+  process.exit(0)
+}
+
+if (argv[0] === '--use-model') {
+  const name = argv[1]
+  if (!name) {
+    console.error('用法: ai --use-model <名字>')
+    process.exit(1)
+  }
+  const profile = switchModel(name)
+  if (!profile) {
+    console.error(`未找到模型「${name}」。先用 ai --list-models（或 --models / --model-list）看已保存哪些。`)
+    process.exit(1)
+  }
+  console.log(`✓ 已切换到「${profile.name}」：${profile.model} @ ${profile.baseURL}`)
+  process.exit(0)
+}
+
+if (argv[0] === '--rm-model') {
+  const name = argv[1]
+  if (!name) {
+    console.error('用法: ai --rm-model <名字>')
+    process.exit(1)
+  }
+  const list = removeModelProfile(name)
+  console.log(`已删除「${name}」。剩余 ${list.length} 个预设。`)
   process.exit(0)
 }
 
@@ -595,6 +683,14 @@ function tailByRows(text: string, maxRows: number, cols: number): { shown: strin
 function App() {
   const { exit } = useApp()
   const [apiKey, setApiKey] = useState<string | undefined>(config.apiKey)
+  // 当前生效的模型参数：初始取自 config.json/环境变量；/models 切换预设时在这里更新，
+  // 当场生效、无需重启（headerProps/页脚/runAgent 都读它，而不是启动时的静态 config）。
+  const [modelConfig, setModelConfig] = useState({
+    model: config.model,
+    baseURL: config.baseURL,
+    provider: config.provider,
+    activeModel: config.activeModel,
+  })
   const [messages, setMessages] = useState<UIMessage[]>([])
   // 正在流式输出的助手草稿：实时打字机效果，定稿后并入 messages（Static）并清空。
   const [streaming, setStreaming] = useState('')
@@ -639,6 +735,40 @@ function App() {
       setError(null)
       const uid = ++idRef.current
       setMessages(prev => [...prev, { id: uid, role: 'user', content: text }])
+
+      // /models 本地命令：列出或切换模型预设。不进 LLM 对话历史、不占对话轮次。
+      const trimmed = text.trim()
+      if (trimmed === '/models' || trimmed.startsWith('/models ')) {
+        const pushLocal = (content: string) =>
+          setMessages(prev => [...prev, { id: ++idRef.current, role: 'tool', content, gap: true }])
+        const arg = trimmed.slice('/models'.length).trim()
+        const profiles = loadModels()
+        if (!arg) {
+          if (!profiles.length) {
+            pushLocal('暂无已保存的模型预设。用 ai --add-model <名字> model=.. baseURL=.. [apiKey=..] [provider=..] 添加。')
+          } else {
+            const lines = profiles.map((p, i) => {
+              const cur = p.name === modelConfig.activeModel ? '  ← 当前' : ''
+              return `  ${i + 1}. ${p.name}  ${p.model} @ ${p.baseURL}${cur}`
+            })
+            pushLocal(`已保存的模型（/models <序号|名字> 切换）：\n${lines.join('\n')}`)
+          }
+        } else {
+          const idx = Number(arg)
+          const name =
+            Number.isInteger(idx) && idx >= 1 && idx <= profiles.length ? profiles[idx - 1].name : arg
+          const profile = switchModel(name)
+          if (!profile) {
+            pushLocal(`✗ 未找到模型「${arg}」。先 /models 看看已保存哪些。`)
+          } else {
+            setModelConfig({ model: profile.model, baseURL: profile.baseURL, provider: profile.provider, activeModel: profile.name })
+            if (profile.apiKey) setApiKey(profile.apiKey)
+            pushLocal(`✓ 已切换到「${profile.name}」：${profile.model} @ ${profile.baseURL}`)
+          }
+        }
+        return
+      }
+
       setBusy(true)
 
       const history = historyRef.current
@@ -663,9 +793,9 @@ function App() {
       try {
         for await (const ev of runAgent(history, {
           apiKey: apiKey!,
-          model: config.model,
-          baseURL: config.baseURL,
-          provider: config.provider,
+          model: modelConfig.model,
+          baseURL: modelConfig.baseURL,
+          provider: modelConfig.provider,
           signal: controller.signal,
         })) {
           if (ev.type === 'delta') {
@@ -714,13 +844,13 @@ function App() {
         abortRef.current = null
       }
     },
-    [apiKey],
+    [apiKey, modelConfig],
   )
 
   // header props 用 useMemo 稳定引用，避免传给 memo(Header) 时每帧都是新对象
   const headerProps = useMemo(
-    () => ({ model: config.model, baseURL: config.baseURL }),
-    [config.model, config.baseURL],
+    () => ({ model: modelConfig.model, baseURL: modelConfig.baseURL }),
+    [modelConfig.model, modelConfig.baseURL],
   )
 
   // Static 的数据源：头部固定为第一行，其后是所有历史消息。
@@ -798,7 +928,7 @@ function App() {
       {/* 常驻页脚提示 */}
       <Box paddingX={1}>
         <Text dimColor>
-          {config.model} · Enter 发送 · 行尾 \ 换行 · Esc 中断 · Ctrl+C×2 退出
+          {modelConfig.model} · Enter 发送 · 行尾 \ 换行 · Esc 中断 · Ctrl+C×2 退出
         </Text>
       </Box>
     </Box>

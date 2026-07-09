@@ -109,12 +109,28 @@ export type StocksConfig = {
   emailTo?: string
 }
 
+/** 一个已保存的模型预设：切换时把这几项整体写进顶层 apiKey/model/baseURL/provider。 */
+export type ModelProfile = {
+  /** 自定义名字，/models 或 --use-model 用它来选（大小写不敏感） */
+  name: string
+  model: string
+  baseURL: string
+  /** 不传则切换时沿用当前已保存的 apiKey（多个预设共用同一个 key 时可省略） */
+  apiKey?: string
+  /** 服务商显示名，仅用于界面/报错（如 "OpenAI"、"通义千问"） */
+  provider?: string
+}
+
 export type Config = {
   apiKey?: string
   model?: string
   baseURL?: string
   /** 服务商显示名，仅用于界面/报错（如 "OpenAI"、"通义千问"）。不影响连接。 */
   provider?: string
+  /** 已保存的模型预设列表，供 /models（对话框内）或 --use-model 切换。 */
+  models?: ModelProfile[]
+  /** 当前生效的预设名（仅用于 /models 列表里标注「当前」，不影响实际连接参数）。 */
+  activeModel?: string
   qq?: QQConfig
   wechat?: WechatConfig
   wx?: WxConfig
@@ -170,6 +186,7 @@ export function loadRawConfig(): Config {
 export function loadConfig(): Required<Pick<Config, 'model' | 'baseURL'>> & {
   apiKey?: string
   provider?: string
+  activeModel?: string
 } {
   const file = readFile()
   return {
@@ -181,6 +198,7 @@ export function loadConfig(): Required<Pick<Config, 'model' | 'baseURL'>> & {
       file.baseURL ||
       DEFAULT_BASE_URL,
     provider: process.env.AI_PROVIDER || file.provider,
+    activeModel: file.activeModel,
   }
 }
 
@@ -202,6 +220,54 @@ export function saveBaseURL(baseURL: string): void {
 
 export function saveProvider(provider: string): void {
   writeConfig({ ...readFile(), provider })
+}
+
+// ———————————————————————————————————————————————
+// 模型预设（多套 model/baseURL/apiKey 组合，按名字切换）
+// ———————————————————————————————————————————————
+
+/** 读取所有已保存的模型预设。 */
+export function loadModels(): ModelProfile[] {
+  return readFile().models ?? []
+}
+
+/** 新增或更新一个模型预设（按 name 大小写不敏感去重，字段增量合并）。 */
+export function saveModelProfile(profile: ModelProfile): ModelProfile[] {
+  const current = readFile()
+  const list = (current.models ?? []).slice()
+  const idx = list.findIndex(m => m.name.toLowerCase() === profile.name.toLowerCase())
+  if (idx >= 0) list[idx] = { ...list[idx], ...profile }
+  else list.push(profile)
+  writeConfig({ ...current, models: list })
+  return list
+}
+
+/** 删除一个模型预设，返回更新后的列表。 */
+export function removeModelProfile(name: string): ModelProfile[] {
+  const current = readFile()
+  const list = (current.models ?? []).filter(m => m.name.toLowerCase() !== name.toLowerCase())
+  writeConfig({ ...current, models: list })
+  return list
+}
+
+/**
+ * 按名字切换当前生效模型：把该预设的 model/baseURL/provider（以及 apiKey，若预设带了）
+ * 写进顶层配置，并记下 activeModel 名字（仅用于 /models 列表标注「当前」）。
+ * 找不到该名字则返回 undefined，调用方据此提示用户。
+ */
+export function switchModel(name: string): ModelProfile | undefined {
+  const current = readFile()
+  const profile = (current.models ?? []).find(m => m.name.toLowerCase() === name.toLowerCase())
+  if (!profile) return undefined
+  writeConfig({
+    ...current,
+    apiKey: profile.apiKey ?? current.apiKey,
+    model: profile.model,
+    baseURL: profile.baseURL,
+    provider: profile.provider,
+    activeModel: profile.name,
+  })
+  return profile
 }
 
 // ———————————————————————————————————————————————

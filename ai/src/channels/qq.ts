@@ -444,17 +444,20 @@ export function startQQ(): void {
   }
 
   // —— WebSocket 网关：连接 + 心跳 + 重连 ——
+  const ts = () => new Date().toISOString()
   let backoff = 1000
   const connect = async () => {
     let gatewayUrl: string
     try {
       // 注意：网关接口是 /gateway（不带 /v2），而发消息接口才是 /v2/...
-      const res = await fetch(`${apiBase}/gateway`, { headers: await authHeader() })
+      // 加超时：undici fetch 默认不超时，网络半通(丢包不断连)时会挂住 connect()，
+      // 令整条重连链路卡死——「进程仍在跑但再也连不上」，比明确报错更难排查。
+      const res = await fetch(`${apiBase}/gateway`, { headers: await authHeader(), signal: AbortSignal.timeout(10_000) })
       const json: any = await res.json()
       gatewayUrl = json.url
       if (!gatewayUrl) throw new Error('网关返回为空: ' + JSON.stringify(json).slice(0, 200))
     } catch (e: any) {
-      console.error('获取网关失败，5s 后重试：', e?.message ?? e)
+      console.error(`[${ts()}] 获取网关失败，5s 后重试：`, e?.message ?? e)
       setTimeout(connect, 5000)
       return
     }
@@ -479,7 +482,7 @@ export function startQQ(): void {
       if (reconnected) return
       reconnected = true
       stop()
-      console.error(`QQ 网关${why}，${backoff / 1000}s 后重连…`)
+      console.error(`[${ts()}] QQ 网关${why}，${backoff / 1000}s 后重连…`)
       setTimeout(connect, backoff)
       backoff = Math.min(backoff * 2, 30000)
       try {
@@ -488,10 +491,6 @@ export function startQQ(): void {
         /* 已经断了就忽略 */
       }
     }
-
-    ws.addEventListener('open', () => {
-      backoff = 1000
-    })
 
     ws.addEventListener('message', async (e: MessageEvent) => {
       lastInbound = Date.now()
@@ -538,8 +537,12 @@ export function startQQ(): void {
         const t: string = pkt.t
         const d: any = pkt.d ?? {}
         if (t === 'READY') {
+          // 只有真正握手成功(READY)才重置退避，而不是一 TCP/WS open 就重置——
+          // 否则「连上即被 op:7 踢」的情况下每次都从 1s 重试，等于 1s 一次疯狂重连服务端，
+          // 反而可能延长服务端旧会话的冲突/限流窗口。
+          backoff = 1000
           const name = d?.user?.username ?? '(机器人)'
-          console.log(`✦ ai · QQ 官方机器人已上线：${name}`)
+          console.log(`[${ts()}] ✦ ai · QQ 官方机器人已上线：${name}`)
           console.log(`  白名单 openid: ${whitelist.size ? [...whitelist].join(', ') : '(空——首条消息会回显 openid)'}`)
           console.log(`  环境: ${qq.sandbox ? '沙箱' : '正式'}  工作目录: ${process.cwd()}`)
           return
@@ -564,11 +567,11 @@ export function startQQ(): void {
       }
     })
 
-    ws.addEventListener('close', () => {
-      reconnect('断开')
+    ws.addEventListener('close', (e: CloseEvent) => {
+      reconnect(`断开(code=${e.code}${e.reason ? ' reason=' + e.reason : ''})`)
     })
-    ws.addEventListener('error', () => {
-      reconnect('出错')
+    ws.addEventListener('error', (e: any) => {
+      reconnect(`出错(${e?.message ?? e?.error?.message ?? e})`)
     })
   }
 

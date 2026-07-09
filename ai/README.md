@@ -51,6 +51,37 @@ export DEEPSEEK_API_KEY=sk-xxxx   # 写进 ~/.zshrc 持久化
 - `AI_MODEL`：默认 `deepseek-chat`，可设 `deepseek-reasoner`
 - `DEEPSEEK_BASE_URL`：默认 `https://api.deepseek.com`
 
+## 切换模型（多套预设）
+
+只用一个服务商时，直接 `--set-key` / `--set-model` / `--set-base-url` 改顶层配置即可（见上）。
+但如果你手上有好几套凭据（DeepSeek、豆包、公司内网网关……）经常来回切，可以把每套存成一个**命名预设**，随时切换，无需每次重新输入 key。
+
+保存一个预设：
+
+```bash
+ai --add-model deepseek model=deepseek-chat baseURL=https://api.deepseek.com apiKey=sk-xxxx
+ai --add-model doubao   model=doubao-seed-evolving baseURL=https://ark.cn-beijing.volces.com/api/v3 apiKey=ark-xxxx provider=豆包
+```
+
+- `model=` / `baseURL=` 必填，`apiKey=` / `provider=` 可选（不传 `apiKey` 则切换时沿用当前已保存的 key，多个预设共用同一个 key 时可省略这项）；
+- `baseURL` 只填到 `.../v1` 这一级，客户端会自动拼接 `/chat/completions`，不要把完整接口地址整段填进去。
+
+查看 / 切换 / 删除：
+
+```bash
+ai --list-models          # 列出所有预设，标注当前生效的那个
+ai --use-model doubao     # 切换：把该预设整体写进顶层 apiKey/model/baseURL/provider
+ai --rm-model doubao      # 删除一个预设
+```
+
+对话框内也能直接切，当场生效、不用重启：
+
+```
+/models              # 列出已保存的预设（同 --list-models）
+/models 2             # 按序号切换
+/models doubao        # 按名字切换
+```
+
 ## 使用
 
 ```bash

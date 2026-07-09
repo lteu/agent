@@ -1,6 +1,8 @@
-// 通用大模型客户端：任何 OpenAI 兼容的 /chat/completions 接口都能用。
-// 只要在配置里给出 baseURL / model / apiKey，即可对接 DeepSeek、OpenAI、
-// 通义千问、Moonshot、OpenRouter、本地 Ollama 等任意服务商。
+// 通用大模型客户端：优先支持任意 OpenAI 兼容的 /chat/completions 接口
+// （DeepSeek、OpenAI、通义千问、Moonshot、OpenRouter、本地 Ollama 等），
+// 另外原生支持 Anthropic（Claude）的 /v1/messages 协议——它和 OpenAI 格式不兼容，
+// 认证头、请求体、流式事件都不同，因此单独实现一套转换逻辑，对上层（engine.ts /
+// compact.ts）完全透明：一样的 ChatMessage[] 入参，一样的 Completion/StreamPart 出参。
 // 仅依赖 Node 内置的全局 fetch（Node 18+）。
 
 export type RawToolCall = {
@@ -21,16 +23,25 @@ export type StreamOptions = {
   apiKey: string
   model: string
   baseURL?: string
-  /** 服务商显示名，仅用于报错信息（如 "OpenAI"、"通义千问"）。 */
+  /** 服务商显示名，仅用于报错信息（如 "OpenAI"、"通义千问"）；也用于判断是否走 Anthropic 协议。 */
   provider?: string
   signal?: AbortSignal
 }
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com'
 
+/** Anthropic 协议专用参数与默认值。 */
+const ANTHROPIC_VERSION = '2023-06-01'
+const ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
+
 /** 报错前缀，带上服务商名方便定位是哪家的问题。 */
 function errLabel(opts: StreamOptions): string {
   return opts.provider ? `${opts.provider} 请求失败` : '模型请求失败'
+}
+
+/** 判断该请求应走 Anthropic 原生协议（/v1/messages）而非 OpenAI 兼容协议（/chat/completions）。 */
+function isAnthropic(opts: StreamOptions): boolean {
+  return /anthropic/i.test(opts.provider ?? '') || /anthropic\.com/i.test(opts.baseURL ?? '')
 }
 
 // 一轮补全的结果：要么是给用户的文字，要么是想调用的工具。
@@ -42,6 +53,270 @@ export type Completion = {
   finishReason?: string
 }
 
+// ———————————————————————————————————————————————
+// Anthropic ↔ 通用格式 转换
+// ———————————————————————————————————————————————
+
+/** Anthropic 的停止原因映射成本项目通用的 OpenAI 风格取值，engine.ts 只关心 'length'。 */
+function mapAnthropicStop(reason?: string | null): string | undefined {
+  if (!reason) return undefined
+  if (reason === 'max_tokens') return 'length'
+  if (reason === 'tool_use') return 'tool_calls'
+  if (reason === 'end_turn') return 'stop'
+  return reason
+}
+
+/**
+ * 把内部 ChatMessage[]（OpenAI 风格：system 单独一条、tool 结果各占一条）
+ * 转成 Anthropic 要求的 { system, messages }：
+ * - system 角色的内容合并成顶层 system 字符串；
+ * - assistant 的 tool_calls 转成 content 里的 tool_use 块；
+ * - 连续的 tool 结果必须合并进同一条 user 消息的多个 tool_result 块（Anthropic 硬性要求）。
+ */
+function toAnthropicPayload(messages: ChatMessage[]): { system?: string; messages: any[] } {
+  const systemParts: string[] = []
+  const out: any[] = []
+
+  for (const m of messages) {
+    if (m.role === 'system') {
+      if (m.content) systemParts.push(m.content)
+      continue
+    }
+
+    if (m.role === 'tool') {
+      const block = { type: 'tool_result', tool_use_id: m.tool_call_id, content: m.content ?? '' }
+      const last = out[out.length - 1]
+      if (last && last.role === 'user' && Array.isArray(last.content) && last.content[0]?.type === 'tool_result') {
+        last.content.push(block)
+      } else {
+        out.push({ role: 'user', content: [block] })
+      }
+      continue
+    }
+
+    if (m.role === 'assistant') {
+      if (!m.tool_calls || !m.tool_calls.length) {
+        out.push({ role: 'assistant', content: m.content || '' })
+        continue
+      }
+      const content: any[] = []
+      if (m.content) content.push({ type: 'text', text: m.content })
+      for (const tc of m.tool_calls) {
+        let input: any = {}
+        try {
+          input = JSON.parse(tc.function.arguments || '{}')
+        } catch {
+          /* 参数解析失败时按空对象处理 */
+        }
+        content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input })
+      }
+      out.push({ role: 'assistant', content })
+      continue
+    }
+
+    // user
+    out.push({ role: 'user', content: m.content ?? '' })
+  }
+
+  return { system: systemParts.length ? systemParts.join('\n\n') : undefined, messages: out }
+}
+
+/** 把 OpenAI function-calling 格式的工具定义（TOOL_SCHEMAS 里那种）转成 Anthropic 的 tool 定义。 */
+function toAnthropicTools(tools: readonly any[]): any[] {
+  return tools.map(t => {
+    const fn = t.function ?? t
+    return {
+      name: fn.name,
+      description: fn.description,
+      input_schema: fn.parameters ?? { type: 'object', properties: {} },
+    }
+  })
+}
+
+function anthropicHeaders(apiKey: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey,
+    'anthropic-version': ANTHROPIC_VERSION,
+  }
+}
+
+function anthropicURL(baseURL: string): string {
+  return `${baseURL}/v1/messages`
+}
+
+/** 把 Anthropic 非流式 /v1/messages 响应体的 content 块解析成 Completion。 */
+function parseAnthropicMessage(json: any): Completion {
+  let content = ''
+  const toolCalls: RawToolCall[] = []
+  for (const block of json?.content ?? []) {
+    if (block.type === 'text') {
+      content += block.text
+    } else if (block.type === 'tool_use') {
+      toolCalls.push({
+        id: block.id,
+        type: 'function',
+        function: { name: block.name, arguments: JSON.stringify(block.input ?? {}) },
+      })
+    }
+  }
+  return { content, toolCalls, finishReason: mapAnthropicStop(json?.stop_reason) }
+}
+
+async function anthropicChatComplete(
+  messages: ChatMessage[],
+  opts: StreamOptions & { tools?: readonly unknown[] },
+): Promise<Completion> {
+  const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
+  const { system, messages: anthropicMessages } = toAnthropicPayload(messages)
+  const res = await fetch(anthropicURL(baseURL), {
+    method: 'POST',
+    headers: anthropicHeaders(opts.apiKey),
+    body: JSON.stringify({
+      model: opts.model,
+      max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+      stream: false,
+      ...(system ? { system } : {}),
+      messages: anthropicMessages,
+      ...(opts.tools && opts.tools.length ? { tools: toAnthropicTools(opts.tools) } : {}),
+    }),
+    signal: opts.signal,
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
+  }
+
+  return parseAnthropicMessage(await res.json())
+}
+
+async function* anthropicStreamCompletion(
+  messages: ChatMessage[],
+  opts: StreamOptions & { tools?: readonly unknown[] },
+): AsyncGenerator<StreamPart, Completion, unknown> {
+  const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
+  const { system, messages: anthropicMessages } = toAnthropicPayload(messages)
+  const res = await fetch(anthropicURL(baseURL), {
+    method: 'POST',
+    headers: anthropicHeaders(opts.apiKey),
+    body: JSON.stringify({
+      model: opts.model,
+      max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+      stream: true,
+      ...(system ? { system } : {}),
+      messages: anthropicMessages,
+      ...(opts.tools && opts.tools.length ? { tools: toAnthropicTools(opts.tools) } : {}),
+    }),
+    signal: opts.signal,
+  })
+
+  if (!res.ok || !res.body) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
+  }
+
+  // 按 content block index 累积：text 块边到边吐 delta，tool_use 块攒够 input_json_delta
+  // 后在 content_block_stop 时一次性产出（Anthropic 明确告诉我们块何时结束，不必像
+  // OpenAI 那样靠「下一个 index 出现」去猜）。
+  const blocks = new Map<number, { type: 'text' | 'tool_use'; id?: string; name?: string; args: string }>()
+  let content = ''
+  let stopReason: string | undefined
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let nl: number
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim()
+      buffer = buffer.slice(nl + 1)
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (!payload) continue
+      let evt: any
+      try {
+        evt = JSON.parse(payload)
+      } catch {
+        continue // 不完整片段，忽略
+      }
+
+      switch (evt.type) {
+        case 'content_block_start': {
+          const cb = evt.content_block
+          if (cb?.type === 'text') blocks.set(evt.index, { type: 'text', args: '' })
+          else if (cb?.type === 'tool_use') blocks.set(evt.index, { type: 'tool_use', id: cb.id, name: cb.name, args: '' })
+          break
+        }
+        case 'content_block_delta': {
+          const b = blocks.get(evt.index)
+          if (!b) break
+          if (evt.delta?.type === 'text_delta' && typeof evt.delta.text === 'string') {
+            content += evt.delta.text
+            yield { type: 'text', delta: evt.delta.text }
+          } else if (evt.delta?.type === 'input_json_delta' && typeof evt.delta.partial_json === 'string') {
+            b.args += evt.delta.partial_json
+          }
+          break
+        }
+        case 'content_block_stop': {
+          const b = blocks.get(evt.index)
+          if (b?.type === 'tool_use') {
+            yield {
+              type: 'tool',
+              call: {
+                id: b.id || `call_${evt.index}`,
+                type: 'function',
+                function: { name: b.name || '', arguments: b.args || '{}' },
+              },
+            }
+          }
+          break
+        }
+        case 'message_delta': {
+          if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason
+          break
+        }
+        case 'error':
+          throw new Error(`${errLabel(opts)}: ${evt.error?.message ?? JSON.stringify(evt)}`)
+        default:
+          break
+      }
+    }
+  }
+
+  const toolCalls: RawToolCall[] = [...blocks.entries()]
+    .filter(([, b]) => b.type === 'tool_use')
+    .map(([idx, b]) => ({
+      id: b.id || `call_${idx}`,
+      type: 'function',
+      function: { name: b.name || '', arguments: b.args || '{}' },
+    }))
+
+  return { content, toolCalls, finishReason: mapAnthropicStop(stopReason) }
+}
+
+async function* anthropicStreamChat(
+  messages: ChatMessage[],
+  opts: StreamOptions,
+): AsyncGenerator<string, void, unknown> {
+  const stream = anthropicStreamCompletion(messages, opts)
+  let res = await stream.next()
+  while (!res.done) {
+    if (res.value.type === 'text') yield res.value.delta
+    res = await stream.next()
+  }
+}
+
+// ———————————————————————————————————————————————
+// 公共入口：按 provider/baseURL 分流到 Anthropic 或 OpenAI 兼容实现
+// ———————————————————————————————————————————————
+
 /**
  * 非流式补全，支持 function calling。
  * 传入 tools 后，模型可能返回 tool_calls 而不是直接回话。
@@ -50,6 +325,8 @@ export async function chatComplete(
   messages: ChatMessage[],
   opts: StreamOptions & { tools?: readonly unknown[] },
 ): Promise<Completion> {
+  if (isAnthropic(opts)) return anthropicChatComplete(messages, opts)
+
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const res = await fetch(`${baseURL}/chat/completions`, {
     method: 'POST',
@@ -89,13 +366,16 @@ export type StreamPart =
 /**
  * 流式补全，支持 function calling。
  * 边收 SSE 边产出：content 片段实时吐出；每个 tool_call 的参数一旦拼完整，
- * 立即作为 { type:'tool' } 产出（依据「出现更大的 tool index」或「流结束」判定完整）。
+ * 立即作为 { type:'tool' } 产出（OpenAI 依据「出现更大的 tool index」判定完整；
+ * Anthropic 依据显式的 content_block_stop 判定完整）。
  * 生成器的「返回值」是组装好的整轮结果 { content, toolCalls }，供上层落历史。
  */
 export async function* streamCompletion(
   messages: ChatMessage[],
   opts: StreamOptions & { tools?: readonly unknown[] },
 ): AsyncGenerator<StreamPart, Completion, unknown> {
+  if (isAnthropic(opts)) return yield* anthropicStreamCompletion(messages, opts)
+
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const res = await fetch(`${baseURL}/chat/completions`, {
     method: 'POST',
@@ -208,6 +488,8 @@ export async function* streamChat(
   messages: ChatMessage[],
   opts: StreamOptions,
 ): AsyncGenerator<string, void, unknown> {
+  if (isAnthropic(opts)) return yield* anthropicStreamChat(messages, opts)
+
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const res = await fetch(`${baseURL}/chat/completions`, {
     method: 'POST',
