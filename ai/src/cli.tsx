@@ -705,6 +705,23 @@ function App() {
   // 让底部输入框高度恒定、使用过程中不跳顶（对标 Claude Code）。ref 同步、避免批处理丢字。
   const streamTailRef = useRef('')
 
+  // Ink 用「光标上移 N 行再重画」做增量刷新：N 取自上一帧渲染时算出的行数。
+  // 一旦终端尺寸变化，之前按旧宽度换行算出的 N 就和新宽度下的实际占用行数对不上，
+  // 多出来的行擦不掉，会在屏幕上越叠越多、越叠越乱（这是 ink 的已知问题，
+  // 见 vadimdemedes/ink#907）。这里 resize 时清屏，并给 <Static> 换一个 key
+  // 强制它整体重新按当前宽度打印一遍历史，重新对齐画面。
+  const [staticEpoch, setStaticEpoch] = useState(0)
+  useEffect(() => {
+    const onResize = () => {
+      process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
+      setStaticEpoch(e => e + 1)
+    }
+    process.stdout.on('resize', onResize)
+    return () => {
+      process.stdout.off('resize', onResize)
+    }
+  }, [])
+
   // Esc：生成中按一下即中断当前任务（不退出程序）。
   // Ctrl+C：忙时一次中断生成，空闲时连按两次退出。
   useInput((_input, key) => {
@@ -887,7 +904,7 @@ function App() {
       {/* 头部 + 历史消息 — 用 Static 渲染：每条只往终端写一次，永不重绘。
           这才是根除闪烁的关键：Spinner 每 120ms 触发的重渲染只会重画下方
           的动态区（spinner + 输入框），不再连带重画整段历史。 */}
-      <Static items={staticRows}>
+      <Static key={staticEpoch} items={staticRows}>
         {row =>
           row.kind === 'header' ? (
             <Header key="header" {...headerProps} />
