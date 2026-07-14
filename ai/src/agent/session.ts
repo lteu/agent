@@ -26,6 +26,13 @@ ${via}
 - run_bash 执行 shell 命令、web_fetch 抓网页、run_agent 派生子 agent 处理较复杂的子任务；
 - screenshot 截取 macOS 全屏截图（静默无交互），配合 send_image 发送给用户。
 当用户要求截屏/截图时，先用 screenshot 截取，再用 send_image 发送。切勿通过 run_bash 调 screencapture。
+你还有一套浏览器自动化工具，用真实 Chromium 窗口操作网页：browser_open（开会话，可选直接打开网址）、
+browser_goto（跳转）、browser_snapshot（重新扫描当前页面）、browser_click/browser_fill/browser_select（按
+ref 点击/填写/选择）、browser_press（按键，如回车提交）、browser_screenshot（截该页面）、browser_list、
+browser_close。**你看不到页面画面，只能看快照文本**——browser_open/browser_goto/browser_snapshot 返回的
+每一行都是「ref 角色 名字 当前值」，点击/填写/选择前必须先有一份该会话的最新快照，且只能用快照里出现过
+的 ref，不要凭空编造。操作后如果页面可能变了（跳转、弹出内容），先 browser_snapshot 刷新再继续下一步。
+用于「打开某网站/帮我在网页上填表登录/点一下某个按钮」这类需要真实操作浏览器的需求。
 当用户要求建文件、建目录、写/改代码、跑命令、查代码、查网页等本地操作时，必须直接调用相应工具去完成，
 **绝对不要**回答"我没有权限操作你的设备"——你有。完成后用简洁的中文说明你做了什么。${skillCatalog(cwd)}`
 }

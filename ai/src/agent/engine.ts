@@ -219,12 +219,24 @@ export async function* runAgent(
   yield { type: 'limit', steps: maxSteps }
 }
 
-/** 判断一个错误是不是「上下文/提示超长」类（用于触发被动压缩重试）。 */
+/**
+ * 判断一个错误是不是「上下文/提示超长」类（用于触发被动压缩重试）。
+ * 各家服务商措辞五花八门（比如某些渠道报 "total tokens of image and text exceed
+ * max message tokens"，不含 "context"/"too long" 等词），只认固定几个短语会漏判，
+ * 漏判的后果是直接把错误抛给用户、白白中断本轮——所以额外用「xxx token(s) 附近出现
+ * exceed/too many」这种更宽的模式兜底。
+ */
 function isContextOverflow(e: any): boolean {
   const msg = String(e?.message ?? e).toLowerCase()
-  return /maximum context length|context[_ ]length|context window|prompt is too long|too long|reduce the length|exceeds? the maximum|http 413/.test(
-    msg,
-  )
+  if (
+    /maximum context length|context[_ ]length|context window|prompt is too long|too long|reduce the length|exceeds? the maximum|http 413|payload too large|request entity too large|too many tokens/.test(
+      msg,
+    )
+  ) {
+    return true
+  }
+  // token 与 exceed/超出 类词汇彼此邻近出现，视为「token 超限」的兜底判定。
+  return /token[a-z]*[^.]{0,40}(exceed|too many|超出|超限)|(exceed|超出|超限)[^.]{0,40}token/.test(msg)
 }
 
 function safeArgs(raw: string): Record<string, any> {

@@ -15,6 +15,18 @@ import { loadSmtpConfig } from './config.js'
 import { sendMail, type Attachment } from './smtp.js'
 import { getQuotes, formatQuote } from './stocks.js'
 import { termOpen, termSend, termRead, termList, termKill } from './term.js'
+import {
+  browserOpen,
+  browserGoto,
+  browserSnapshot,
+  browserClick,
+  browserFill,
+  browserSelect,
+  browserPress,
+  browserScreenshot,
+  browserList,
+  browserClose,
+} from './browser.js'
 import type { ChatMessage } from './llm.js'
 import { PDFParse } from 'pdf-parse'
 import XLSX from 'xlsx'
@@ -434,6 +446,158 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_open',
+      description:
+        '开一个具名浏览器会话（真实 Chromium 窗口），可选直接打开某个网址。同名会话已存在则不重开。' +
+        '打开后会返回当前页面的可交互元素快照（每个元素带一个 ref，如 e1、e2），后续点击/填写都靠这个 ref 定位。' +
+        '用于「打开某个网站/帮我在网页上填表/点一下某个按钮」这类需要真实操作浏览器的需求。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名（自取，如 form、login）' },
+          url: { type: 'string', description: '可选：打开后立即导航到的网址' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_goto',
+      description: '让已有浏览器会话跳转到某个网址，返回跳转后页面的可交互元素快照。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名（browser_open 时取的名字）' },
+          url: { type: 'string', description: '要跳转到的网址' },
+        },
+        required: ['name', 'url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_snapshot',
+      description:
+        '重新扫描某个浏览器会话当前页面，返回最新的可交互元素快照（ref 列表）。' +
+        '你看不到页面截图，只能靠这份文本判断页面上有什么；点击/填写前必须先有一份该会话的最新快照，' +
+        '页面因 JS 操作发生变化（如弹出下拉、展开面板）但没有跳转网址时，用它刷新。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_click',
+      description: '点击某个浏览器会话里、快照给出的某个 ref 对应的元素（如按钮、链接）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+          ref: { type: 'string', description: '快照里的元素引用，如 e3' },
+        },
+        required: ['name', 'ref'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_fill',
+      description: '在某个浏览器会话里、快照给出的某个 ref 对应的输入框/文本域中填入文字（会先清空原有内容）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+          ref: { type: 'string', description: '快照里的元素引用，如 e3' },
+          value: { type: 'string', description: '要填入的文字' },
+        },
+        required: ['name', 'ref', 'value'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_select',
+      description: '在某个浏览器会话里、快照给出的某个下拉框（select）ref 中选中一个选项（按显示文字匹配）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+          ref: { type: 'string', description: '快照里的下拉框元素引用，如 e5' },
+          value: { type: 'string', description: '要选中的选项文字' },
+        },
+        required: ['name', 'ref', 'value'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_press',
+      description:
+        '在某个浏览器会话里按下一个键盘按键，如 Enter（提交表单）、Escape（关闭下拉/弹层）、Tab。' +
+        '给了 ref 就在该元素上按，不给 ref 就按在页面当前焦点上。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+          key: { type: 'string', description: '按键名，如 Enter、Escape、Tab' },
+          ref: { type: 'string', description: '可选：快照里的元素引用，不填则按在当前焦点上' },
+        },
+        required: ['name', 'key'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_screenshot',
+      description: '截取某个浏览器会话当前页面的截图（非全屏，只截页面内容），保存到本地供人查看或后续发送。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+          path: { type: 'string', description: '保存路径，默认 /tmp/browser-<会话名>.png' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_list',
+      description: '列出当前所有浏览器会话及其当前标题/网址。',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_close',
+      description: '关闭一个浏览器会话（结束对应的 Chromium 窗口）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: '会话名' },
+        },
+        required: ['name'],
+      },
+    },
+  },
 ] as const
 
 export type ToolCall = {
@@ -529,7 +693,10 @@ export async function runTool(
           // 否则长跑脚本（如 python 训练）会一直占着、loop 卡在 await 上，Esc 形同虚设。
           { timeout: 60_000, maxBuffer: 10 * 1024 * 1024, signal: ctx?.signal, killSignal: 'SIGKILL' },
           (err, stdout, stderr) => {
-            const out = [stdout, stderr].filter(Boolean).join('\n').trim()
+            // 输出量不设上限的话，一条命令就可能把整轮上下文撑爆（比如误打印了整个大文件）；
+            // 和 read_file 等工具一样截断，避免单条工具结果拖垮后续模型调用。
+            const cap = (s: string) => (s.length > 20000 ? s.slice(0, 20000) + '\n…（已截断）' : s)
+            const out = cap([stdout, stderr].filter(Boolean).join('\n').trim())
             // 被 Esc 中断（AbortError）：明确告知，别把它当成普通命令失败。
             if (err && (err as any).name === 'AbortError') {
               res(`命令已被用户中断${out ? `\n${out}` : ''}`)
@@ -770,6 +937,26 @@ export async function runTool(
         )
       })
     }
+    case 'browser_open':
+      return await browserOpen(String(args.name ?? ''), args.url != null ? String(args.url) : undefined)
+    case 'browser_goto':
+      return await browserGoto(String(args.name ?? ''), String(args.url ?? ''))
+    case 'browser_snapshot':
+      return await browserSnapshot(String(args.name ?? ''))
+    case 'browser_click':
+      return await browserClick(String(args.name ?? ''), String(args.ref ?? ''))
+    case 'browser_fill':
+      return await browserFill(String(args.name ?? ''), String(args.ref ?? ''), String(args.value ?? ''))
+    case 'browser_select':
+      return await browserSelect(String(args.name ?? ''), String(args.ref ?? ''), String(args.value ?? ''))
+    case 'browser_press':
+      return await browserPress(String(args.name ?? ''), String(args.key ?? ''), args.ref != null ? String(args.ref) : undefined)
+    case 'browser_screenshot':
+      return await browserScreenshot(String(args.name ?? ''), args.path != null ? String(args.path) : undefined)
+    case 'browser_list':
+      return await browserList()
+    case 'browser_close':
+      return await browserClose(String(args.name ?? ''))
     default:
       return `未知工具: ${name}`
   }
@@ -822,7 +1009,10 @@ export function summarizeToolFailure(name: string, result: string): string | nul
     return `退出码 ${exit[1]}` + (reason ? `：${clip(reason, 100)}` : '')
   }
   // execTool 捕获的抛错，以及各工具返回的软失败文案（取首行即可）。
-  if (/^错误[:：]/.test(r) || /^(发送失败|抓取失败|无效正则|未找到|路径不存在)/.test(r)) {
+  if (
+    /^错误[:：]/.test(r) ||
+    /^(发送失败|抓取失败|无效正则|未找到|路径不存在|打开浏览器失败|跳转失败|点击失败|填写失败|选择失败|按键失败)/.test(r)
+  ) {
     return clip(r.split('\n')[0], 120)
   }
   return null
@@ -880,6 +1070,26 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return '列出终端会话'
     case 'term_kill':
       return `结束终端 ${args.name}`
+    case 'browser_open':
+      return args.url ? `开浏览器 ${args.name} ▶ ${args.url}` : `开浏览器 ${args.name}`
+    case 'browser_goto':
+      return `浏览器 ${args.name} 跳转 ${args.url}`
+    case 'browser_snapshot':
+      return `浏览器 ${args.name} 快照`
+    case 'browser_click':
+      return `浏览器 ${args.name} 点击 ${args.ref}`
+    case 'browser_fill':
+      return `浏览器 ${args.name} 填写 ${args.ref}`
+    case 'browser_select':
+      return `浏览器 ${args.name} 选择 ${args.ref}`
+    case 'browser_press':
+      return `浏览器 ${args.name} 按键 ${args.key}`
+    case 'browser_screenshot':
+      return `浏览器 ${args.name} 截图`
+    case 'browser_list':
+      return '列出浏览器会话'
+    case 'browser_close':
+      return `关闭浏览器 ${args.name}`
     default:
       return name
   }

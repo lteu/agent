@@ -113,6 +113,65 @@ ai ask --file question.txt                  # 问题从文件读取（文件内�
 - 和交互模式共用同一个 agent 引擎与本地工具（读写文件、跑命令等），单轮问答内可以多步调用工具；
 - 未配置 API key 时会提示先跑 `ai --set-key`，不会像交互模式那样弹出引导界面。
 
+## 浏览器自动化（网页自动填表/点击）
+
+内置 Playwright 驱动的浏览器工具，让模型能真正打开一个 Chromium 窗口操作网页——导航、点击、填表单——而不是只会读网页文本。走的是「传统脚本自动化 + LLM 只负责决策」的路子：真正的点击/填写由 Playwright 稳定执行，模型只根据一份文本快照判断「点哪个、填什么」。
+
+### 首次使用前
+
+```bash
+npx playwright install chromium   # 下载 Chromium 浏览器二进制，只需一次
+```
+
+没下载的话，第一次调用相关工具时会提示这条命令。
+
+### 怎么用
+
+直接在对话里描述需求即可，不需要记工具名：
+
+```
+帮我打开 https://example.com 看看上面有什么
+在这个登录页的用户名框填 test，密码填 123456，然后点提交按钮
+```
+
+模型会自己判断并调用对应工具。浏览器窗口默认**有头模式**（真实弹出，能看到它在操作），退出 `ai` 后窗口也会跟着关闭。
+
+### 背后原理（可略过）
+
+模型看不到画面（没有接视觉能力），只能看文本。每次打开/跳转/快照都会返回一份「可交互元素清单」，形如：
+
+```
+标题: Example Domain
+地址: https://example.com/
+
+e1  link "Learn more" (href=https://iana.org/domains/example)
+e3  textbox "用户名" = ""
+e5  button "提交"
+```
+
+模型据此用 ref（如 `e3`）来点击/填写，而不必自己猜 CSS 选择器；网页跳转或有新内容出现后，模型会重新拿一份快照再继续操作。
+
+### 工具一览
+
+| 工具 | 作用 |
+| --- | --- |
+| `browser_open` | 开一个具名浏览器会话，可选直接打开网址 |
+| `browser_goto` | 让已有会话跳转到某个网址 |
+| `browser_snapshot` | 重新扫描当前页面，刷新可交互元素清单 |
+| `browser_click` | 点击某个 ref |
+| `browser_fill` | 在某个 ref（输入框/文本域）填入文字 |
+| `browser_select` | 给某个下拉框 ref 选一个选项 |
+| `browser_press` | 按键盘按键（如 Enter 提交表单、Escape 关闭弹层） |
+| `browser_screenshot` | 截取当前页面内容（非全屏），保存到本地 |
+| `browser_list` | 列出所有浏览器会话 |
+| `browser_close` | 关闭一个会话 |
+
+### 注意事项
+
+- 会话只存在于当前这次 `ai` 对话进程里，退出程序即结束，不跨进程持久化；同名会话再次 `browser_open` 不会重开；
+- 每个会话是独立的 Chromium 实例，同时开多个不同 name 的会话互不干扰；
+- 首次运行如果报"本机未下载 Chromium"，按提示跑一遍 `npx playwright install chromium` 即可。
+
 ## 技能（Skills）
 
 技能 = 一段**可复用的操作手册**，存成带 frontmatter 的 markdown。对标 Claude Code 的「渐进式披露」(progressive disclosure)：
@@ -561,6 +620,7 @@ src/
   doubao.ts         豆包（火山引擎）语音合成客户端：按文本语种自动选音色
   tts.ts            语音合成统一入口：优先豆包 TTS，未配则退回本机 say
   term.ts           终端相关工具函数
+  browser.ts        浏览器自动化：Playwright 驱动 Chromium，具名会话 + 可交互元素快照（给模型看的文本 ref 清单）
   keepawake.ts      常驻进程（serve/wx/watch）自动 caffeinate -i，阻止系统空闲休眠
   config.ts         API key / 模型 / QQ / 微信 / SMTP / 豆包 TTS / 监控规则的读取与保存
   crashlog.ts       崩溃兜底：未捕获异常时落盘 ~/.ai/crash.log（含最近按键序列）并恢复终端
