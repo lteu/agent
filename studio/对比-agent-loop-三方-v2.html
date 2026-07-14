@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Loop 四方对比 · v2 · Claude Code vs OpenClaw vs ai vs hermes-agent</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d2129; --ink:#e6e9ef; --muted:#9aa3b2;
+    --cc:#d97757; --oc:#5b9bd5; --ai:#5fb878; --hs:#e2618c; --line:#2a2f3a; --warn:#e0b341; --new:#a679f0;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;
+    line-height:1.7;font-size:15px}
+  .wrap{max-width:1140px;margin:0 auto;padding:48px 24px 96px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:.5px}
+  .sub{color:var(--muted);margin:0 0 8px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:28px}
+  h2{font-size:21px;margin:52px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:26px 0 10px}
+  code,.fn{font-family:var(--mono);font-size:.86em;background:#0b0d11;border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;color:#cbd3e1}
+  .fn.cc{color:var(--cc);border-color:#42302a}
+  .fn.oc{color:var(--oc);border-color:#28384a}
+  .fn.ai{color:var(--ai);border-color:#26402f}
+  .fn.hs{color:var(--hs);border-color:#4a2635}
+  p{margin:10px 0}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin:18px 0}
+  .grid4{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .card.cc{border-top:3px solid var(--cc)}
+  .card.oc{border-top:3px solid var(--oc)}
+  .card.ai{border-top:3px solid var(--ai)}
+  .card.hs{border-top:3px solid var(--hs)}
+  .tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 10px;border-radius:20px;margin-bottom:8px}
+  .tag.cc{background:#3a2620;color:var(--cc)}
+  .tag.oc{background:#1d2c3c;color:var(--oc)}
+  .tag.ai{background:#1c2e22;color:var(--ai)}
+  .tag.hs{background:#3a1f2b;color:var(--hs)}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:600}
+  th.cc{color:var(--cc)} th.oc{color:var(--oc)} th.ai{color:var(--ai)} th.hs{color:var(--hs)}
+  td.feat{color:var(--muted);font-weight:600;background:#13161c;white-space:nowrap}
+  .flow{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 0;margin:14px 0}
+  .step{display:flex;gap:14px;padding:11px 20px;border-bottom:1px dashed var(--line)}
+  .step:last-child{border-bottom:none}
+  .step .n{flex:0 0 26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:12px}
+  .step.cc .n{background:#3a2620;color:var(--cc)}
+  .step.oc .n{background:#1d2c3c;color:var(--oc)}
+  .step.ai .n{background:#1c2e22;color:var(--ai)}
+  .step.hs .n{background:#3a1f2b;color:var(--hs)}
+  .step .body{flex:1}
+  .step .t{font-weight:600;margin-bottom:2px}
+  .step .d{color:var(--muted);font-size:13.5px}
+  .callout{background:#13161c;border-left:3px solid var(--warn);border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:16px 0;color:#dfe4ec}
+  .callout b{color:var(--warn)}
+  .callout.new{border-left-color:var(--new)}
+  .callout.new b{color:var(--new)}
+  .src{font-family:var(--mono);font-size:12px;color:#6b7585}
+  .legend{display:flex;gap:24px;flex-wrap:wrap;margin:10px 0 0}
+  .legend span{font-size:13px;color:var(--muted)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  .dot.cc{background:var(--cc)} .dot.oc{background:var(--oc)} .dot.ai{background:var(--ai)} .dot.hs{background:var(--hs)}
+  hr{border:none;border-top:1px solid var(--line);margin:40px 0}
+  .foot{color:var(--muted);font-size:12.5px;margin-top:40px}
+  pre.code{font-family:var(--mono);font-size:12px;line-height:1.55;background:#0b0d11;
+    border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;
+    margin:10px 0;color:#cdd6e4;white-space:pre}
+  pre.code.cc{border-left:3px solid var(--cc)}
+  pre.code.oc{border-left:3px solid var(--oc)}
+  pre.code.ai{border-left:3px solid var(--ai)}
+  pre.code.hs{border-left:3px solid var(--hs)}
+  pre.code .kw{color:#c678dd}
+  pre.code .fnn{color:#61afef;font-style:normal}
+  pre.code .vr{color:#e0b341}
+  pre.code .st{color:#98c379}
+  pre.code .cm{color:#5c6675;font-style:italic}
+  pre.code .sr{color:#4a5263;font-size:.9em}
+  pre.code .hl{background:#1c2e22;border-radius:3px;padding:0 2px}
+  .scale{display:flex;align-items:center;gap:10px;margin:6px 0}
+  .scale .lbl{flex:0 0 120px;color:var(--muted);font-size:13px}
+  .bar{flex:1;height:14px;background:#0b0d11;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .bar i{display:block;height:100%}
+  .bar i.cc{background:var(--cc)} .bar i.oc{background:var(--oc)} .bar i.ai{background:var(--ai)} .bar i.hs{background:var(--hs)}
+  .num{flex:0 0 90px;text-align:right;color:var(--muted);font-size:12.5px;font-family:var(--mono)}
+  .lead{font-size:16px}
+  .vpill{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.4px;padding:2px 9px;border-radius:20px;
+    background:#241b33;color:var(--new);border:1px solid #3a2c52;vertical-align:middle;margin-left:8px}
+  .delta{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:4px;
+    background:#1c2e22;color:var(--ai);border:1px solid #26402f;margin-left:6px}
+  .was{color:#6b7585;text-decoration:line-through;font-size:.92em}
+  .upgrade{background:linear-gradient(180deg,#19211b,#171a21);border:1px solid #26402f;border-left:3px solid var(--ai);
+    border-radius:10px;padding:14px 18px;margin:10px 0}
+  .upgrade .h{font-weight:700;color:var(--ai);margin-bottom:4px}
+  .upgrade .h .n{color:var(--muted);font-weight:600;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Agent Loop 四方对比 <span class="vpill">v2 · 新增 hermes-agent</span></h1>
+  <p class="sub">同一个「模型 ↔ 工具反复交互」内核——但 <code>ai</code> 这轮把 v1 标记的「可借鉴项」真的实现了：流式调用、流式并发工具、上下文压缩、一整套 IDE 级工具。本次再补上第四方 <code>hermes-agent</code>：一个真实生产级的多渠道个人助理框架，循环体量比 Claude Code 还大一圈。</p>
+  <p class="meta">对象：<code>claudecode</code>（泄露源码）· <code>openclaw-2026.3.23</code>（内核引擎 <b>Pi · earendil-works/pi</b>）· <code>ai/</code>（本项目）· <code>hermes-agent</code>（本机 <code>studio/hermes-agent</code>，个人助理网关）· v2 生成日期：2026-06-24（v1：2026-06-23）· loop 分析据 Pi 源码修订：2026-06-29 · hermes-agent 并入日期：2026-07-07</p>
+  <div class="legend">
+    <span><i class="dot cc"></i>Claude Code — 软件工程 CLI，<code>claudecode/query.ts</code>（~1730 行单循环）</span>
+    <span><i class="dot oc"></i>OpenClaw — 多渠道私人助理，<code>src/agents/pi-embedded-runner/run.ts</code>（~1716 行编排壳）</span>
+    <span><i class="dot ai"></i>ai — 你的本地编码 agent，<code>ai/src/agent/engine.ts</code>（178 行）+ <code>compact.ts</code>（103 行）</span>
+    <span><i class="dot hs"></i>hermes-agent — 多渠道个人助理（微信/QQ/…），<code>agent/conversation_loop.py</code>（~5294 行，单函数 <code>run_conversation</code>）</span>
+  </div>
+
+  <!-- ============ 本版变化 ============ -->
+  <h2>v1 → v2：<span class="fn ai">ai</span> 这轮补上了什么</h2>
+  <p>v1 的结论是「ai 把循环还原成最朴素的样子，并按性价比挑 ①②④⑤ 来抄」。v2 已落地其中四项——而且<b>没有牺牲可读性</b>：循环主体仍是一个 <code>for</code> 生成器，只是从 85 行长到 178 行。</p>
+
+  <div class="upgrade">
+    <div class="h">① 模型调用：非流式 → 流式 <span class="n">llm.ts · streamCompletion</span></div>
+    <p style="margin:6px 0 0">新写的 <code>streamCompletion</code> 边收 SSE 边产出：<code>content</code> 片段实时吐 <code>delta</code>；并且能解析 <b>tool_calls 的增量</b>，在某个工具参数刚拼完整时立刻把它作为一次工具调用产出（依据「出现更大的 tool index」或「流结束」判定）。</p>
+  </div>
+  <div class="upgrade">
+    <div class="h">③ 工具执行：顺序 await → 流式并发 <span class="n">engine.ts · StreamingToolExecutor</span></div>
+    <p style="margin:6px 0 0">拿到一个工具调用就 <code>add()</code> 立即开跑（不 await），把 Promise 记下；本轮流结束后 <code>drain()</code> 按提交顺序回收结果。效果 = <b>模型还在吐后续 token / 后续工具调用时，先到的工具已经在并发执行</b>——这正是 Claude Code 的 StreamingToolExecutor 思路。</p>
+  </div>
+  <div class="upgrade">
+    <div class="h">② 上下文压缩：只会丢最旧 → 模型总结式 autocompact <span class="n">agent/compact.ts</span></div>
+    <p style="margin:6px 0 0">每轮开头 <code>compactInPlace</code>：估算 token 超阈值（默认 40k）时，调一次模型把较旧那段历史<b>总结成一条摘要</b>，就地 <code>splice</code> 替换，只完整保留 system 与最近若干条；cut 对齐到 user 边界，绝不拆散 <code>assistant(tool_calls)</code> 与其 <code>tool</code> 结果。压缩失败静默回退，不影响主流程。</p>
+  </div>
+  <div class="upgrade">
+    <div class="h">⑤ 内置工具：6 个 → IDE 级一整套 <span class="n">tools.ts</span></div>
+    <p style="margin:6px 0 0">新增 <code>edit_file</code>(精确替换) · <code>glob</code> · <code>grep</code> · <code>web_fetch</code> · <code>run_agent</code>(子 agent)，与原有 <code>write/read/list/bash/email/stock</code> 合并，凑齐了 <b>Bash/Edit/Read/Write/Glob/Grep/Agent/Web</b> 这条 Claude Code 同款主线。</p>
+  </div>
+
+  <div class="callout new">
+    <b>仍未补（且有意不补）：</b> 模型回退（单 provider，失败即抛）、逐工具权限闸（场景是单可信用户，系统提示直言「你有权限」）、多 provider 抽象层。
+    这几项是为「无人值守 / 多模型 / 严格权限」付的税，ai 的场景用不上——继续留白以保住可读性。
+  </div>
+
+  <!-- ============ 新增第四方 ============ -->
+  <h2>新增第四方：<span class="fn hs">hermes-agent</span> 什么来头</h2>
+  <p>不是研究项目，是一个真跑生产流量的多渠道个人助理网关（微信 <code>ilink</code>、QQ、飞书、Discord…）。它的循环 <code>run_conversation()</code>（<code>agent/conversation_loop.py:518</code>）把 Claude Code 那类「循环即产品」的思路又往前推了一步：<b>单个函数体 ~4770 行</b>，比 Claude Code 的 ~1730 行还大近 3 倍——因为多 provider 的报错分支、重试防护、压缩、终止判定全部摊平写在同一个函数里，几乎没有拆到外部编排层。</p>
+  <div class="grid3">
+    <div class="card hs">
+      <span class="tag hs">循环外形</span>
+      <p>外层不是 <code>while True</code> 而是 <code>while (api_call_count &lt; max_iterations and budget.remaining &gt; 0) or grace_call</code>（<code>conversation_loop.py:633</code>），内层还嵌一个「单次 API 调用重试」<code>while retry_count &lt; max_retries</code>（<code>:1093</code>，默认 3 次，各种一次性恢复闸挂在 <code>TurnRetryState</code> 上，<code>turn_retry_state.py:33</code>）。全程无 <code>yield</code>/<code>async def</code>，是同步函数 + 线程池，不是生成器。</p>
+    </div>
+    <div class="card hs">
+      <span class="tag hs">工具并发≠流式并发</span>
+      <p>模型调用始终走流式（<code>conversation_loop.py:1289</code> 起注释：「即使无消费者也优先流式，为了 90s 卡流检测」），<code>tool_calls</code> 增量也确实边流边拼（<code>chat_completion_helpers.py:2093</code>）。但工具<b>要等整条流结束、拼完整个响应之后</b>才按静态启发式规则决定顺序执行还是丢进 <code>ThreadPoolExecutor</code> 并发（<code>tool_dispatch_helpers.py:104</code>）——这是 Pi 那一档「流后并发」，不是 CC/ai 的「边流边跑」。</p>
+    </div>
+    <div class="card hs">
+      <span class="tag hs">容错覆盖面最广</span>
+      <p>13 种终止原因、错误分类枚举近 20 种 <code>FailoverReason</code>（<code>error_classifier.py:24</code>）、双重模型回退（跨 provider 回退链 + 同 provider 多凭证池轮换，<code>chat_completion_helpers.py:1172</code> / <code>credential_pool.py:508</code>）、五步压缩算法（含增量摘要迭代）、真插件钩子系统（<code>pre_tool_call/post_tool_call/pre_verify</code>… 近 20 个 hook 点）+ MCP 客户端 + 子 agent 委派（深度上限 1）。容错深度上，四家里它最厚。</p>
+    </div>
+  </div>
+  <div class="callout">
+    <b>但代价也最直白。</b> 一个 4770 行的函数体意味着「一眼读懂」彻底放弃——这是 hermes-agent 用「单函数超大」换「所有状态就地可见、不用跨文件追」的取舍，和 ai 用「几十行一招」换「可读性」正好是两个相反方向的极端；Claude Code 与 OpenClaw/Pi 则各自把复杂度拆到了「同一循环里的分层调用」与「双层循环+外部编排壳」。
+  </div>
+
+  <!-- ============ 一句话结论 ============ -->
+  <h2>一句话结论（v2）</h2>
+  <div class="grid4">
+    <div class="card cc">
+      <span class="tag cc">Claude Code</span>
+      <p class="lead">把循环本身做成产品。</p>
+      <p>一个 <code>while(true)</code> 生成器里塞进了全部上下文工程与容错：多级压缩、模型回退、流式工具并发、对超长/超 token 的逐级恢复。终止有七八种 <code>reason</code>。</p>
+    </div>
+    <div class="card oc">
+      <span class="tag oc">OpenClaw</span>
+      <p class="lead">自己不写循环，而是包住 Pi 的循环。</p>
+      <p>真正的「模型↔工具」迭代交给内嵌引擎 <b>Pi</b>（<code>earendil-works/pi</code>）——一个 <b>双层 while + steering/follow-up</b> 的循环；<code>run.ts</code> 是它外面的<b>调度壳</b>：会话队列、密钥轮换、模型回退、溢出补偿、多聊天渠道。</p>
+    </div>
+    <div class="card ai">
+      <span class="tag ai">ai（v2）</span>
+      <p class="lead">朴素循环 + 三样关键升级，仍一眼读懂。</p>
+      <p>同一个 <code>for (step&lt;25)</code> 生成器，现在每轮：<b>压缩历史 → 流式调模型 → 工具边流边并发跑 → 按序回灌</b>。把 Claude Code 最值钱的三招（流式 / 流式并发 / 压缩）摘了过来，省下其余 1500 行的税。</p>
+    </div>
+    <div class="card hs">
+      <span class="tag hs">hermes-agent</span>
+      <p class="lead">把循环做成产品的容错，全摊平进一个函数。</p>
+      <p>不是生成器而是一个 ~4770 行同步函数：外层 <code>while</code> + 内层「单次调用重试」<code>while</code> 双层嵌套，双重模型回退（跨 provider 链 + 同 provider 凭证池）、五步压缩、13 种终止原因、真插件钩子 + MCP + 子 agent 委派。工具执行是<b>流后启发式并发</b>（ThreadPoolExecutor），不是边流边跑。</p>
+    </div>
+  </div>
+  <div class="callout">
+    <b>同源，差距缩小又重新拉开。</b> 四者内核仍完全一致——<i>发消息 → 模型要么回话要么调工具 → 执行工具 → 结果塞回 → 再发</i>。
+    v1 里 ai 与 Claude Code 的差距在「流式 / 并发 / 压缩」三处最扎眼；v2 后这三处已对齐<u>机制</u>（只是层数更少、没有逐级恢复闸）。剩余差距主要是容错深度（模型回退、超长恢复、权限）——而 hermes-agent 的加入说明这个「容错深度」维度上限还能更高：它的错误分类、双重回退、终止原因数量甚至超过 Claude Code，只是全部塞进单一函数而非分层拆出。
+  </div>
+
+  <!-- ============ 核心循环并排 ============ -->
+  <h2>核心循环（伪代码并排）</h2>
+
+  <h3><span class="fn ai">ai · v2</span> · 仍是一个 for 循环，但每轮多了压缩 / 流式 / 并发三件事</h3>
+  <pre class="code ai"><span class="kw">for</span> (<span class="kw">let</span> step = 0; step &lt; maxSteps; step++) {            <span class="cm">// 默认 25 步封顶</span>
+  <span class="hl"><span class="kw">await</span> <span class="fnn">compactInPlace</span>(history, deps)</span>                  <span class="cm">// ① 超阈值→模型总结式压缩（就地 splice，保留 system+近况）</span>
+
+  <span class="kw">const</span> exec = <span class="kw">new</span> <span class="fnn">StreamingToolExecutor</span>(execTool)     <span class="cm">// 拿到工具就立即开跑的执行器</span>
+  <span class="kw">let</span> completion
+  <span class="kw">try</span> {
+    <span class="kw">const</span> stream = <span class="fnn">streamCompletion</span>(history, { tools }) <span class="cm">// ② 流式：content + tool_calls 都是增量</span>
+    <span class="kw">for await</span> (<span class="kw">const</span> part <span class="kw">of</span> stream) {
+      <span class="kw">if</span> (part.type === <span class="st">'text'</span>) <span class="kw">yield</span> { type:<span class="st">'delta'</span>, content: part.delta }  <span class="cm">// 文本边流边出</span>
+      <span class="kw">else</span> { <span class="kw">yield</span> { type:<span class="st">'tool'</span>, … }; <span class="hl">exec.<span class="fnn">add</span>(part.call)</span> }            <span class="cm">// ③ 参数一拼完整就并发开跑</span>
+    }
+    completion = stream.<span class="vr">return</span>                       <span class="cm">// { content, toolCalls, finishReason }</span>
+  } <span class="kw">catch</span> (e) {                                     <span class="cm">// ④ 被动恢复：上下文超长</span>
+    <span class="kw">if</span> (<span class="fnn">isContextOverflow</span>(e) &amp;&amp; !reactiveTried) { reactiveTried=<span class="kw">true</span>; <span class="kw">await</span> <span class="fnn">compactInPlace</span>(history,deps,{force:<span class="kw">true</span>}); <span class="kw">continue</span> }
+    <span class="kw">throw</span> e                                          <span class="cm">// 不可恢复（含用户 abort）→ 抛给上层反馈</span>
+  }
+  <span class="kw">const</span> { content, toolCalls, finishReason } = completion
+  history.<span class="fnn">push</span>({ role:<span class="st">'assistant'</span>, content, tool_calls: toolCalls })
+
+  <span class="kw">if</span> (exec.size) {                                   <span class="cm">// 有工具 → 回收并发结果，按序回灌，继续下一轮</span>
+    <span class="kw">for await</span> (<span class="kw">const</span> { call, result } <span class="kw">of</span> <span class="hl">exec.<span class="fnn">drain</span>()</span>)
+      history.<span class="fnn">push</span>({ role:<span class="st">'tool'</span>, tool_call_id: call.id, content: result })
+    <span class="kw">continue</span>
+  }
+  <span class="kw">if</span> (<span class="hl">finishReason === <span class="st">'length'</span></span> &amp;&amp; outputRecovery&lt;3) { <span class="cm">// ⑤ 输出被截断 → 注入续写提示再来一轮</span>
+    outputRecovery++; history.<span class="fnn">push</span>({ role:<span class="st">'user'</span>, content:<span class="st">'（系统）从断点继续，别重复别道歉'</span> }); <span class="kw">continue</span>
+  }
+  <span class="kw">return</span>                                            <span class="cm">// ← 无工具且未被截断 = 最终答复，结束</span>
+}
+<span class="kw">yield</span> { type:<span class="st">'text'</span>, content: <span class="st">`[已达最大步数 ${maxSteps}，停止]`</span> }   <span class="cm">// 兜底</span>
+<span class="sr">ai/src/agent/engine.ts:90 · llm.ts:streamCompletion · agent/compact.ts</span></pre>
+
+  <h3><span class="fn cc">Claude Code</span> · 同一个循环，外加每轮的上下文工程与逐级恢复</h3>
+  <pre class="code cc"><span class="kw">while</span> (<span class="kw">true</span>) {                                       <span class="cm">// queryLoop —— 单一长循环，靠 state 在迭代间传递</span>
+  messages = <span class="fnn">applyToolResultBudget</span>(messages)          <span class="cm">// ① 工具结果按 tool_use_id 限额裁剪</span>
+  messages = <span class="fnn">snipCompact</span>(messages)                     <span class="cm">// ② 轻量删减</span>
+  messages = <span class="kw">await</span> <span class="fnn">microcompact</span>(messages)             <span class="cm">// ③ 微压缩（编辑缓存，不重发）</span>
+  messages = <span class="fnn">applyCollapses</span>(messages)                  <span class="cm">// ④ context-collapse 投影视图</span>
+  ({ compactionResult } = <span class="kw">await</span> <span class="fnn">autocompact</span>(messages)) <span class="cm">// ⑤ 模型总结式压缩 ← ai 的压缩对标这一层</span>
+  <span class="kw">if</span> (<span class="fnn">atBlockingLimit</span>()) <span class="kw">return</span> {reason:<span class="st">'blocking_limit'</span>}
+
+  <span class="kw">for await</span> (msg <span class="kw">of</span> <span class="fnn">callModel</span>({messages, tools, fallbackModel})) {
+     <span class="fnn">withhold</span>(可恢复错误)                            <span class="cm">// 暂扣 prompt-too-long / max-output-tokens</span>
+     streamingToolExecutor.<span class="fnn">addTool</span>(toolBlock)        <span class="cm">// ⑥ 工具在「流式过程中」就开跑 ← ai 的 StreamingToolExecutor 对标这一招</span>
+  }                                                  <span class="cm">// FallbackTriggeredError → 换模型重试整轮</span>
+
+  <span class="kw">if</span> (!needsFollowUp) {                              <span class="cm">// 模型没要工具 → 准备收尾，但先过一串恢复闸</span>
+     <span class="kw">if</span> (withheld413)   { <span class="fnn">collapseDrain</span>() ?? <span class="fnn">reactiveCompact</span>(); <span class="kw">continue</span> }
+     <span class="kw">if</span> (maxOutputTok)  { 8k→64k <span class="fnn">escalate</span> ?? <span class="fnn">注入恢复消息</span>; <span class="kw">continue</span> }
+     <span class="kw">if</span> (<span class="fnn">stopHook</span>.blocks) { <span class="kw">continue</span> }                    <span class="cm">// stop-hook 可挡住收尾</span>
+     <span class="kw">if</span> (<span class="fnn">tokenBudget</span>.continue) { <span class="kw">continue</span> }              <span class="cm">// +500k 自动续跑</span>
+     <span class="kw">return</span> {reason:<span class="st">'completed'</span>}
+  }
+  <span class="kw">for await</span> (r <span class="kw">of</span> <span class="fnn">runTools</span>(blocks, canUseTool)) <span class="kw">yield</span> r  <span class="cm">// 权限闸 canUseTool 逐个放行 ← ai 仍无此闸</span>
+}
+<span class="sr">claudecode/query.ts:241（queryLoop）</span></pre>
+
+  <h3><span class="fn oc">OpenClaw · Pi 引擎</span> · 双层循环：steering / follow-up 能把跑着的循环「续上」</h3>
+  <pre class="code oc"><span class="kw">while</span> (<span class="kw">true</span>) {                                       <span class="cm">// 外层：本该收尾，被 follow-up 重新唤醒</span>
+  <span class="kw">let</span> hasMoreToolCalls = <span class="kw">true</span>
+  <span class="kw">while</span> (hasMoreToolCalls || pending.length) {        <span class="cm">// 内层：一个个工具回合</span>
+    pending = <span class="kw">await</span> config.<span class="fnn">getSteeringMessages</span>() ?? []  <span class="cm">// ① steering：用户中途插话即时塞进上下文</span>
+    <span class="kw">for</span> (<span class="kw">const</span> m <span class="kw">of</span> pending) ctx.messages.<span class="fnn">push</span>(m)
+    <span class="kw">const</span> msg = <span class="kw">await</span> <span class="fnn">streamAssistantResponse</span>(ctx)    <span class="cm">// ② 流式：text/thinking/tool_calls 边出（多 provider 经 pi-ai 抽象）</span>
+    <span class="kw">if</span> (msg.stopReason === <span class="st">'error'</span> || msg.stopReason === <span class="st">'aborted'</span>) <span class="kw">break</span>
+    <span class="kw">const</span> calls = msg.toolCalls; hasMoreToolCalls = calls.length &gt; <span class="vr">0</span>
+    <span class="kw">const</span> results = sequential
+      ? <span class="kw">await</span> <span class="fnn">runSequential</span>(calls)
+      : <span class="hl"><span class="kw">await</span> <span class="vr">Promise</span>.<span class="fnn">all</span>(calls.map(run))</span>          <span class="cm">// ③ 流「结束后」才并行——不与流式重叠</span>
+    <span class="cm">// beforeToolCall / afterToolCall 钩子在此校验·改写·重试（openclaw 的策略闸挂这里）</span>
+    <span class="kw">if</span> (results.every(r =&gt; r.terminate)) <span class="kw">break</span>            <span class="cm">// 工具自带终止信号</span>
+    <span class="kw">if</span> (config.<span class="fnn">shouldStopAfterTurn</span>?.()) <span class="kw">break</span>
+  }
+  <span class="kw">const</span> followUp = <span class="kw">await</span> config.<span class="fnn">getFollowUpMessages</span>() ?? []  <span class="cm">// ④ 要停了又来活 → 续跑</span>
+  <span class="kw">if</span> (followUp.length) { pending = followUp; <span class="kw">continue</span> }
+  <span class="kw">break</span>
+}
+<span class="cm">// 压缩在外层按需触发：contextTokens &gt; contextWindow − reserveTokens(16384) → 模型总结旧史，留 system + 近 ~20k token + 完整 turn</span>
+<span class="sr">earendil-works/pi · packages/agent/src/agent-loop.ts · coding-agent/src/core/compaction/compaction.ts</span></pre>
+
+  <div class="callout new">
+    <b>Pi 与另两家的两处真差异。</b> ① <u>工具并发的时机</u>：Pi 是「流结束后」<code>Promise.all</code> 并行，而 Claude Code 与 ai v2 是「边流边跑」（StreamingToolExecutor，模型还在吐 token 工具已开跑）——同为并发，Pi 少了流式重叠那一层。② <u>循环可被外部「续上」</u>：<code>getSteeringMessages</code> 让聊天渠道在循环跑着时插话、<code>getFollowUpMessages</code> 让它在本该收尾时再接新任务——这正是 OpenClaw 多渠道实时对话的底座；CC 与 ai 的循环一旦进入就闷头跑到收尾。
+  </div>
+
+  <h3><span class="fn hs">hermes-agent</span> · 外层步数 while + 内层单次调用 while，双层嵌套，容错内联在每一步</h3>
+  <pre class="code hs"><span class="kw">while</span> (api_call_count &lt; agent.max_iterations <span class="kw">and</span> budget.remaining &gt; <span class="vr">0</span>) <span class="kw">or</span> budget_grace_call:  <span class="cm">// 不是 while True，是步数/预算条件</span>
+  <span class="kw">if</span> interrupt_requested: <span class="kw">return</span> {reason:<span class="st">'interrupted_by_user'</span>}       <span class="cm">// 每轮顶部先查中断（Esc/IM 发"停"/API stop）</span>
+  <span class="kw">if</span> <span class="fnn">should_compress</span>(request_pressure_tokens): <span class="fnn">compress</span>()          <span class="cm">// ① 请求前预检压缩（阈值=有效窗口的50%，5步算法含增量摘要）</span>
+
+  retry = <span class="kw">new</span> <span class="fnn">TurnRetryState</span>()                          <span class="cm">// 本次调用的一次性恢复闸：OAuth刷新/思考签名/图片压缩…各只许一次</span>
+  <span class="kw">while</span> retry_count &lt; agent.api_max_retries (=<span class="vr">3</span>) {         <span class="cm">// ② 内层：单次 API 调用的重试循环</span>
+    <span class="kw">try</span> { response = <span class="hl"><span class="fnn">stream_completion</span>(messages, tools)</span>       <span class="cm">// 始终优先流式；tool_calls 按 index 增量拼 arguments</span>
+    } <span class="kw">catch</span> (e) {
+      classified = <span class="fnn">classify_api_error</span>(e)                    <span class="cm">// ~20 种 FailoverReason：context_overflow/rate_limit/overloaded…</span>
+      <span class="kw">if</span> (classified.reason == <span class="st">'context_overflow'</span>) { <span class="fnn">compress</span>(force=<span class="kw">true</span>); <span class="kw">continue</span> }
+      <span class="kw">else</span> <span class="fnn">jittered_backoff</span>(retry_count++) ?? <span class="hl"><span class="fnn">try_activate_fallback</span>(reason)</span>  <span class="cm">// ③ 双重回退：换 provider 或换同 provider 下一个凭证</span>
+    }
+  }
+  messages.<span class="fnn">append</span>(assistant_message)
+
+  <span class="kw">if</span> (tool_calls.length) {
+    runnable = tool_calls.<span class="fnn">filter</span>(c =&gt; !<span class="fnn">guardrail</span>.<span class="fnn">before_call</span>(c).blocked)   <span class="cm">// ④ 权限/护栏闸：整批先过一遍（含插件 pre_tool_call 钩子）</span>
+    results = <span class="hl"><span class="fnn">should_parallelize</span>(runnable) ? <span class="fnn">ThreadPoolExecutor</span>(runnable) : <span class="fnn">sequential</span>(runnable)</span>
+                                                          <span class="cm">// ⑤ 启发式：只读工具白名单+路径不重叠→并发；写/patch 混批→顺序（流已结束才发生，非边流边跑）</span>
+    messages.<span class="fnn">push</span>(...results); <span class="kw">continue</span>
+  }
+  <span class="kw">if</span> (<span class="fnn">pre_verify_hook</span>(messages).blocks &amp;&amp; nudges &lt; <span class="vr">3</span>) { nudges++; <span class="kw">continue</span> }  <span class="cm">// ⑥ 校验钩子可逼一轮继续（类 CC 的 stop-hook）</span>
+  <span class="kw">return</span> <span class="fnn">finalize_turn</span>(final_response)                   <span class="cm">// 无工具调用且未被钩子拦下 → 收尾（另有 13 种终止原因分支未展开）</span>
+}
+<span class="sr">hermes-agent/agent/conversation_loop.py:518（run_conversation，函数体约 4770 行）</span></pre>
+
+  <div class="callout new">
+    <b>hermes-agent 是第四种形状：单函数里的双层 while。</b> 它和 Pi 一样「工具并发发生在流结束后」，但判断并发与否的依据不是 Pi 的「配置开关」，而是<u>逐批启发式</u>（<code>tool_dispatch_helpers.py:104</code>）：只读工具白名单 + 路径不重叠才并发，写/patch 混批一律顺序——这是四家里唯一对「能不能并发」做<b>逐次动态判定</b>而非静态策略的。同时它是唯一同时具备<b>跨 provider 回退链</b>与<b>同 provider 多凭证池轮换</b>两层模型容错的（CC/OC 各有一条回退链，ai 无回退）。
+  </div>
+
+  <div class="callout">
+    <b>v2 后的对位关系。</b> ai 的 <code>compactInPlace</code> ≈ CC 的 <code>autocompact</code>（仅这一层，没有 budget/snip/micro/collapse 那四层前置裁剪）；
+    ai 的 <code>StreamingToolExecutor</code> ≈ CC 的 <code>streamingToolExecutor.addTool</code>（机制相同，但 ai 无 <code>canUseTool</code> 权限闸、无 <code>withhold</code> 恢复）。
+    内核招式对齐，容错深度仍是 CC 厚得多——但 hermes-agent 的压缩五步算法、双重模型回退、~20 种错误分类，容错深度比 CC 还要更进一层，只是没有拆出「五级压缩」那样清晰的分层命名。
+  </div>
+
+  <!-- ============ 逐维度对照表 ============ -->
+  <h2>逐维度对照（v2）</h2>
+  <p class="sub"><span class="delta">绿色</span> = 本版 ai 相比 v1 的变化。</p>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:150px">维度</th>
+        <th class="cc">Claude Code</th>
+        <th class="oc">OpenClaw</th>
+        <th class="ai">ai（v2）</th>
+        <th class="hs">hermes-agent</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="feat">循环载体</td>
+        <td><code>while(true)</code> async generator，单文件 1730 行</td>
+        <td><code>run.ts</code> 外层 <code>while(true)</code> 调度壳；真正 agent 循环是 Pi 的<b>双层 <code>while</code></b>（外层 follow-up 重入 · 内层工具回合），见 <code>agent-loop.ts</code></td>
+        <td><code>for (step&lt;25)</code> async generator <span class="delta">178 行（v1: 85）</span></td>
+        <td>同步函数 <code>run_conversation()</code>（非生成器）：外层 <code>while(步数/预算条件)</code> + 内层「单次调用重试」<code>while</code>，函数体约 <b>4770 行</b>，全用线程池而非 async</td>
+      </tr>
+      <tr>
+        <td class="feat">模型调用</td>
+        <td>流式（SSE），<code>callModel</code> 边流边产出</td>
+        <td>流式：Pi 的 <code>streamAssistantResponse</code> 产出 text/thinking/tool_calls；多 provider 经 <code>pi-ai</code> 抽象</td>
+        <td><span class="delta">流式 <code>streamCompletion</code>：content + tool_calls 增量边解析边产出</span> <span class="was">（v1: 非流式 chatComplete）</span></td>
+        <td>始终优先流式（非流式仅用于 ACP/Copilot 子进程等特例）；<code>tool_calls</code> 按流 index 增量累加 arguments，但只用于 UI 早显 spinner，工具本身仍等整条流结束才派发</td>
+      </tr>
+      <tr>
+        <td class="feat">协议</td>
+        <td>Anthropic Messages API（原生 content blocks）</td>
+        <td>多 provider（Anthropic / OpenAI / …，经 pi-ai 抽象）</td>
+        <td>任意 OpenAI 兼容 <code>/chat/completions</code>（默认 DeepSeek）</td>
+        <td>五种 <code>api_mode</code>：<code>chat_completions</code>（默认，覆盖 OpenAI/OpenRouter/Ollama/DeepSeek/Gemini/Vertex 等）/ <code>anthropic_messages</code> / <code>bedrock_converse</code> / <code>codex_responses</code> / <code>codex_app_server</code>（整轮委托给外部 Codex 子进程，绕过本循环）；统一 <code>ProviderTransport</code> 抽象</td>
+      </tr>
+      <tr>
+        <td class="feat">终止条件</td>
+        <td>无 tool_use + 过七八道恢复闸 → <code>reason: completed</code>，另有 blocking_limit / aborted / model_error / prompt_too_long…</td>
+        <td>Pi：<code>stopReason=error/aborted</code> · <code>shouldStopAfterTurn()</code> · 无工具且无 pending · 工具结果 <code>terminate=true</code> → 退内层；外层 <code>getFollowUpMessages</code> 可再唤醒。openclaw 外壳另在溢出/认证/模型错误时重试</td>
+        <td>本轮无工具调用（<code>exec.size===0</code>）→ <code>return</code>；step 达 25 → 兜底文字<span class="delta">；新增两道恢复闸：<code>finish_reason==='length'</code> 截断 → 注入续写重跑（≤3 次）、API 报上下文超长 → 强制压缩重试（一次性 guard）；用户 abort → 抛出由上层反馈</span></td>
+        <td><b>四家最多</b>——13 种命名 <code>_turn_exit_reason</code>：无工具调用 / 用户中断（含调用中）/ 预算耗尽（含一次性 grace）/ 护栏熔断 / 空响应耗尽 / 部分流恢复 / 兜底用上轮内容 / Ollama 本地上下文过小硬失败 / 重试耗尽无响应 / 多处硬错误 return（413/上下文超限/输出上限/Codex未完成）/ 接近步数上限时异常兜底 / verify-nudge 强制续跑 / codex_app_server 整轮旁路</td>
+      </tr>
+      <tr>
+        <td class="feat">工具执行</td>
+        <td><b>流式并发</b>：StreamingToolExecutor 在模型仍在输出时就开跑；<code>canUseTool</code> 权限闸</td>
+        <td><b>顺序 / 并行可配</b>：<code>executeToolCalls</code> 默认 <code>Promise.all</code> 并行，但都在<u>流结束后</u>才跑（<b>非</b>流式并发）；<code>beforeToolCall/afterToolCall</code> 钩子供 openclaw 挂策略闸 + 注入工具集</td>
+        <td><span class="delta"><b>流式并发</b>：StreamingToolExecutor，工具参数拼完即 <code>add()</code> 开跑，<code>drain()</code> 按序回收</span> <span class="was">（v1: 顺序 await）</span>；无权限闸</td>
+        <td><b>流后启发式并发</b>：批次先过护栏/插件 <code>pre_tool_call</code> 闸，再由 <code>_should_parallelize_tool_batch</code> 逐批判定——只读工具白名单且路径不重叠才丢进 <code>ThreadPoolExecutor</code>（≤8 workers），否则顺序执行；与 Pi 同属「流后并发」但判定是<u>逐批动态</u>而非静态配置</td>
+      </tr>
+      <tr>
+        <td class="feat">上下文压缩</td>
+        <td>五级：budget 裁剪 / snip / microcompact / context-collapse / 模型总结 autocompact</td>
+        <td>Pi auto-compaction：<code>contextTokens &gt; contextWindow − reserveTokens(16384)</code> 时模型总结旧史，保留 system + 最近 ~20k token + 完整 turn 边界（文件操作单独追踪、旧摘要迭代更新）；+ openclaw <code>compactEmbeddedPiSession</code> 重试补偿</td>
+        <td><span class="delta">两级：超 token 阈值 → 模型总结 <code>compactInPlace</code>（就地 splice）；+ <code>SessionStore.trim()</code> 超 60 条丢最旧</span> <span class="was">（v1: 仅 trim）</span></td>
+        <td>单引擎五步算法：① 无 LLM 调用地剪旧工具结果（去重+摘要化）② 保护开头 3 条 ③ 按 token 预算保护结尾 20 条 ④ 模型总结中段 ⑤ 迭代更新上一次摘要；阈值 = 有效窗口 50%（<code>context_compressor.py:993</code>）；另有独立的「单结果 10万字符 / 单轮聚合 20万字符」工具结果预算（类 CC 的 applyToolResultBudget）</td>
+      </tr>
+      <tr>
+        <td class="feat">超长 / 超 token 恢复</td>
+        <td>逐级：collapse-drain → reactive compact；max-output 8k→64k 升档→注入恢复消息</td>
+        <td>contextOverflow → 压缩后整轮重试（带 diag 计数防死循环）</td>
+        <td><span class="delta">主动防膨胀（每轮开头按阈值压缩）+ 被动恢复：输出截断 <code>length</code> → 续写重跑；API 上下文超长 → 强制压缩重跑一次（<code>reactiveCompactAttempted</code> 防死循环）</span> + 25 步封顶兜底 <span class="was">（v1: 仅主动压缩，无报错后恢复）</span></td>
+        <td>请求前预检压缩 + 响应后按真实 <code>prompt_tokens</code> 复查，两次机会；超限区分「prompt 太长→压缩重试」与「max_tokens 相对剩余预算太大→动态下调输出上限重试」两种子情形；压缩尝试上限 3 次、超出即终态失败；429/5xx 走 jittered backoff（含针对特定 provider 过载信号的加长退避）</td>
+      </tr>
+      <tr>
+        <td class="feat">用户中断</td>
+        <td>用户打断 → <code>aborted_streaming</code> / <code>aborted_tools</code>，注入中断消息后退出</td>
+        <td>外层 <code>abortSignal</code> 贯穿；渠道侧可取消</td>
+        <td><span class="delta">终端按 <code>Esc</code> 中断；QQ/微信任务进行中发「停 / 暂停 / 等一下 / stop」等 → abort 当前会话并回「已停止」（按会话持有 AbortController）</span></td>
+        <td>CLI <code>Ctrl+C</code>（非 Esc；二次按 2 秒内强退）；IM 渠道 <code>/stop</code> 硬杀会话，或新消息到达即软中断当前轮；REST <code>POST /v1/runs/{id}/stop</code>；机制是协作式 <code>interrupt_requested</code> 标志，级联到所有并发工具线程与子 agent</td>
+      </tr>
+      <tr>
+        <td class="feat">模型回退</td>
+        <td>有：<code>FallbackTriggeredError</code> 换 <code>fallbackModel</code> 重试整轮 + 清理孤儿消息</td>
+        <td>有：模型回退链 + 认证 profile 冷却轮换</td>
+        <td>无（仍是单 provider，失败即抛）</td>
+        <td><b>双重</b>：① 跨 provider 回退链（配置驱动，按顺序尝试，成功后设冷却期防抖）② 同 provider 多凭证池轮换（<code>CredentialPool</code>，401/429 驱动，含每凭证优先级与耗尽 TTL）——四家里唯一两层都有的</td>
+      </tr>
+      <tr>
+        <td class="feat">多会话 / 并发</td>
+        <td>子 agent（AgentTool）有独立 queryTracking 链；主循环单会话</td>
+        <td>会话级 + 全局级命令队列（lane）串行化；多聊天渠道并存</td>
+        <td><code>SessionStore</code> Map：私聊按用户、群按群各存一份历史<span class="delta">；新增 <code>run_agent</code> 子 agent（独立历史、深度上限 2）</span></td>
+        <td>网关按 <code>session_key</code> 缓存 agent 实例（LRU，保留 prompt-cache 热度）；同会话新消息到达即中断而非排队并发；<code>delegate_task</code> 子 agent 委派，深度上限 1（可配），子 agent 有独立 <code>IterationBudget</code>，不占用父级步数</td>
+      </tr>
+      <tr>
+        <td class="feat">扩展 / 钩子</td>
+        <td>post-sampling / stop / stop-failure hooks、MCP、技能预取、记忆预取</td>
+        <td>插件系统、MCP、before/after compaction & tool-call 钩子</td>
+        <td>channel 注入的 <code>extraTools</code>（如 QQ 的 <code>send_image</code>），无钩子</td>
+        <td>三套并存：① 插件钩子系统（近 20 个 hook 点：pre/post_tool_call、pre/post_llm_call、pre_verify、on_session_*、pre_gateway_dispatch…）② MCP 客户端（stdio/HTTP/SSE，自动发现并注册外部工具）③ Skills（提示注入式，类 Claude Code Skills，<code>/skill-name</code> 加载 markdown）</td>
+      </tr>
+      <tr>
+        <td class="feat">权限</td>
+        <td><code>canUseTool</code> 逐工具放行 + permission mode（含 plan 模式）</td>
+        <td>沙箱 / 工作区挂载路径限制 + 渠道白名单</td>
+        <td>无门禁——系统提示直言「你有权限操作设备，别推辞」</td>
+        <td>多层过程式闸门：tool_search 会话作用域 allowlist → 插件 pre_tool_call 否决 → 护栏（同调用失败/幂等无进展次数熔断）→ 破坏性操作需交互式审批 + 变更前快照 → 文件工具路径/设备白名单；四家里权限检查点最多的</td>
+      </tr>
+      <tr>
+        <td class="feat">内置工具</td>
+        <td>Bash/Edit/Read/Write/Glob/Grep/Agent/Web… 一整套 IDE 级</td>
+        <td>编码工具 + 渠道消息工具（sendMessage 等）+ 记忆 / 搜索</td>
+        <td><span class="delta">Bash/Edit/Read/Write/Glob/Grep/Agent/Web 全套 + email / stock</span> <span class="was">（v1: 仅 write/read/list/bash/email/stock 六个）</span></td>
+        <td>四家里最大：文件/代码（read/write/patch/search/execute_code/terminal）、Web（search/extract/x_search）、浏览器自动化一整套 + computer_use、媒体生成/理解（image/video/tts/transcription/vision）、记忆/会话检索/skills、委派/定时任务/看板、Home Assistant/Discord/飞书/QQ 等渠道集成、MCP 桥接动态注册</td>
+      </tr>
+      <tr>
+        <td class="feat">自我学习 / 记忆巩固</td>
+        <td>无——上下文清空后不留痕迹</td>
+        <td>无</td>
+        <td>无</td>
+        <td><span class="fn hs">独有</span>：每 10 用户轮 / 10 工具轮自动 fork 一个后台子 agent，被强制要求考虑「要不要写技能 / 要不要更新 USER.md」——触发是代码保证的，但写不写、写什么仍是 LLM 自判；详见下节事实核查</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ============ 复杂度量表 ============ -->
+  <h2>复杂度量表（v2 · 数量级直觉）</h2>
+  <p class="sub">ai 的「循环主体行」从 85 涨到 178（engine 178 + compact 103 ≈ 281），仍是 CC/OC 的零头；但压缩与并发的「机制层数」明显追上来了。hermes-agent 的加入把标尺又往上顶了一截——单函数体量比 Claude Code 还大近 3 倍。</p>
+  <div class="card" style="margin-top:14px">
+    <div class="scale"><span class="lbl">循环主体行数</span><div class="bar"><i class="hs" style="width:100%"></i></div><span class="num">~4770</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="cc" style="width:36%"></i></div><span class="num">~1730</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:36%"></i></div><span class="num">~1716</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:4%"></i></div><span class="num">178 (v1:85)</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">终止 / 恢复分支</span><div class="bar"><i class="hs" style="width:100%"></i></div><span class="num">13+ 种</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="cc" style="width:65%"></i></div><span class="num">多</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:40%"></i></div><span class="num">中</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:15%"></i></div><span class="num">少</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">上下文压缩层数</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">5 级</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="hs" style="width:100%"></i></div><span class="num">5 步（单引擎）</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:40%"></i></div><span class="num">2 级</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:40%"></i></div><span class="num">2 级 (v1:1)</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">工具执行模型</span><div class="bar"><i class="cc" style="width:100%"></i></div><span class="num">流式并发</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:85%"></i></div><span class="num">流式并发 (v1:顺序)</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:70%"></i></div><span class="num">并行·流后</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="hs" style="width:70%"></i></div><span class="num">启发式并发·流后</span></div>
+    <div style="height:10px"></div>
+    <div class="scale"><span class="lbl">模型回退层数</span><div class="bar"><i class="hs" style="width:100%"></i></div><span class="num">2 层（跨provider+凭证池）</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="cc" style="width:55%"></i></div><span class="num">1 层</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="oc" style="width:55%"></i></div><span class="num">1 层</span></div>
+    <div class="scale"><span class="lbl"></span><div class="bar"><i class="ai" style="width:0%"></i></div><span class="num">无</span></div>
+  </div>
+  <p class="src">行数为对应文件粗略规模；OpenClaw 的 1716 行是「编排壳」，真正 agent 循环在外部 Pi 引擎里，故其内核复杂度被低估。hermes-agent 的 ~4770 行是单个函数 <code>run_conversation</code> 的函数体（不含被它调用的 <code>tool_executor.py</code> 1646 行、<code>context_compressor.py</code> 3082 行等支撑模块——若都算进「循环」，总量逼近 7000 行）。</p>
+
+  <!-- ============ 同一请求的流程 ============ -->
+  <h2>同一请求下四者怎么跑（v2）</h2>
+  <p class="sub">请求：<b>「读一下 config.ts，然后把里面的端口改成 8080」</b>（需要：读文件 → 改文件，两轮工具）</p>
+
+  <div class="grid4">
+    <div>
+      <div class="flow">
+        <div class="step ai"><div class="n">1</div><div class="body"><div class="t">compactInPlace</div><div class="d">历史没超阈值 → 跳过</div></div></div>
+        <div class="step ai"><div class="n">2</div><div class="body"><div class="t">streamCompletion（流式）</div><div class="d">文本边出 delta；tool_call: read_file 参数拼完 → <b>立即 exec.add 开跑</b></div></div></div>
+        <div class="step ai"><div class="n">3</div><div class="body"><div class="t">drain 回收 + 回灌</div><div class="d">read_file 结果按序塞回 tool 消息</div></div></div>
+        <div class="step ai"><div class="n">4</div><div class="body"><div class="t">streamCompletion</div><div class="d">这轮改用 edit_file 精确替换端口 → add → drain</div></div></div>
+        <div class="step ai"><div class="n">5</div><div class="body"><div class="t">streamCompletion</div><div class="d">无 toolCalls（exec.size===0）→ <b>return</b></div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot ai"></i>ai v2：流式 + 工具边流边跑，改文件用 edit_file 而非整篇重写</p>
+    </div>
+
+    <div>
+      <div class="flow">
+        <div class="step cc"><div class="n">1</div><div class="body"><div class="t">压缩 5 件套 + 预取</div><div class="d">budget/snip/micro/collapse/autocompact</div></div></div>
+        <div class="step cc"><div class="n">2</div><div class="body"><div class="t">流式 callModel</div><div class="d">Read 工具边流边执行</div></div></div>
+        <div class="step cc"><div class="n">3</div><div class="body"><div class="t">canUseTool 放行</div><div class="d">Edit 命中权限 → 经确认后写入</div></div></div>
+        <div class="step cc"><div class="n">4</div><div class="body"><div class="t">收尾闸</div><div class="d">stop-hook / token-budget 检查</div></div></div>
+        <div class="step cc"><div class="n">5</div><div class="body"><div class="t">reason: completed</div><div class="d">每轮都重跑全部压缩与恢复检查</div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot cc"></i>Claude Code：同样两轮工具，外裹上下文工程</p>
+    </div>
+
+    <div>
+      <div class="flow">
+        <div class="step oc"><div class="n">1</div><div class="body"><div class="t">入队（会话+全局 lane）</div><div class="d">保证同会话不并发</div></div></div>
+        <div class="step oc"><div class="n">2</div><div class="body"><div class="t">runEmbeddedPiSession</div><div class="d">Pi 双层循环：流式出 → 工具流后 Promise.all → shouldStopAfterTurn，跑完读→改两轮</div></div></div>
+        <div class="step oc"><div class="n">3</div><div class="body"><div class="t">attempt 返回</div><div class="d">检查溢出 / 认证 / 模型错误</div></div></div>
+        <div class="step oc"><div class="n">4</div><div class="body"><div class="t">无异常 → break</div><div class="d">否则压缩/换 key/换模型后重试</div></div></div>
+        <div class="step oc"><div class="n">5</div><div class="body"><div class="t">BlockChunker 整流</div><div class="d">只把最终回复推给聊天渠道</div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot oc"></i>OpenClaw：循环细节被 Pi 封装，外层管调度</p>
+    </div>
+
+    <div>
+      <div class="flow">
+        <div class="step hs"><div class="n">1</div><div class="body"><div class="t">预检压缩 + 流式调用</div><div class="d">阈值未超→跳过；stream_completion 拼出 read_file 调用（未提前开跑）</div></div></div>
+        <div class="step hs"><div class="n">2</div><div class="body"><div class="t">护栏 + 并发判定</div><div class="d">单工具批次 → should_parallelize=False → 顺序执行 read_file（offset/limit 分页）</div></div></div>
+        <div class="step hs"><div class="n">3</div><div class="body"><div class="t">下一轮：patch 调用</div><div class="d">path 命中审批闸，变更前打快照，确认后写入端口 8080</div></div></div>
+        <div class="step hs"><div class="n">4</div><div class="body"><div class="t">pre_verify 钩子</div><div class="d">若配置了校验钩子，可能再逼一轮确认；本例默认放行</div></div></div>
+        <div class="step hs"><div class="n">5</div><div class="body"><div class="t">finalize_turn</div><div class="d">无 tool_calls → 收尾，<code>_turn_exit_reason="text_response"</code></div></div></div>
+      </div>
+      <p class="src" style="text-align:center"><i class="dot hs"></i>hermes-agent：同样两轮工具，外裹审批闸与并发启发式判定</p>
+    </div>
+  </div>
+
+  <div class="callout new">
+    <b>关键差异点的演化。</b> v1 里 ai 的流程是「读→改」两轮纯顺序、无压缩、整篇 write_file 覆盖；
+    v2 后变成「流式产出 + 工具边流边并发 + 改文件用 edit_file 精确替换 + 每轮先按阈值压缩」。
+    流程图的步数没变（仍 5 步），但每一步内部的工程含量，已经从「裸调用」升到「带流式与压缩的小型 agent loop」。
+    hermes-agent 的步数也凑巧是 5 步，但第 3 步比其余三家都重——<code>patch</code> 这类写工具在它的启发式里从来不会被并发，且默认需要交互式审批 + 变更前快照，这是四家中唯一把「破坏性操作二次确认」做进主循环的。
+  </div>
+
+  <!-- ============ 大文件 / 大文本处理 ============ -->
+  <h2>大文件 / 大文本怎么进上下文（v2）</h2>
+  <p>「读一个几 MB 的文件」「抓一个超长网页」是把上下文撑爆的最常见来源。四家都得在<b>结果塞回 history 之前</b>先做截断/分页，否则一次 read 就能顶满窗口。取舍差得很明显：ai 一刀切头部、Claude Code 双闸 + 行级分页、OpenClaw 自适应分页 + 把超大外部内容挡在上下文之外先做摘要、hermes-agent 走原生 offset/limit 分页并主动告知续读方式——是四家里对「怎么续读」交代得最清楚的。</p>
+
+  <div class="grid4">
+    <div class="card cc">
+      <span class="tag cc">Claude Code</span>
+      <p class="lead">双闸 + 行级分页，宁可报错也不灌满。</p>
+      <p>读前 <code>stat</code> 卡<b>总字节</b>（256KB）→ 超了直接抛 <code>FileTooLargeError</code>；读后再卡<b>输出 token</b>（25000）→ 超了抛错并提示「用 offset/limit」。默认只读前 <code>2000</code> 行、<code>cat -n</code> 带行号；&lt;10MB 走内存 split，更大或 FIFO/设备走流式读。</p>
+    </div>
+    <div class="card oc">
+      <span class="tag oc">OpenClaw</span>
+      <p class="lead">自适应分页 + 大外部内容先摘要。</p>
+      <p>包住 Pi 的 read：未指定 limit 时<b>自动翻页</b>（最多 8 页），跟着每页 <code>truncation.outputLines</code> 续读、拼接，攒到 <code>maxBytes</code> 为止；单次预算随<b>模型上下文窗口</b>自适应（50KB→512KB）。超长链接/媒体则走 link/media-understanding，<b>先用外部 CLI 抽取摘要</b>再进上下文。</p>
+    </div>
+    <div class="card ai">
+      <span class="tag ai">ai（v2）</span>
+      <p class="lead">一刀切头部 20000 字符。</p>
+      <p>最朴素：<code>read_file</code> 整文件读进内存，<code>&gt;20000</code> 字符就 <code>slice(0,20000)+'…（已截断）'</code>，<b>只给头部、无分页、无行号</b>。<code>grep</code> 限 200 行命中、每行截 300 字；<code>web_fetch</code> 默认 20000 字。叠加的大结果靠下游 <code>compactInPlace</code> 兜底。</p>
+    </div>
+    <div class="card hs">
+      <span class="tag hs">hermes-agent</span>
+      <p class="lead">原生 offset/limit 分页 + 明确续读提示。</p>
+      <p><code>read_file(path, offset=1, limit=500)</code> 按行分页，单次字符预算 100000；超预算时<b>按整行边界截断</b>并算出 <code>next_offset</code>，直接把「用 offset=N 继续读」写进结果给模型。<code>web_extract</code> 则是头部 75%+ 尾部 25% 双段摘取 + 落盘全文供按需翻页。读前先看 <code>total_lines</code> 判断是否会截断，而非读了再说。</p>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:140px">维度</th>
+        <th class="cc">Claude Code</th>
+        <th class="oc">OpenClaw</th>
+        <th class="ai">ai（v2）</th>
+        <th class="hs">hermes-agent</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="feat">单次读取上限</td>
+        <td>总字节 256KB（<code>MAX_OUTPUT_SIZE</code>，读前 stat 闸）+ 输出 25000 token（读后闸）</td>
+        <td>每次 50KB（<code>DEFAULT_READ_PAGE_MAX_BYTES</code>），随上下文窗口放大到 ≤512KB</td>
+        <td>20000 字符（写死在 <code>read_file</code> 里）</td>
+        <td>100000 字符（<code>_DEFAULT_MAX_READ_CHARS</code>，可配置）+ 默认每次 500 行（<code>limit</code> 参数默认值）</td>
+      </tr>
+      <tr>
+        <td class="feat">超限策略</td>
+        <td><b>抛错</b>（FileTooLargeError / token 超限），让模型改用 offset+limit——刻意选「抛错」而非截断，省 token</td>
+        <td><b>自动翻页拼接</b>到预算上限，再补一句 <code>[Read output capped at NKB… Use offset=N to continue.]</code></td>
+        <td><b>头部截断</b>，尾部贴「…（已截断）」，模型无从续读</td>
+        <td><b>按整行边界截断</b>，附带算好的 <code>next_offset</code> 与「用 offset=N 继续」的续读指令——不抛错也不是死截断，模型能直接续读</td>
+      </tr>
+      <tr>
+        <td class="feat">分页 / 续读</td>
+        <td>原生 <code>offset</code>/<code>limit</code> 行级参数；默认前 2000 行</td>
+        <td>对模型隐藏：包装层自动翻页（≤8 页），也可显式传 offset/limit</td>
+        <td>无——只能整文件或换 <code>run_bash</code> 自己 <code>sed -n</code></td>
+        <td>原生 <code>offset</code>/<code>limit</code> 行级参数（同 CC 思路），模型可自主决定何时续读；读前按 <code>total_lines</code> 预判是否会截断</td>
+      </tr>
+      <tr>
+        <td class="feat">行号 / 格式</td>
+        <td><code>cat -n</code> 行号；超长文件附「shorter than offset」「totalLines」提示</td>
+        <td>沿用 Pi 的行号输出；拼接时剥掉每页的续读提示行</td>
+        <td>原文照搬，无行号</td>
+        <td>原文照搬（无行号前缀，行号信息体现在 offset/limit 参数与截断提示里）</td>
+      </tr>
+      <tr>
+        <td class="feat">超大文件路径</td>
+        <td>&lt;10MB：<code>readFile</code>+内存 split；≥10MB / FIFO / 设备：<code>createReadStream</code> 流式逐行</td>
+        <td>交给 Pi 引擎；包装层只管字节预算与翻页</td>
+        <td>一律 <code>readFileSync</code> 全量进内存（大文件有 OOM 风险）</td>
+        <td>未见流式读分支——按 offset/limit 分页读取，但底层实现仍需一次性打开文件（大文件路径未做 CC 式的 stat 预检+流式切换）</td>
+      </tr>
+      <tr>
+        <td class="feat">重复读去重</td>
+        <td>有：内容未变 → 返回 <code>FILE_UNCHANGED_STUB</code>，不重发整文件</td>
+        <td>由 Pi 会话管理</td>
+        <td>无：每次都重读重灌</td>
+        <td>有：同任务内相同 <code>(path, offset, limit)</code> 走缓存，并对比 mtime 判断陈旧后失效</td>
+      </tr>
+      <tr>
+        <td class="feat">大外部内容</td>
+        <td><code>WebFetch</code> 自带抓取+截断</td>
+        <td>link/media-understanding：外部 CLI 抽取摘要（正文默认 500 字、CLI 缓冲 5MB）后才进上下文</td>
+        <td><code>web_fetch</code> 去标签转纯文本，截到 max_chars（默认 20000）</td>
+        <td><code>web_extract</code>：默认 15000 字符（可配 2000~500000），超限做<b>头 75% + 尾 25%</b>双段摘取并在页脚提示可用 <code>read_file</code> 翻查落盘的全文缓存（最多存 200 万字符）</td>
+      </tr>
+      <tr>
+        <td class="feat">搜索结果（grep）</td>
+        <td>GrepTool 限行 + ripgrep 后端</td>
+        <td>Pi 的 grep/glob</td>
+        <td>限 200 行命中、每行截 300 字、含 <code>\0</code> 的文件判为二进制跳过</td>
+        <td><code>search_files</code>（同一工具兼具 grep/glob 语义）；单结果/单轮聚合走通用工具结果预算（10万/20万字符）兜底，而非专属截断规则</td>
+      </tr>
+      <tr>
+        <td class="feat">工具结果总预算</td>
+        <td>有：<code>applyToolResultBudget</code> 按 tool_use_id 限额</td>
+        <td>无独立机制，交给压缩兜底</td>
+        <td>无：仅逐个截断，叠加风险靠压缩兜底</td>
+        <td>有：单结果 100000 字符 + 单轮聚合 200000 字符双重上限（<code>budget_config.py</code>），超限先落盘、内联只留 1500 字符预览——四家里和 CC 思路最接近的一个</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3><span class="fn hs">hermes-agent</span> · <code>read_file</code> —— 行级分页 + 算好续读点，不是死截断</h3>
+  <pre class="code hs"><span class="kw">def</span> <span class="fnn">read_file_tool</span>(path, offset: <span class="kw">int</span> = <span class="vr">1</span>, limit: <span class="kw">int</span> = <span class="vr">500</span>, ...):
+  total_lines = <span class="fnn">count_lines</span>(path)                        <span class="cm"># 读前先算行数，而非读了再说</span>
+  end_line = offset + limit - <span class="vr">1</span>
+  truncated_by_lines = total_lines &gt; end_line
+
+  text = <span class="fnn">slice_lines</span>(path, offset, end_line)
+  <span class="kw">if</span> <span class="fnn">len</span>(text) &gt; MAX_READ_CHARS (=<span class="vr">100_000</span>):             <span class="cm"># 读后再按字符预算二次裁剪</span>
+    <span class="hl">text, next_offset = <span class="fnn">_truncate_to_char_budget</span>(text, offset)</span>  <span class="cm"># 按整行边界截断，算出续读起点</span>
+    text += <span class="fnn">f</span><span class="st">"\n[Output truncated at {MAX_READ_CHARS:,}-char budget… Use offset={next_offset} to continue.]"</span>
+  <span class="kw">return</span> text
+</pre>
+  <p class="src">hermes-agent/tools/file_tools.py:1175（read_file_tool）、:86-129（_truncate_to_char_budget）、:59（_DEFAULT_MAX_READ_CHARS）</p>
+
+  <h3><span class="fn ai">ai</span> · <code>read_file</code> —— 整文件进内存，头部一刀切</h3>
+  <pre class="code ai"><span class="kw">case</span> <span class="st">'read_file'</span>: {
+  <span class="kw">const</span> path = <span class="fnn">resolve</span>(<span class="fnn">String</span>(args.path))
+  <span class="kw">const</span> text = <span class="fnn">readFileSync</span>(path, <span class="st">'utf8'</span>)              <span class="cm">// ← 全量读入，无 offset/limit、无流式</span>
+  <span class="kw">return</span> text.length &gt; <span class="vr">20000</span>
+    ? text.<span class="fnn">slice</span>(<span class="vr">0</span>, <span class="vr">20000</span>) + <span class="st">'\n…（已截断）'</span>          <span class="cm">// ← 只给头部，模型无法续读后半段</span>
+    : text
+}
+<span class="sr">ai/src/tools.ts:286</span></pre>
+
+  <h3><span class="fn cc">Claude Code</span> · 读前卡字节、读后卡 token，行级分页</h3>
+  <pre class="code cc"><span class="cm">// 读前：stat 卡总文件大小（仅当未显式给 limit 时）</span>
+  <span class="kw">if</span> (!truncateOnByteLimit &amp;&amp; maxBytes !== undefined &amp;&amp; stats.size &gt; maxBytes)
+    <span class="kw">throw new</span> <span class="fnn">FileTooLargeError</span>(stats.size, maxBytes)        <span class="cm">// MAX_OUTPUT_SIZE = 256KB</span>
+
+  <span class="cm">// 选路：小文件内存 split，大文件 / FIFO / 设备走流式</span>
+  <span class="kw">if</span> (stats.isFile() &amp;&amp; stats.size &lt; <span class="vr">10*1024*1024</span>) <span class="fnn">readFileInRangeFast</span>(…)
+  <span class="kw">else</span> <span class="fnn">readFileInRangeStreaming</span>(…)                          <span class="cm">// createReadStream 逐行</span>
+
+  <span class="cm">// 读后：实际输出 token 超限 → 抛错（不截断，省 token），提示改用 offset/limit</span>
+  <span class="kw">await</span> <span class="fnn">validateContentTokens</span>(content, ext, maxTokens)         <span class="cm">// DEFAULT 25000</span>
+  <span class="cm">// 默认前 MAX_LINES_TO_READ=2000 行，cat -n 行号；内容未变则回 FILE_UNCHANGED_STUB</span>
+<span class="sr">claudecode/utils/readFileInRange.ts · tools/FileReadTool/limits.ts · prompt.ts</span></pre>
+
+  <h3><span class="fn oc">OpenClaw</span> · 包住 Pi 的 read，自适应分页拼接</h3>
+  <pre class="code oc"><span class="cm">// 单次字节预算随模型上下文窗口自适应：50KB → 512KB</span>
+  maxBytes = <span class="fnn">clamp</span>(ctxTokens * <span class="vr">4</span> * <span class="vr">0.2</span>, <span class="vr">50*1024</span>, <span class="vr">512*1024</span>)
+
+  <span class="kw">for</span> (<span class="kw">let</span> page = <span class="vr">0</span>; page &lt; <span class="vr">8</span>; page++) {                  <span class="cm">// MAX_ADAPTIVE_READ_PAGES</span>
+    <span class="kw">const</span> r = <span class="kw">await</span> base.<span class="fnn">execute</span>({ ...args, offset: nextOffset }) <span class="cm">// 调 Pi 的 read</span>
+    <span class="kw">const</span> t = <span class="fnn">extractReadTruncationDetails</span>(r)
+    <span class="kw">if</span> (aggregatedBytes + nextBytes &gt; maxBytes) { capped = <span class="kw">true</span>; <span class="kw">break</span> }
+    aggregatedText += <span class="fnn">stripReadContinuationNotice</span>(pageText)        <span class="cm">// 拼接，剥掉每页续读提示</span>
+    <span class="kw">if</span> (!t?.truncated) <span class="kw">break</span>
+    nextOffset += t.outputLines                              <span class="cm">// 跟着上一页行数续读</span>
+  }
+  <span class="kw">if</span> (capped) finalText += <span class="st">`\n\n[Read output capped at ${maxKB}KB… Use offset=${n} to continue.]`</span>
+<span class="sr">openclaw/src/agents/pi-tools.read.ts:208（executeReadWithAdaptivePaging）</span></pre>
+
+  <div class="callout new">
+    <b>给 <span class="fn ai">ai</span> 的最小补法。</b> 不必抄 CC 的五层闸或 OC 的自适应分页，单是给 <code>read_file</code> 加一对
+    <code>offset</code>/<code>limit</code>（行号）参数 + 默认只读前 N 行，就能让模型对大文件「先扫一段、要哪段读哪段」，而不是吃一个头部 20000 字的死截断后无路可走——
+    几行改动，契合 ai「几十行就对齐一招」的一贯取舍。再进一步可仿 CC 的 <code>stat</code> 预检，避免把几 MB 文件整个 <code>readFileSync</code> 进内存。
+    <span class="fn hs">hermes-agent</span> 的 <code>read_file</code> 正好就是这个「最小补法」的成品实现——读前算 <code>total_lines</code>、超预算按整行截断并直接把 <code>next_offset</code> 写进提示里，可以直接当参考实现抄。
+  </div>
+
+  <!-- ============ hermes 自我学习循环事实核查 ============ -->
+  <h2><span class="fn hs">hermes-agent</span> 独有：「自我学习循环」宣称的事实核查</h2>
+  <p>这项能力在 CC / OpenClaw / ai 三家里都不存在，逐维度表里只能打「无」，所以单独拉出来核实。官方原话大意是：<i>「唯一自带学习循环的 agent——从经验中创建技能、在使用中改进它们、自我提醒沉淀知识、检索自己的历史对话、并跨会话构建一个不断加深的用户模型」</i>。逐条对照源码后：<b>自动触发的部分是真的、且默认开启</b>；但「学习」本身每次都是一次 LLM 自我判断，不是可验证的确定性流程，且「用户模型」有硬字符上限。</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:190px">宣称</th>
+        <th>实际机制</th>
+        <th style="width:170px">判定</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="feat">① 从经验创建技能</td>
+        <td>每 <b>10 次工具调用</b>自动 fork 一个后台子 agent（<code>turn_finalizer.py</code> → <code>background_review.py</code>），塞给它一段写死的 prompt，要求「主动判断是否该新建一个技能」并调用 <code>skill_manage(action="create")</code>。触发是代码保证的；但决定「值不值得存」全靠这个子 agent 的判断，没有任何确定性抽取算法</td>
+        <td>部分兑现</td>
+      </tr>
+      <tr>
+        <td class="feat">② 使用中改进技能</td>
+        <td>同一后台 review 会顺带提示「如果某个技能这轮被证明错了/漏了步骤，立刻 patch」；<code>skill_usage.py</code> 只记录 view/use/patch <b>次数</b>，不记录成功/失败——「改进」= LLM 自我报告，没有效果反馈信号驱动。更严格的合并/清理通道 <code>curator.py</code> 默认<b>关闭</b></td>
+        <td>部分兑现</td>
+      </tr>
+      <tr>
+        <td class="feat">③ 自我提醒沉淀知识</td>
+        <td>四家里唯一有代码强制的「提醒」：记忆每 10 用户轮、技能每 10 工具轮各自独立计数，到点强制跑一段有限步数（≤16 步）的子对话，模型必须回应。<b>但</b>两份 review prompt 都明确允许「无需保存，直接结束」——是强制「考虑」，不是强制「写入」</td>
+        <td>兑现（按设计）</td>
+      </tr>
+      <tr>
+        <td class="feat">④ 检索自己的历史对话</td>
+        <td><code>session_search</code> 是 SQLite <b>FTS5 关键词全文检索</b>，不是语义/向量召回；且是纯「模型主动调用」的工具，没有任何地方自动触发它——模型不问，它就不会自己去翻旧对话</td>
+        <td>兑现但夸大</td>
+      </tr>
+      <tr>
+        <td class="feat">⑤ 跨会话加深用户模型</td>
+        <td>真实机制是 <code>USER.md</code>，经 <code>memory</code> 工具写入，由 ③ 的记忆提醒周期性触发更新；但<b>硬编码上限 1375 字符</b>，且只在会话<b>开始时</b>整体注入一次（冻结快照），旧内容会被覆盖/精简而非无限累积。名字最像「负责这个」的 <code>curator.py</code> 其实<b>只管技能维护</b>，和用户模型完全无关（这是宣称与代码差距最大的一处误导）</td>
+        <td>部分兑现</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout new">
+    <b>最容易被误读的一点：curator ≠ 用户建模。</b> <code>curator.py</code> 的文档字符串明确写着它是「定期审查 agent 创建的技能」的辅助模型任务——全部逻辑都是技能生命周期管理（陈旧下线/归档/合并），且默认每 7 天空闲触发一次，<b>完全不碰</b> <code>USER.md</code>/<code>MEMORY.md</code>。真正承载「用户模型」的只是一份 1375 字符上限、由 <code>memory</code> 工具写入的静态文件。
+  </div>
+  <div class="callout">
+    <b>整体判断。</b> 支撑「自我学习」说法的基础设施是真的、且四家独此一份：<code>background_review.py</code> 这个「按代码定的周期强制 fork 子 agent」机制，是唯一让「创建/改进技能」「沉淀知识」脱离「纯粹指望模型自觉」的部分。但把它读成「agent 会自己变得更懂你」需要打折扣——本质仍是「每隔 N 轮，强制问一次 LLM 要不要记点什么」，技能这侧没有效果反馈闭环，用户模型这侧有硬字符上限。工程是真的，但比宣传语克制得多。
+  </div>
+
+  <!-- ============ 还能再做什么 ============ -->
+  <h2>v2 之后，<span class="fn ai">ai</span> 还剩哪些可选项</h2>
+  <p>v1 清单里的 ①②③⑤ 已落地（流式 / 压缩 / 并发 / 工具集）。<span class="delta">本轮又补了 Claude Code 的两道恢复闸：输出截断续写（对标 <code>max_output_tokens_recovery</code>）、上下文超长强制压缩重试（对标 <code>reactive_compact_retry</code>），以及用户主动中断（Esc / IM 发「停」）。</span>剩下按性价比：</p>
+  <table>
+    <thead><tr><th style="width:170px">改进点</th><th>现状</th><th>可借鉴谁 · 怎么做</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="feat">④ 模型回退</td>
+        <td>单一 provider，请求失败直接抛错（流式与非流式都是）</td>
+        <td><span class="fn oc">OC</span> 的回退链：主模型 5xx/限流时自动切备用 <code>baseURL/model</code>，对多 provider 配置天然契合。流式下需处理「已吐一半再切」的清理。</td>
+      </tr>
+      <tr>
+        <td class="feat">⑥ 会话串行</td>
+        <td>QQ/微信已用 <code>busy</code> 集挡住同会话并发；但仅「拒绝」而非「排队」</td>
+        <td><span class="fn oc">OC</span> 的 lane 队列：给每个 session 一把串行锁<u>排队</u>执行，而非直接回「上一条还在处理中」。</td>
+      </tr>
+      <tr>
+        <td class="feat">＋ 工具结果总预算</td>
+        <td>单个结果截到 20000 字符；多个大结果叠加仍可能偏大（压缩会兜底但偏被动）</td>
+        <td><span class="fn cc">CC</span> 的 <code>applyToolResultBudget</code> 或 <span class="fn hs">hermes</span> 的「单结果 10 万 + 单轮聚合 20 万字符」双上限：对「聚合后」的工具结果设总预算，比逐个截断更稳。</td>
+      </tr>
+      <tr>
+        <td class="feat">＋ read_file 分页续读</td>
+        <td>头部截断死路一条，模型拿不到后半段</td>
+        <td><span class="fn hs">hermes</span> 的 <code>read_file(offset,limit)</code>：读前先算行数判断是否会截断，截断时把 <code>next_offset</code> 写进提示，模型可自主续读——比照抄 CC 的五层闸成本低得多。</td>
+      </tr>
+      <tr>
+        <td class="feat">＋ 只读工具真并发收益验证</td>
+        <td>StreamingToolExecutor 已并发；但若 provider 把 tool_calls 一次性吐出，并发收益取决于工具自身耗时</td>
+        <td>对 <code>read_file/glob/grep/web_fetch</code> 这类无副作用、可能慢的只读工具，并发收益最大——已天然受益于现机制。</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <b>取舍没变，只是天平更靠中间了。</b> ai 依然不打算抄 Claude Code 那 1730 行的全部容错；
+    但 v2 证明：流式、流式并发、总结式压缩这三招，<u>各自只要几十行</u>就能落进一个仍然「一眼读懂」的循环里。剩下的 ④⑥ 属于「多 provider / 多并发会话」才需要的税，按需再加。
+  </div>
+
+  <p class="foot">
+    依据源码：<code>ai/src/agent/engine.ts</code>（runAgent + StreamingToolExecutor）、<code>ai/src/agent/compact.ts</code>、<code>ai/src/llm.ts</code>（streamCompletion）、<code>ai/src/tools.ts</code>、<code>ai/src/agent/session.ts</code>；
+    <code>claudecode/query.ts</code>（queryLoop）；<code>openclaw-2026.3.23/src/agents/pi-embedded-runner/run.ts</code> 及 <code>compact.ts</code>。
+    OpenClaw 的真正 agent 循环来自 Pi 引擎（开源于 <code>github.com/earendil-works/pi</code>，发布为 <code>@mariozechner/pi-agent-core / pi-coding-agent / pi-ai</code>）；本轮已据该仓库源码 <code>packages/agent/src/agent-loop.ts</code> 与 <code>packages/coding-agent/src/core/compaction/compaction.ts</code> 核实其双层循环、工具并发时机与压缩阈值，不再仅凭调用壳推断。
+    第四方 <code>hermes-agent</code>（本机 <code>studio/hermes-agent</code>）依据：<code>agent/conversation_loop.py</code>（run_conversation，核心循环）、<code>agent/tool_executor.py</code>（工具并发/护栏执行）、<code>agent/tool_dispatch_helpers.py</code>（并发启发式）、<code>agent/context_compressor.py</code> + <code>agent/conversation_compression.py</code>（压缩）、<code>agent/error_classifier.py</code> + <code>agent/retry_utils.py</code>（错误分类/退避）、<code>agent/chat_completion_helpers.py</code>（流式调用+跨 provider 回退）、<code>agent/credential_pool.py</code>（同 provider 凭证轮换）、<code>agent/tool_guardrails.py</code>（护栏熔断）、<code>agent/turn_context.py</code> / <code>agent/turn_retry_state.py</code> / <code>agent/iteration_budget.py</code>（每轮/每次调用状态）、<code>hermes_cli/plugins.py</code>（插件钩子）、<code>tools/mcp_tool.py</code>（MCP）、<code>tools/delegate_tool.py</code>（子 agent 委派）、<code>tools/file_tools.py</code>（read_file 分页）、<code>tools/web_tools.py</code>（web_extract 截断）、<code>tools/budget_config.py</code>（工具结果预算）。
+    本页为 v2，在 v1（<code>对比-agent-loop-三方.html</code>）基础上并新增 hermes-agent 为第四方，未覆盖原 v1 文件。
+  </p>
+
+</div>
+</body>
+</html>

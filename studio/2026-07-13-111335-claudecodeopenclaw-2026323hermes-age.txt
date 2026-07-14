@@ -1,0 +1,601 @@
+▗ ▗   ▖ ▖  Claude Code v2.1.207
+           Sonnet 5 · Claude Pro
+  ▘▘ ▝▝    ~/progetto/agent/studio
+
+ ▎ Extended: Fable 5 is included in your weekly limit
+ ▎ Through July 12, you can use up to 50% of your weekly usage limit on Fable 5. If you hit your limit, you can continue on Fable 5 with usage credits. Fable 5 draws down usage faster than Opus 4.8. Run /model and select Fable to use it. Learn more (https://support.claude.com/en/articles/15424964-claude-fable-5-promotional-access)
+   +1 more · /status
+
+❯ 这个文件夹下，有，claudecode，openclaw-2026.3.23，hermes-agent,pi             
+  四种agent，请生成一个html文档，讲解如何构造一个 cli                           
+  agent。用于我的分享，帮助同事了解，cli agent的工作原理，尽可能有些图。        
+
+⏺ 我先了解一下这四个 agent 项目的结构和核心实现，再生成讲解文档。
+
+  Listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+⏺ 已有一些历史对比文档可以参考。我先读一下已有的 agent_loop_explained.md 和已有
+  HTML 的风格，再分头看四个 agent 的核心循环代码。
+
+  Searched for 1 pattern, read 3 files, listed 1 directory (ctrl+o to expand)
+
+⏺ 4 Explore agents finished (ctrl+o to expand)
+   ├ Explore claudecode core agent loop · 32 tool uses · 95.1k tokens
+   │ ⎿  Done
+   ├ Explore openclaw core agent loop · 51 tool uses · 87.3k tokens
+   │ ⎿  Done
+   ├ Explore pi core agent loop · 30 tool uses · 45.8k tokens
+   │ ⎿  Done
+   └ Explore hermes-agent core loop · 41 tool uses · 61.1k tokens
+     ⎿  Done
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ API Error: Connection closed mid-response. The response above may be 
+  incomplete.
+
+✻ Crunched for 8m 7s
+
+❯ 这个文件夹下，有，claudecode，openclaw-2026.3.23，hermes-agent,pi             
+  四种agent，请生成一个html文档，讲解如何构造一个 cli                           
+  agent。用于我的分享，帮助同事了解，cli agent的工作原理，尽可能有些图。        
+
+⏺ Skill(frontend-design:frontend-design)
+  ⎿  Successfully loaded skill
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Write(CLI-Agent构造手册.html)
+  ⎿  Wrote 610 lines to CLI-Agent构造手册.html
+       1 <!DOCTYPE html>
+       2 <html lang="zh-CN">
+       3 <head>
+       5 <meta name="viewport" content="width=device-width, initial-scale
+         =1.0">
+       6 <title>CLI Agent 构造手册</title>
+       7 <style>
+       8   :root{
+         f3; --muted:#8996a8;
+      10     --line:#232c3a; --line2:#2c3546;
+     … +880 lines (ctrl+o to expand)
+
+⏺ 现在用 Chrome 打开检查一下实际渲染效果，尤其是那张手绘 SVG 电路图有没有错位。
+
+  Called claude-in-chrome (ctrl+o to expand)
+
+⏺ 浏览器插件未连接，改用无头 Chrome 截图核实一下渲染效果。
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+⏺ SVG 电路图渲染正常，整体布局不错。放大看看电路图细节和检查页面下半部分。
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ The circuit diagram renders exactly as designed — clean orthogonal traces, no
+  overlaps. Let me check the rest of the page (code block, checklist, footer)
+  further down.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+⏺ 发现表格最后一列（hermes-agent，函数名较长）在窄屏下会被裁切，需要让长标识符可
+  以换行而不是撑破容器。
+
+⏺ Update(CLI-Agent构造手册.html)
+  ⎿  Added 2 lines, removed 2 lines
+      127    .step.allow .n{background:#1c2e22;color:var(--pi)}
+      128  
+      129    /* ---------- tables ---------- */
+      130 -  table{width:100%;border-collapse:collapse;margin:16px 0;font
+          --size:13.5px}                                                 
+      131 -  th,td{border:1px solid var(--line);padding:10px 12px;text-al
+          -ign:left;vertical-align:top}                                  
+      130 +  table{width:100%;border-collapse:collapse;margin:16px 0;font
+          +-size:13.5px;table-layout:fixed}                              
+      131 +  th,td{border:1px solid var(--line);padding:10px 12px;text-al
+          +ign:left;vertical-align:top;overflow-wrap:anywhere}           
+      132    th{background:var(--panel2);font-weight:600;font-family:var(
+           --mono);font-size:11.5px;letter-spacing:.5px;
+      133      text-transform:uppercase;color:var(--muted)}
+      134    th.cc{color:var(--cc)} th.oc{color:var(--oc)} th.pi{color:va
+           r(--pi)} th.hs{color:var(--hs)}
+
+⏺ Update(CLI-Agent构造手册.html)
+  ⎿  Added 1 line, removed 1 line
+      71    .fn.oc{color:var(--oc);border-color:#28384a}
+      72    .fn.pi{color:var(--pi);border-color:#284a34}
+      73    .fn.hs{color:var(--hs);border-color:#4a2635}
+      74 -  .src{display:block;font-family:var(--mono);font-size:11.5px;c
+         -olor:#5f6a7d;margin-top:2px}                                   
+      74 +  .src{display:block;font-family:var(--mono);font-size:11.5px;c
+         +olor:#5f6a7d;margin-top:2px;overflow-wrap:anywhere}            
+      75  
+      76    /* ---------- versus strip (section 0) ---------- */
+      77    .versus{display:grid;grid-template-columns:1fr auto 1fr;gap:1
+          8px;align-items:stretch;margin:20px 0}
+
+⏺ Update(CLI-Agent构造手册.html)
+  ⎿  Added 2 lines, removed 1 line
+      132    th{background:var(--panel2);font-weight:600;font-family:var(
+           --mono);font-size:11.5px;letter-spacing:.5px;
+      133      text-transform:uppercase;color:var(--muted)}
+      134    th.cc{color:var(--cc)} th.oc{color:var(--oc)} th.pi{color:va
+           r(--pi)} th.hs{color:var(--hs)}
+      135 -  td.feat{color:#c3cad8;font-weight:600;background:#0f141c;whi
+          -te-space:nowrap}                                              
+      135 +  td.feat{color:#c3cad8;font-weight:600;background:#0f141c}   
+      136 +  table th:first-child,table td:first-child{width:17%}        
+      137    td.dot-yes{color:var(--pi)} td.dot-no{color:#4a5263}
+      138    .tblwrap{overflow-x:auto}
+      139  
+
+⏺ Re-render and check the same section again.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Now everything wraps properly within the columns instead of clipping
+  off-screen. Let me spot-check the top hero and the loop diagram once more at
+  this width, then confirm the rest of the page looks good.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ This looks excellent — cards, code block, all rendering cleanly. Let me check
+  the final part (checklist + footer) to complete verification.
+
+  Read 3 files, ran 4 shell commands (ctrl+o to expand)
+
+⏺ footer 里那段路径列表因为 div
+  默认折叠换行符，挤成了一行，需要修一下让换行生效。
+
+⏺ Update(CLI-Agent构造手册.html)
+  ⎿  Added 1 line, removed 1 line
+      178    .callout b{color:var(--accent)}
+      179  
+      180    footer{margin-top:70px;padding:28px 0 40px;border-top:1px so
+           lid var(--line);color:var(--muted);font-size:12.5px}
+      181 -  footer .paths{font-family:var(--mono);font-size:12px;color:#
+          -6b7585;line-height:2}                                         
+      181 +  footer .paths{font-family:var(--mono);font-size:12px;color:#
+          +6b7585;line-height:2;white-space:pre-line}                    
+      182  
+      183    @media (max-width:760px){
+      184      .versus{grid-template-columns:1fr}
+
+⏺ Let me verify that fix and do a final full-page check.
+
+  Read 2 files, ran 2 shell commands (ctrl+o to expand)
+
+⏺ Footer paths now render as a proper multi-line list. The document is complete
+  and verified end-to-end — hero, versus strip, loop schematic, six-component
+  breakdown with comparison tables, four project cards, minimal-agent code
+  sample, and the reinforcement checklist all render cleanly with no overflow or
+  layout bugs.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 已生成 /Users/lteu/progetto/agent/studio/CLI-Agent构造手册.html，用 Chrome
+  无头截图逐段核实过渲染效果（并修了表格溢出裁切、footer 换行两个小 bug）。
+
+  内容结构：
+  - 00 定义：CLI Agent vs 聊天机器人的本质区别（有没有那个循环）
+  - 01 核心原理：Agent Loop 四步走 + 一张手绘电路图风格的 SVG
+  原理图，配四个项目各自对应的循环入口函数
+  - 02 六大构件：循环引擎、工具注册表、系统提示词动态拼装、上下文压缩、权限审批
+  、进阶能力——每个先讲"为什么存在"，最后附一张 构件×四项目
+  的对照表（带具体函数名/文件路径，可回仓库核对）
+  - 03 四个项目速览：claudecode / openclaw / pi / hermes-agent
+  四张"数据手册"卡片
+  - 04 动手：不到 60 行的最小可行 agent 伪代码，逐点注释
+  - 05 加固清单：从 MVP 到生产级要补的东西，按"什么时候会痛"排序
+
+  视觉上用了"蓝图 / 原理图"的设计语言（边角定位标记、PCB 走线风格的循环图、芯片
+  式构件卡片），和你之前几份对比文档的深色配色保持了延续性但没有照搬模板。所有事
+  实性内容（函数名、文件路径）都来自对四个仓库源码的实际检索，不是编的。
+
+  直接双击 HTML
+  文件在浏览器打开即可分享给同事；如果想要网页链接方便远程转发，我也可以再发布成
+  Artifact。
+
+✻ Cooked for 13m 41s
+
+※ recap: Building a shareable HTML guide explaining how CLI agents work, using claudecode, openclaw, pi, and hermes-agent as case studies. It's done and visually verified; next step is publishing it as an Artifact if you'd like a shareable link instead of just the local file. (disable recaps in /config)
+
+❯ 不对，它是白的，和 comparison.html 的视觉效果差很多                           
+
+⏺ 文件被外部修改过（可能是保存时触发的格式化工具），结构被打乱了。我先读一下当前
+  文件的实际内容，看看背景为什么变白了。
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ 找到问题了：文件在保存时把整个 <head>（含 <style> 样式表）、hero 区块和 <body>
+  开头标签都弄丢了，只剩下裸的 <section>
+  内容，浏览器自然按无样式的默认白底黑字渲染。结尾也重复了一份
+  footer。我保留你（或工具）新改的 section-head/section-note
+  结构，把缺失的头部和收尾补回去。
+
+⏺ Write(CLI-Agent构造手册.html)
+  ⎿  Added 221 lines, removed 18 lines
+        1 -<!doctype html>                                               
+        2 -<ht                                                           
+        1 +<!DOCTYPE html>                                               
+        2 +<html lang="zh-CN">                                           
+        3 +<head>                                                        
+        4 +<meta charset="UTF-8">                                        
+        5 +<meta name="viewport" content="width=device-width, initial-sca
+          +le=1.0">                                                      
+        6 +<title>CLI Agent 构造手册</title>                             
+        7 +<style>                                                       
+        8 +  :root{                                                      
+        9 +    --bg:#0b0f16; --panel:#121821; --panel2:#171f2b; --ink:#e7
+          +ecf3; --muted:#8996a8;                                        
+       10 +    --line:#232c3a; --line2:#2c3546;                          
+       11 +    --cc:#d97757; --oc:#5b9bd5; --pi:#6fcf97; --hs:#e2618c; --
+          +accent:#ffb454;                                               
+       12 +    --mono:"IBM Plex Mono","SF Mono",ui-monospace,"JetBrains M
+          +ono",Menlo,Consolas,monospace;                                
+       13 +    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Mic
+          +rosoft YaHei","Helvetica Neue",Arial,sans-serif;              
+       14 +  }                                                           
+       15 +  *{box-sizing:border-box}                                    
+       16 +  html{background:var(--bg)}                                  
+       17 +  body{margin:0;background:var(--bg);color:var(--ink);font-fam
+          +ily:var(--sans);                                              
+       18 +    line-height:1.75;font-size:15px;-webkit-font-smoothing:ant
+          +ialiased}                                                     
+       19 +  ::selection{background:#2c3546;color:var(--ink)}            
+       20 +  .wrap{max-width:1120px;margin:0 auto;padding:0 24px 100px}  
+       21 +  a{color:inherit}                                            
+       22 +                                                              
+       23 +  /* ---------- background blueprint grid ---------- */       
+       24 +  .bp-grid{                                                   
+       25 +    background-image:                                         
+       26 +      linear-gradient(rgba(255,255,255,.028) 1px,transparent 1
+          +px),                                                          
+       27 +      linear-gradient(90deg,rgba(255,255,255,.028) 1px,transpa
+          +rent 1px);                                                    
+       28 +    background-size:28px 28px;                                
+       29 +  }                                                           
+       30 +  .reg{position:absolute;width:22px;height:22px;opacity:.55}  
+       31 +  .reg::before,.reg::after{content:"";position:absolute;backgr
+          +ound:var(--accent)}                                           
+       32 +  .reg::before{left:10px;top:0;width:2px;height:22px}         
+       33 +  .reg::after{left:0;top:10px;width:22px;height:2px}          
+       34 +  .reg i{position:absolute;left:26px;top:-2px;font-family:var(
+          +--mono);font-size:9px;color:var(--accent);                    
+       35 +    letter-spacing:.5px;white-space:nowrap}                   
+       36 +                                                              
+       37 +  /* ---------- hero ---------- */                            
+       38 +  .hero{position:relative;padding:64px 24px 46px;border-bottom
+          +:1px solid var(--line);overflow:hidden}                       
+       39 +  .hero .reg.tl{top:18px;left:18px}                           
+       40 +  .hero .reg.tr{top:18px;right:18px}                          
+       41 +  .hero .reg.tr::before,.hero .reg.tr::after{left:auto;right:0
+          +}                                                             
+       42 +  .hero .reg.tr i{left:auto;right:26px;text-align:right}      
+       43 +  .hero-inner{max-width:1120px;margin:0 auto;position:relative
+          +}                                                             
+       44 +  .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spa
+          +cing:2.5px;color:var(--accent);                               
+       45 +    text-transform:uppercase;margin:0 0 16px;display:flex;alig
+          +n-items:center;gap:10px}                                      
+       46 +  .eyebrow::before{content:"";width:20px;height:1px;background
+          +:var(--accent)}                                               
+       47 +  .hero h1{font-family:var(--mono);font-weight:600;font-size:3
+          +8px;letter-spacing:.5px;margin:0 0 14px;                      
+       48 +    color:var(--ink)}                                         
+       49 +  .hero .sub{font-size:17px;color:#c3cad8;max-width:680px;marg
+          +in:0 0 22px}                                                  
+       50 +  .hero .meta{font-family:var(--mono);font-size:12.5px;color:v
+          +ar(--muted);display:flex;gap:8px;flex-wrap:wrap;align-items:ce
+          +nter}                                                         
+       51 +  .hero .meta .chip{border:1px solid var(--line2);border-radiu
+          +s:4px;padding:3px 9px;background:var(--panel)}                
+       52 +  .hero .meta .chip.cc{color:var(--cc);border-color:#42302a}  
+       53 +  .hero .meta .chip.oc{color:var(--oc);border-color:#28384a}  
+       54 +  .hero .meta .chip.pi{color:var(--pi);border-color:#284a34}  
+       55 +  .hero .meta .chip.hs{color:var(--hs);border-color:#4a2635}  
+       56 +                                                              
+       57 +  /* ---------- sections ---------- */                        
+       58 +  section{padding:56px 0 0}                                   
+       59 +  section.tight{padding-top:40px}                             
+       60 +  h2{font-size:22px;margin:0 0 6px;color:var(--ink);font-weigh
+          +t:700}                                                        
+       61 +  .sec-eyebrow{font-family:var(--mono);font-size:11px;letter-s
+          +pacing:2px;color:var(--muted);                                
+       62 +    text-transform:uppercase;margin:0 0 8px}                  
+       63 +  .sec-eyebrow b{color:var(--accent)}                         
+       64 +  .section-head{display:flex;align-items:baseline;flex-wrap:wr
+          +ap;gap:14px;margin-bottom:6px}                                
+       65 +  .section-head .sec-eyebrow{margin:0;font-size:13px}         
+       66 +  .section-head h2{margin:0}                                  
+       67 +  .section-note{margin-left:auto;font-family:var(--mono);font-
+          +size:11px;letter-spacing:2px;                                 
+       68 +    text-transform:uppercase;color:var(--muted);border:1px sol
+          +id var(--line);border-radius:20px;                            
+       69 +    padding:3px 12px;white-space:nowrap}                      
+       70 +  .lead{color:#c3cad8;font-size:15.5px;max-width:760px;margin:
+          +14px 0 22px}                                                  
+       71 +  p{margin:10px 0}                                            
+       72 +  hr.div{border:none;border-top:1px solid var(--line);margin:5
+          +6px 0 0}                                                      
+       73 +                                                              
+       74 +  code,.fn{font-family:var(--mono);font-size:.85em;background:
+          +#0b0d13;border:1px solid var(--line);                         
+       75 +    border-radius:5px;padding:1px 6px;color:#cbd3e1}          
+       76 +  .fn.cc{color:var(--cc);border-color:#42302a}                
+       77 +  .fn.oc{color:var(--oc);border-color:#28384a}                
+       78 +  .fn.pi{color:var(--pi);border-color:#284a34}                
+       79 +  .fn.hs{color:var(--hs);border-color:#4a2635}                
+       80 +  .src{display:block;font-family:var(--mono);font-size:11.5px;
+          +color:#5f6a7d;margin-top:2px;overflow-wrap:anywhere}          
+       81 +                                                              
+       82 +  /* ---------- versus strip (section 0) ---------- */        
+       83 +  .versus{display:grid;grid-template-columns:1fr auto 1fr;gap:
+          +18px;align-items:stretch;margin:20px 0}                       
+       84 +  .vcard{background:var(--panel);border:1px solid var(--line);
+          +border-radius:12px;padding:20px 22px}                         
+       85 +  .vcard .tag{font-family:var(--mono);font-size:11px;letter-sp
+          +acing:1.5px;text-transform:uppercase;color:var(--muted);margin
+          +-bottom:10px}                                                 
+       86 +  .vcard.no{opacity:.72}                                      
+       87 +  .vcard.yes{border-top:3px solid var(--accent)}              
+       88 +  .vcard .flow-mini{font-family:var(--mono);font-size:13px;col
+          +or:#c3cad8;line-height:2.1}                                   
+       89 +  .vcard .flow-mini .arrow{color:var(--muted);margin:0 6px}   
+       90 +  .vs-mid{display:flex;align-items:center;justify-content:cent
+          +er;font-family:var(--mono);color:var(--muted);font-size:13px} 
+       91 +                                                              
+       92 +  /* ---------- diagram frame ---------- */                   
+       93 +  .diagram{position:relative;background:var(--panel);border:1p
+          +x solid var(--line);border-radius:14px;                       
+       94 +    padding:26px 10px 18px;margin:22px 0}                     
+       95 +  .diagram .reg{opacity:.4}                                   
+       96 +  .diagram .reg.tl{top:10px;left:10px}                        
+       97 +  .diagram .reg.tr{top:10px;right:10px}                       
+       98 +  .diagram .reg.tr::before,.diagram .reg.tr::after{left:auto;r
+          +ight:0}                                                       
+       99 +  .diagram .reg.tr i{left:auto;right:26px}                    
+      100 +  .diagram svg{display:block;width:100%;height:auto}          
+      101 +  .diagram .cap{text-align:center;font-family:var(--mono);font
+          +-size:11.5px;color:var(--muted);                              
+      102 +    margin-top:6px;letter-spacing:.3px}                       
+      103 +                                                              
+      104 +  /* ---------- component blocks ---------- */                
+      105 +  .comp{display:grid;grid-template-columns:64px 1fr;gap:18px;m
+          +argin:30px 0;align-items:start}                               
+      106 +  .comp .num{font-family:var(--mono);font-size:13px;color:var(
+          +--accent);border:1px solid #4a3a24;                           
+      107 +    background:#1c1710;border-radius:8px;width:48px;height:48p
+          +x;display:flex;align-items:center;justify-content:center;     
+      108 +    font-weight:700}                                          
+      109 +  .comp h3{margin:2px 0 6px;font-size:17px}                   
+      110 +  .comp p{color:#c3cad8;font-size:14.5px;margin:6px 0}        
+      111 +                                                              
+      112 +  .stack{display:flex;flex-direction:column;gap:6px;margin:14p
+          +x 0;max-width:640px}                                          
+      113 +  .stack .layer{background:var(--panel2);border:1px solid var(
+          +--line);border-left:3px solid var(--accent);                  
+      114 +    border-radius:0 8px 8px 0;padding:9px 14px;font-size:13.5p
+          +x;color:#dde3ec}                                              
+      115 +  .stack .layer b{color:var(--accent);font-family:var(--mono);
+          +font-size:12px;margin-right:8px}                              
+      116 +                                                              
+      117 +  .stage3{display:flex;align-items:center;gap:0;margin:16px 0;
+          +flex-wrap:wrap}                                               
+      118 +  .stage3 .box{background:var(--panel2);border:1px solid var(-
+          +-line);border-radius:9px;padding:12px 16px;                   
+      119 +    font-size:13.5px;flex:1;min-width:150px;color:#dde3ec}    
+      120 +  .stage3 .box .t{color:var(--accent);font-family:var(--mono);
+          +font-size:11px;letter-spacing:.5px;margin-bottom:4px}         
+      121 +  .stage3 .sep{flex:0 0 34px;text-align:center;color:var(--mut
+          +ed);font-family:var(--mono)}                                  
+      122 +                                                              
+      123 +  .flow{background:var(--panel);border:1px solid var(--line);b
+          +order-radius:12px;padding:6px 0;margin:16px 0;max-width:680px}
+      124 +  .step{display:flex;gap:14px;padding:11px 20px;border-bottom:
+          +1px dashed var(--line)}                                       
+      125 +  .step:last-child{border-bottom:none}                        
+      126 +  .step .n{flex:0 0 24px;height:24px;border-radius:50%;display
+          +:flex;align-items:center;justify-content:center;              
+      127 +    font-weight:700;font-size:11.5px;background:#1c1710;color:
+          +var(--accent);font-family:var(--mono)}                        
+      128 +  .step .body{flex:1}                                         
+      129 +  .step .t{font-weight:600;margin-bottom:2px;font-size:14px}  
+      130 +  .step .d{color:var(--muted);font-size:13px}                 
+      131 +  .step.deny .n{background:#3a2020;color:#e07a7a}             
+      132 +  .step.ask .n{background:#3a3420;color:var(--accent)}        
+      133 +  .step.allow .n{background:#1c2e22;color:var(--pi)}          
+      134 +                                                              
+      135 +  /* ---------- tables ---------- */                          
+      136 +  table{width:100%;border-collapse:collapse;margin:16px 0;font
+          +-size:13.5px;table-layout:fixed}                              
+      137 +  th,td{border:1px solid var(--line);padding:10px 12px;text-al
+          +ign:left;vertical-align:top;overflow-wrap:anywhere}           
+      138 +  th{background:var(--panel2);font-weight:600;font-family:var(
+          +--mono);font-size:11.5px;letter-spacing:.5px;                 
+      139 +    text-transform:uppercase;color:var(--muted)}              
+      140 +  th.cc{color:var(--cc)} th.oc{color:var(--oc)} th.pi{color:va
+          +r(--pi)} th.hs{color:var(--hs)}                               
+      141 +  td.feat{color:#c3cad8;font-weight:600;background:#0f141c}   
+      142 +  table th:first-child,table td:first-child{width:17%}        
+      143 +  td.dot-yes{color:var(--pi)} td.dot-no{color:#4a5263}        
+      144 +  .tblwrap{overflow-x:auto}                                   
+      145 +                                                              
+      146 +  /* ---------- project datasheet cards ---------- */         
+      147 +  .cards4{display:grid;grid-template-columns:1fr 1fr;gap:16px;
+          +margin:20px 0}                                                
+      148 +  .card{background:var(--panel);border:1px solid var(--line);b
+          +order-radius:12px;padding:20px 22px;position:relative}        
+      149 +  .card.cc{border-top:3px solid var(--cc)} .card.oc{border-top
+          +:3px solid var(--oc)}                                         
+      150 +  .card.pi{border-top:3px solid var(--pi)} .card.hs{border-top
+          +:3px solid var(--hs)}                                         
+      151 +  .card .name{font-family:var(--mono);font-weight:700;font-siz
+          +e:16px;margin-bottom:2px}                                     
+      152 +  .card.cc .name{color:var(--cc)} .card.oc .name{color:var(--o
+          +c)}                                                           
+      153 +  .card.pi .name{color:var(--pi)} .card.hs .name{color:var(--h
+          +s)}                                                           
+      154 +  .card .tagline{color:var(--muted);font-size:13px;margin-bott
+          +om:12px}                                                      
+      155 +  .card ul{margin:8px 0 0;padding-left:18px;font-size:13.5px;c
+          +olor:#dde3ec}                                                 
+      156 +  .card li{margin:5px 0}                                      
+      157 +  .card .kv{font-size:12.5px;color:var(--muted);margin-top:10p
+          +x;font-family:var(--mono)}                                    
+      158 +                                                              
+      159 +  /* ---------- code block ---------- */                      
+      160 +  pre.code{font-family:var(--mono);font-size:12.5px;line-heigh
+          +t:1.65;background:#0b0d13;                                    
+      161 +    border:1px solid var(--line);border-radius:10px;padding:18
+          +px 20px;overflow-x:auto;                                      
+      162 +    margin:14px 0;color:#cdd6e4;white-space:pre}              
+      163 +  pre.code .cm{color:#5c6675;font-style:italic}               
+      164 +  pre.code .kw{color:#c583e0}                                 
+      165 +  pre.code .fnn{color:#6fb1e6}                                
+      166 +  pre.code .st{color:#98c379}                                 
+      167 +  pre.code .mk{color:var(--accent)}                           
+      168 +  .callouts{display:flex;flex-direction:column;gap:8px;margin:
+          +14px 0;max-width:680px}                                       
+      169 +  .callouts .c{font-size:13.5px;color:#c3cad8;display:flex;gap
+          +:10px}                                                        
+      170 +  .callouts .c b{color:var(--accent);font-family:var(--mono);f
+          +lex:0 0 22px}                                                 
+      171 +                                                              
+      172 +  /* ---------- checklist ---------- */                       
+      173 +  .checklist{display:flex;flex-direction:column;gap:10px;margi
+          +n:18px 0;max-width:760px}                                     
+      174 +  .chk{display:flex;gap:14px;background:var(--panel);border:1p
+          +x solid var(--line);border-radius:10px;                       
+      175 +    padding:13px 16px;align-items:flex-start}                 
+      176 +  .chk .box{flex:0 0 20px;height:20px;border:1.5px solid var(-
+          +-accent);border-radius:4px;margin-top:1px;position:relative}  
+      177 +  .chk .box::after{content:"";position:absolute;left:4px;top:0
+          +px;width:5px;height:10px;border:solid var(--accent);          
+      178 +    border-width:0 2px 2px 0;transform:rotate(45deg)}         
+      179 +  .chk .t{font-weight:600;font-size:14px;margin-bottom:2px}   
+      180 +  .chk .d{color:var(--muted);font-size:13px}                  
+      181 +                                                              
+      182 +  .callout{background:#13161c;border-left:3px solid var(--acce
+          +nt);border-radius:0 8px 8px 0;                                
+      183 +    padding:13px 18px;margin:18px 0;color:#dfe4ec;font-size:14
+          +px;max-width:760px}                                           
+      184 +  .callout b{color:var(--accent)}                             
+      185 +                                                              
+      186 +  footer{margin-top:70px;padding:28px 0 40px;border-top:1px so
+          +lid var(--line);color:var(--muted);font-size:12.5px}          
+      187 +  footer .paths{font-family:var(--mono);font-size:12px;color:#
+          +6b7585;line-height:2;white-space:pre-line}                    
+      188 +                                                              
+      189 +  @media (max-width:760px){                                   
+      190 +    .versus{grid-template-columns:1fr}                        
+      191 +    .vs-mid{padding:6px 0}                                    
+      192 +    .cards4{grid-template-columns:1fr}                        
+      193 +    .comp{grid-template-columns:1fr}                          
+      194 +    .hero h1{font-size:28px}                                  
+      195 +    .section-note{margin-left:0}                              
+      196 +  }                                                           
+      197 +</style>                                                      
+      198 +</head>                                                       
+      199 +<body class="bp-grid">                                        
+      200 +                                                              
+      201 +<div class="hero">                                            
+      202 +  <div class="reg tl"><i>X:00 Y:00</i></div>                  
+      203 +  <div class="reg tr"><i>REV 2026.07</i></div>                
+      204 +  <div class="hero-inner">                                    
+      205 +    <p class="eyebrow">Agent Engineering · 内部分享</p>       
+      206 +    <h1>CLI Agent 构造手册</h1>                               
+      207 +    <p class="sub">拆开四个真实项目的引擎盖，看看"终端里的智能
+          +体"到底是怎么拼出来的——原理、六个必备构件、以及一份能自己动手 
+          +跑起来的最小实现。</p>                                        
+      208 +    <div class="meta">                                        
+      209 +      <span>案例源码：</span>                                 
+      210 +      <span class="chip cc">claudecode</span>                 
+      211 +      <span class="chip oc">openclaw-2026.3.23</span>         
+      212 +      <span class="chip pi">pi</span>                         
+      213 +      <span class="chip hs">hermes-agent</span>               
+      214 +      <span style="margin-left:auto">整理日期 2026-07-12</span
+          +>                                                             
+      215 +    </div>                                                    
+      216 +  </div>                                                      
+      217 +</div>                                                        
+      218 +                                                              
+      219 +<div class="wrap">                                            
+      220 +                                                              
+      221  <!-- ===================== 0. 什么是 CLI Agent ===============
+           ====== -->
+      222  <section class="tight">
+      223    <div class="section-head"><p class="sec-eyebrow"><b>00</b></
+           p>
+     ...
+      616  </footer>
+      617  
+      618  </div>
+      401 -                                                              
+      402 -                                                              
+      403 -</div>                                                        
+      404 -                                                              
+      405 -<footer>                                                      
+      406 -<p>本文基于对四个仓库源码的静态阅读整理，函数名 / 文件行号可能
+          -随版本演进变化，以仓库当前代码为准。</p>                      
+      407 -  <div class="paths">                                         
+      408 -claudecode      → /studio/claudecode                          
+      409 -openclaw        → /studio/openclaw-2026.3.23                  
+      410 -pi              → /studio/pi                                  
+      411 -hermes-agent    → /studio/hermes-agent                        
+      412 -  </div>                                                      
+      413 -  <p style="margin-top:14px">由 Claude Code 协助整理 · 2026-07
+          --12</p>                                                       
+      414 -</footer>                                                     
+      415 -                                                              
+      619  </body>
+      417 -</html>                                                       
+      620   No newline at end of file
+      621 +</html>                                                       
+⏺ Let me re-render to confirm the dark theme is back and the new section-head
+  layout looks right.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Dark theme is fully restored, and the new section-head layout (number badge +
+  title + right-aligned category pill like "定义"/"核心原理") renders cleanly.
+  Let me quickly check the rest of the page hasn't regressed, then clean up.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Footer is now clean, single, and properly formatted — no duplication, no
+  truncation. The page ends correctly with dark background throughout.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 修好了 — 问题是保存时文件的 <head>（含全部 <style> 样式表）、hero 区块和
+  <body> 开头标签整段丢失了，浏览器只拿到裸 HTML，没有任何
+  CSS，自然就是默认的白底黑字；结尾还重复粘了一份 footer。
+
+  我把缺失的头部（深色主题、蓝图网格背景、六个色系变量等）和收尾补齐了，同时保留
+  了你那边改动过的 section-head/section-note 结构（数字徽标 + 标题 +
+  右侧分类小标签的布局），并补了对应的 CSS 规则（原来没有）。用无头 Chrome
+  重新截图确认过：深色背景、电路图、卡片、表格、footer 都恢复正常，不再是白屏。
+
+  现在重新用浏览器打开这个文件应该就正常了。
+
+✻ Cooked for 5m 24s
+
+※ recap: You're building a CLI Agent explainer doc for colleagues in the studio folder. Just fixed a broken save that made it render white; next step is you re-checking it in your browser to confirm it looks right. (disable recaps in /config)
+
+❯ /debug                                                                        
+
+⏺ Debug logging is now active at
+  /Users/lteu/.claude/debug/2951d48c-abf0-41cf-b897-d1cc8dc4728f.txt. Since it
+  just got turned on, nothing before this point was captured — there's no
+  existing log to analyze yet.
+
+  You didn't describe a specific issue to debug (the CLI-Agent HTML
+  white-background problem from earlier was already diagnosed and fixed — that
+  was a missing <head>/<style> block, not a Claude Code tooling issue).
+
+  If you're hitting something else in this session — a tool error, unexpected
+  behavior, a crash — tell me what happened and reproduce it now. I'll re-read
+  the log afterward and pull out the [ERROR]/[WARN] entries. If it's hard to
+  reproduce, restarting with claude --debug will capture logs from session
+  startup instead of just from here forward.
+
+✻ Crunched for 1m 20s

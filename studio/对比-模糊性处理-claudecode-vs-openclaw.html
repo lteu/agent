@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code vs OpenClaw · 模糊性处理对比（函数级）</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d2129; --ink:#e6e9ef; --muted:#9aa3b2;
+    --cc:#d97757; --oc:#5b9bd5; --line:#2a2f3a; --ok:#5fb878; --warn:#e0b341;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;
+    line-height:1.7;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:48px 24px 96px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:.5px}
+  .sub{color:var(--muted);margin:0 0 8px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:32px}
+  h2{font-size:21px;margin:48px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:26px 0 10px}
+  code,.fn{font-family:var(--mono);font-size:.86em;background:#0b0d11;border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;color:#cbd3e1}
+  .fn.cc{color:var(--cc);border-color:#42302a}
+  .fn.oc{color:var(--oc);border-color:#28384a}
+  p{margin:10px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .card.cc{border-top:3px solid var(--cc)}
+  .card.oc{border-top:3px solid var(--oc)}
+  .tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 10px;border-radius:20px;margin-bottom:8px}
+  .tag.cc{background:#3a2620;color:var(--cc)}
+  .tag.oc{background:#1d2c3c;color:var(--oc)}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:600}
+  th.cc{color:var(--cc)} th.oc{color:var(--oc)}
+  td.feat{color:var(--muted);font-weight:600;background:#13161c;white-space:nowrap}
+  .flow{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 0;margin:14px 0}
+  .step{display:flex;gap:14px;padding:12px 20px;border-bottom:1px dashed var(--line)}
+  .step:last-child{border-bottom:none}
+  .step .n{flex:0 0 28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:13px}
+  .step.cc .n{background:#3a2620;color:var(--cc)}
+  .step.oc .n{background:#1d2c3c;color:var(--oc)}
+  .step .body{flex:1}
+  .step .t{font-weight:600;margin-bottom:2px}
+  .step .d{color:var(--muted);font-size:13.5px}
+  .callout{background:#13161c;border-left:3px solid var(--warn);border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:16px 0;color:#dfe4ec}
+  .callout b{color:var(--warn)}
+  .pill{font-size:12px;color:var(--muted)}
+  .src{font-family:var(--mono);font-size:12px;color:#6b7585}
+  .legend{display:flex;gap:24px;flex-wrap:wrap;margin:10px 0 0}
+  .legend span{font-size:13px;color:var(--muted)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  .dot.cc{background:var(--cc)} .dot.oc{background:var(--oc)}
+  .big{font-size:16px}
+  hr{border:none;border-top:1px solid var(--line);margin:40px 0}
+  .foot{color:var(--muted);font-size:12.5px;margin-top:40px}
+  pre.code{font-family:var(--mono);font-size:12px;line-height:1.55;background:#0b0d11;
+    border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;
+    margin:10px 0;color:#cdd6e4;white-space:pre}
+  pre.code.cc{border-left:3px solid var(--cc)}
+  pre.code.oc{border-left:3px solid var(--oc)}
+  pre.code .kw{color:#c678dd}      /* keyword */
+  pre.code .fnn{color:#61afef}     /* function name */
+  pre.code .vr{color:#e0b341}      /* field/var */
+  pre.code .st{color:#98c379}      /* string */
+  pre.code .cm{color:#5c6675;font-style:italic} /* comment */
+  pre.code .src{color:#4a5263;font-size:.9em}   /* source ref */
+  pre.code .fnn{font-style:normal}
+  .card pre.code{margin-left:-4px;margin-right:-4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>模糊性处理对比：Claude Code vs OpenClaw</h1>
+  <p class="sub">从「系统提示词 → 主循环 → 澄清机制 → 工具落地」四层，逐函数对照两套 Agent 如何处理 under-specified 请求</p>
+  <p class="meta">案例：<b>「帮我构建一个黄金价格的近期走势图」</b> · 对象：<code>claudecode</code>（泄露源码 2026-03-31）与 <code>openclaw-2026.3.23</code> · 生成日期：2026-06-11</p>
+  <div class="legend">
+    <span><i class="dot cc"></i>Claude Code（TypeScript / Bun / Ink，软件工程 CLI）</span>
+    <span><i class="dot oc"></i>OpenClaw（TypeScript / 多聊天渠道的「私人助理」Agent，内核代号 <code>Pi</code>）</span>
+  </div>
+
+  <!-- ============ 一句话结论 ============ -->
+  <h2>0 · 一句话结论</h2>
+  <div class="callout big">
+    两者面对模糊请求都<b>倾向先动手、再问</b>，但落点不同：<br>
+    · <b>Claude Code</b> 把「澄清」做成一个<b>结构化的一等工具</b> <span class="fn cc">AskUserQuestion</span>（多选题、最多 4 问、强制带「Other」、可带预览），并在提示词里明确「只有在调查后仍卡住才升级提问」。<br>
+    · <b>OpenClaw</b> 没有专用提问工具，澄清是<b>对话式</b>的——直接在聊天渠道里发一句话，或用 <span class="fn oc">message</span> 工具发一个 <span class="fn oc">poll</span>／内联按钮当多选题；它的「问」由安全条款 “if instructions conflict, pause and ask” 触发，而非独立工具。
+  </div>
+
+  <!-- ============ 第一层：系统提示词 ============ -->
+  <h2>1 · 系统提示词层：「遇到模糊该不该问」</h2>
+  <div class="grid">
+    <div class="card cc">
+      <span class="tag cc">Claude Code</span>
+      <p>构建入口 <span class="fn cc">getSystemPrompt()</span>，模糊性策略写在两个静态段：</p>
+      <ul>
+        <li><span class="fn cc">getSimpleDoingTasksSection()</span> —— 核心原句：<br>
+          <span class="src">“When given an unclear or generic instruction, consider it in the context of these software engineering tasks and the current working directory.”</span><br>
+          即：先<b>结合上下文把模糊指令翻译成具体动作</b>，而不是回问。</li>
+        <li>升级提问的门槛同段写死：<br>
+          <span class="src">“Escalate to the user with AskUserQuestion only when you're genuinely stuck after investigation, not as a first response to friction.”</span></li>
+        <li><span class="fn cc">getActionsSection()</span> —— 把「问不问」与「动作可逆性／影响面」绑定：本地可逆操作放手做，难以撤销／对外可见的操作才停下确认。</li>
+      </ul>
+      <p class="src">claudecode/constants/prompts.ts</p>
+    </div>
+    <div class="card oc">
+      <span class="tag oc">OpenClaw</span>
+      <p>构建入口 <span class="fn oc">buildAgentSystemPrompt()</span>，身份是「a personal assistant running inside OpenClaw」，模糊性策略分散在多个 <span class="fn oc">build*Section()</span>：</p>
+      <ul>
+        <li><span class="fn oc">safetySection</span> —— 唯一明确的「停下来问」触发：<br>
+          <span class="src">“if instructions conflict, pause and ask … prioritize safety and human oversight over completion.”</span><br>
+          注意：触发条件是<b>指令冲突／安全</b>，不是普通的需求模糊。</li>
+        <li><span class="fn oc">buildMessagingSection()</span> / <span class="fn oc">buildReplyTagsSection()</span> —— 规定「问」怎么发出去：回当前会话自动路由回源渠道（Telegram/Signal…），或用 <span class="fn oc">message</span> 工具主动发。</li>
+        <li>整体基调偏「自己先查」：<span class="src">“run openclaw status yourself when possible; only ask the user if you lack access.”</span></li>
+      </ul>
+      <p class="src">openclaw-2026.3.23/src/agents/system-prompt.ts</p>
+    </div>
+  </div>
+  <p><b>差异本质：</b>Claude Code 在提示词里把「模糊 → 先解释执行 / 卡住才用专用工具问」做成<b>显式状态机</b>；OpenClaw 把「问」当成普通对话能力，只为<b>安全/冲突</b>设了硬触发，日常模糊更依赖模型自由判断。</p>
+
+  <!-- ============ 第二层：主循环 ============ -->
+  <h2>2 · 主循环层：谁来驱动「调查—提问—执行」</h2>
+  <table>
+    <tr><td class="feat">维度</td><th class="cc">Claude Code</th><th class="oc">OpenClaw</th></tr>
+    <tr>
+      <td class="feat">主循环函数</td>
+      <td><span class="fn cc">async function* ask()</span>（<code>QueryEngine.ts</code>，~46K 行的核心引擎，异步生成器，逐流式产出 tool-call 循环）</td>
+      <td><span class="fn oc">runCliAgent()</span> / <code>pi-embedded-runner</code>（内核代号 <b>Pi</b>；提示词原话 “Pi lists the standard tools above”）</td>
+    </tr>
+    <tr>
+      <td class="feat">提问是否打断循环</td>
+      <td>是。<span class="fn cc">AskUserQuestion</span> 标记 <span class="fn cc">requiresUserInteraction()=true</span> 且 <span class="fn cc">shouldDefer:true</span>，循环挂起等待 UI 多选结果回填</td>
+      <td>否（无专用机制）。提问就是发一条普通消息；是否「等回复」取决于会话是同步还是 push-based 渠道</td>
+    </tr>
+    <tr>
+      <td class="feat">提问结果如何回喂模型</td>
+      <td><span class="fn cc">mapToolResultToToolResultBlockParam()</span> 把答案拼成 <span class="src">“User has answered your questions: …”</span> 作为 tool_result 注入下一轮</td>
+      <td>用户的下一条聊天消息作为新一轮输入，无结构化回填；poll 投票结果通过渠道回调进入会话</td>
+    </tr>
+  </table>
+
+  <!-- ============ 第三层：澄清机制函数级 ============ -->
+  <h2>3 · 澄清机制层：函数级解剖</h2>
+  <div class="grid">
+    <div class="card cc">
+      <span class="tag cc">Claude Code · AskUserQuestionTool</span>
+      <p class="src">claudecode/tools/AskUserQuestionTool/AskUserQuestionTool.tsx</p>
+      <ul>
+        <li><span class="fn cc">inputSchema</span> —— Zod 强约束：<code>questions</code> 数组 <b>min(1).max(4)</b>，每问带 <code>options</code>、<code>multiSelect</code>、可选 <code>preview</code>；<code>.refine(UNIQUENESS_REFINE)</code> 去重。</li>
+        <li><span class="fn cc">validateInput()</span> —— 当渲染格式为 html 时，逐 option 调 <span class="fn cc">validateHtmlPreview()</span>，禁止 <code>&lt;html&gt;/&lt;body&gt;/&lt;script&gt;/&lt;style&gt;</code>（防注入）。</li>
+        <li><span class="fn cc">checkPermissions()</span> —— 固定返回 <code>behavior:'ask'</code>，问题本身也要用户点头。</li>
+        <li><span class="fn cc">isReadOnly()=true</span> / <span class="fn cc">isConcurrencySafe()=true</span> —— 提问被视为只读、可并发。</li>
+        <li><span class="fn cc">isEnabled()</span> —— 在 Telegram/Discord 渠道（KAIROS）下<b>自动禁用</b>，因为没人盯着 TUI 选选项 → 退化到纯文本。</li>
+        <li><span class="fn cc">call()</span> —— 拿到 <code>answers</code> 后原样回传。</li>
+      </ul>
+      <p><b>形态：</b>一等工具 + 多选弹窗 + 「(Recommended)」首选项 + 永远有「Other」自由输入。</p>
+    </div>
+    <div class="card oc">
+      <span class="tag oc">OpenClaw · message 工具（poll / 内联按钮）</span>
+      <p class="src">openclaw-2026.3.23/src/agents/tools/message-tool.ts</p>
+      <ul>
+        <li>没有 <code>AskUserQuestion</code>。结构化提问复用通用消息工具：</li>
+        <li><span class="fn oc">buildSendSchema()</span> + <span class="fn oc">interactiveOptionSchema</span> —— <code>action=send</code> 携带 <code>buttons=[[{text,callback_data,style}]]</code> 的内联按钮（style: primary/success/danger）。</li>
+        <li><span class="fn oc">buildPollSchema()</span> —— 真·多选题：<code>pollOptionId(s)</code>、<code>pollOptionIndex(es)</code>（1-based）、多选支持；参数来自 <span class="fn oc">POLL_CREATION_PARAM_DEFS</span>。</li>
+        <li>能力受渠道限制：内联按钮需 <code>&lt;channel&gt;.capabilities.inlineButtons</code> 打开，否则提示词指引模型退回纯文本提问。</li>
+        <li>更常见的「澄清」其实是<b>直接回一句自然语言问句</b>，配合 <span class="fn oc">[[reply_to_current]]</span> 引用触发消息。</li>
+      </ul>
+      <p><b>形态：</b>无专用工具；澄清 = 对话消息 / poll / 按钮，三者都走渠道路由。</p>
+    </div>
+  </div>
+
+  <table>
+    <tr><td class="feat">澄清能力对比</td><th class="cc">Claude Code</th><th class="oc">OpenClaw</th></tr>
+    <tr><td class="feat">是否专用工具</td><td>是（<span class="fn cc">AskUserQuestion</span>）</td><td>否（复用 <span class="fn oc">message</span> / 对话）</td></tr>
+    <tr><td class="feat">结构化程度</td><td>强：schema 限定 1–4 问、选项、预览、去重</td><td>中：poll/按钮结构化，纯文本时无结构</td></tr>
+    <tr><td class="feat">默认自由输入</td><td>每问强制带「Other」</td><td>天然——用户可随意回任意文字</td></tr>
+    <tr><td class="feat">是否阻塞</td><td>阻塞主循环等结果</td><td>不阻塞，取决于渠道是否同步</td></tr>
+    <tr><td class="feat">注入/安全防护</td><td><span class="fn cc">validateHtmlPreview()</span> 过滤危险标签</td><td>渠道侧 sanitize，无工具级 HTML 校验</td></tr>
+    <tr><td class="feat">退化策略</td><td>无人值守 TUI → <span class="fn cc">isEnabled()=false</span></td><td>渠道无按钮能力 → 退回纯文本问句</td></tr>
+  </table>
+
+  <!-- ============ 第四层：案例落地 ============ -->
+  <h2>4 · 案例落地：「帮我构建一个黄金价格的近期走势图」</h2>
+  <p>这条请求有三处模糊：<b>哪种黄金</b>（现货/期货/某币种计价）、<b>「近期」多长</b>（7天/30天/1年）、<b>「走势图」交付形态</b>（HTML文件/图片/聊天里看）。两套系统的实际落地路径如下。</p>
+
+  <h3><i class="dot cc"></i>Claude Code 的落地</h3>
+  <div class="flow">
+    <div class="step cc"><div class="n">1</div><div class="body">
+      <div class="t">解释而非追问</div>
+      <div class="d"><span class="fn cc">getSimpleDoingTasksSection()</span> 指引：把「黄金价格走势图」结合「软件工程任务 + 当前工作目录」翻译成「抓数据 → 生成一个 HTML 图表文件」。模糊点若可合理默认（如默认现货金、近30天、产出可打开的 HTML），<b>不调用提问工具</b>，直接动手。</div>
+    </div></div>
+    <div class="step cc"><div class="n">2</div><div class="body">
+      <div class="t">（仅当真正卡住才）结构化提问</div>
+      <div class="d">若时间范围/品种影响重大，调 <span class="fn cc">AskUserQuestion</span>：一道多选「近期 = 7天 / 30天(Recommended) / 1年」，可用 <code>preview</code> 字段给 HTML 图表样式预览侧栏。否则跳过本步。</div>
+    </div></div>
+    <div class="step cc"><div class="n">3</div><div class="body">
+      <div class="t">取数</div>
+      <div class="d"><span class="fn cc">WebSearchTool</span>（工具名 <code>web_search</code>，<span class="fn cc">call()</span> 内部可走 Haiku 工具调用）→ <span class="fn cc">WebFetchTool</span>（<code>WEB_FETCH_TOOL_NAME='WebFetch'</code>）抓取价格序列。</div>
+    </div></div>
+    <div class="step cc"><div class="n">4</div><div class="body">
+      <div class="t">产出文件</div>
+      <div class="d"><span class="fn cc">FileWriteTool</span>（<code>FILE_WRITE_TOOL_NAME='Write'</code>）写出自包含的 <code>gold.html</code>（内联 Chart.js/SVG）。可选 <span class="fn cc">BashTool</span> <code>open gold.html</code> 打开。</div>
+    </div></div>
+    <div class="step cc"><div class="n">5</div><div class="body">
+      <div class="t">交付即文件路径</div>
+      <div class="d">最终回复给出<b>绝对路径</b>（提示词要求 file paths always absolute）。交付物是磁盘上的工件。</div>
+    </div></div>
+  </div>
+
+  <h3><i class="dot oc"></i>OpenClaw 的落地</h3>
+  <div class="flow">
+    <div class="step oc"><div class="n">1</div><div class="body">
+      <div class="t">对话式澄清（如需要）</div>
+      <div class="d">若要确认「近期多长」，<b>不调专用工具</b>——直接 <span class="fn oc">[[reply_to_current]]</span> 回一句「要 7 天、30 天还是 1 年？」，或用 <span class="fn oc">message</span>(<code>action=send</code>, <code>buttons=…</code>) 发三个内联按钮 / 一个 <span class="fn oc">poll</span>。</div>
+    </div></div>
+    <div class="step oc"><div class="n">2</div><div class="body">
+      <div class="t">取数</div>
+      <div class="d"><span class="fn oc">runWebSearch()</span>（<span class="fn oc">resolveWebSearchProviderId()</span> 默认 Brave API）→ <code>web_fetch</code> 抓价格序列。</div>
+    </div></div>
+    <div class="step oc"><div class="n">3</div><div class="body">
+      <div class="t">产出：渠道友好优先</div>
+      <div class="d">三选一：① <span class="fn oc">write</span> 工具落 HTML 文件；② <span class="fn oc">canvas</span> 工具 <span class="fn oc">canvas.present</span> / <span class="fn oc">canvas.eval</span> 在配对节点上<b>实时渲染</b>交互图表；③ <span class="fn oc">image_generate</span> 直接出一张可在聊天里看的走势图。聊天渠道场景通常偏好 ②/③。</div>
+    </div></div>
+    <div class="step oc"><div class="n">4</div><div class="body">
+      <div class="t">交付即消息</div>
+      <div class="d">结果通过会话自动路由回源渠道（Telegram/Signal…）。若用 <span class="fn oc">message</span> 主动发出，则正文回 <code>SILENT_REPLY_TOKEN</code> 避免重复。交付物是<b>对话中的一条消息/一张图/一个画布</b>。</div>
+    </div></div>
+  </div>
+
+  <div class="callout">
+    <b>同一句话，落点根本不同：</b>Claude Code 默认产出<b>磁盘上的 HTML 工件</b>并回报路径；OpenClaw 默认产出<b>聊天里能直接看的图/画布</b>并回报到渠道。这源于两者定位：前者是<b>终端里的软件工程师</b>，后者是<b>聊天渠道里的私人助理</b>。
+  </div>
+
+  <!-- ============ 异同总表 ============ -->
+  <h2>5 · 异同总表</h2>
+  <h3>相同点</h3>
+  <ul>
+    <li>都遵循「<b>先合理假设、动手解决</b>，而非一上来就追问」的默认姿态。</li>
+    <li>都把「升级提问」与「<b>风险/不可逆/冲突</b>」挂钩，而非与「需求模糊」简单挂钩。</li>
+    <li>都倾向「<b>自己先查</b>」（Claude Code: 读文件/搜索；OpenClaw: <code>openclaw status</code>）再决定是否问用户。</li>
+    <li>都支持「<b>结构化多选</b>」澄清形态（Claude Code 原生 / OpenClaw 借 poll+按钮）。</li>
+  </ul>
+  <h3>不同点</h3>
+  <table>
+    <tr><td class="feat">维度</td><th class="cc">Claude Code</th><th class="oc">OpenClaw</th></tr>
+    <tr><td class="feat">澄清机制</td><td>专用一等工具 <span class="fn cc">AskUserQuestion</span></td><td>无专用工具，复用 <span class="fn oc">message</span>/对话/<span class="fn oc">poll</span></td></tr>
+    <tr><td class="feat">触发哲学</td><td>提示词显式状态机：解释→调查→卡住才问</td><td>安全条款触发为主，日常靠模型自由判断</td></tr>
+    <tr><td class="feat">主循环</td><td><span class="fn cc">ask()</span>（QueryEngine）</td><td><span class="fn oc">runCliAgent()</span> / Pi 内核</td></tr>
+    <tr><td class="feat">提问是否阻塞</td><td>阻塞、结构化回填</td><td>不阻塞、靠下一条消息/回调</td></tr>
+    <tr><td class="feat">交付物形态</td><td>磁盘文件 + 绝对路径</td><td>渠道消息 / 实时画布 / 生成图片</td></tr>
+    <tr><td class="feat">取数函数</td><td><span class="fn cc">WebSearchTool.call()</span> / <span class="fn cc">WebFetchTool</span></td><td><span class="fn oc">runWebSearch()</span> / <code>web_fetch</code></td></tr>
+    <tr><td class="feat">出图函数</td><td><span class="fn cc">FileWriteTool</span>（→HTML）</td><td><span class="fn oc">canvas.present/eval</span> · <span class="fn oc">image_generate</span> · <span class="fn oc">write</span></td></tr>
+    <tr><td class="feat">无人值守退化</td><td><span class="fn cc">isEnabled()=false</span> 关掉弹窗</td><td>退回纯文本问句</td></tr>
+  </table>
+
+  <!-- ============ 第六节：依赖与框架 ============ -->
+  <h2>6 · 技术栈：为什么两者都不用 LangChain</h2>
+  <div class="callout big">
+    对两个仓库逐一 grep 后确认：<b>LangChain / LangGraph / LlamaIndex / CrewAI / AutoGen / Semantic Kernel / Vercel AI SDK / LiteLLM —— 一个都没有</b>。两套都是<b>自己手写 agent 循环 + 工具分发</b>，没有套任何 LLM 编排框架。
+  </div>
+
+  <p>它们依赖的「框架级」组件只有三类，且都<b>不是编排框架</b>：</p>
+  <table>
+    <tr><td class="feat">类别</td><th class="cc">Claude Code</th><th class="oc">OpenClaw</th></tr>
+    <tr>
+      <td class="feat">厂商 API SDK<br><span class="pill">薄 HTTP 客户端，非框架</span></td>
+      <td><code>@anthropic-ai/sdk</code></td>
+      <td><code>@anthropic-ai/vertex-sdk</code> · <code>@aws-sdk/client-bedrock</code>，外加自建 provider 层：<span class="fn oc">deepseek/doubao/byteplus/chutes-models.ts</span>、<span class="fn oc">custom-api-registry.ts</span></td>
+    </tr>
+    <tr>
+      <td class="feat">协议 SDK</td>
+      <td><code>@modelcontextprotocol/sdk</code>（MCP）· <code>vscode-languageserver-protocol</code>（LSP）</td>
+      <td><code>@modelcontextprotocol/sdk</code>（MCP）</td>
+    </tr>
+    <tr>
+      <td class="feat">Schema 校验</td>
+      <td><code>zod</code></td>
+      <td><code>@sinclair/typebox</code>（工具 schema 主用 TypeBox）+ <code>zod</code></td>
+    </tr>
+    <tr>
+      <td class="feat">UI / 传输</td>
+      <td><code>react</code> + <code>react-reconciler</code> + Ink（自建 CLI 渲染器）</td>
+      <td><code>grammy</code>(Telegram) · <code>discord</code> · <code>signal</code> 插件 · <code>hono</code>/<code>express</code>(server) · <code>@lit-labs/signals</code>(响应式)</td>
+    </tr>
+    <tr>
+      <td class="feat">通用工具库</td>
+      <td><code>lodash-es</code> · <code>axios</code> · <code>execa</code> · <code>chalk</code> · <code>chokidar</code> · <code>marked</code> · <code>@opentelemetry/*</code></td>
+      <td>同类通用库 · <code>linkedom</code> · <code>commander</code></td>
+    </tr>
+  </table>
+
+  <h3>三个关键澄清</h3>
+  <ul>
+    <li><b>「Anthropic SDK」≠ 框架。</b>它只是个调 API 的 HTTP 客户端，负责发请求 / 收流式响应。真正的「agent 编排」（system prompt 组装、tool-call 循环、重试、上下文裁剪）两套都自己写：Claude Code → <span class="fn cc">async function* ask()</span>（<code>QueryEngine.ts</code>，~46K 行）；OpenClaw → 自研内核 <b>Pi</b>（<span class="fn oc">pi-embedded-runner</span> / <span class="fn oc">runCliAgent()</span>）。</li>
+    <li><b>MCP SDK 是协议，不是编排框架。</b>它定义「怎么连外部工具服务器」，不替你管 agent 怎么思考、怎么循环。</li>
+    <li><b>这是行业普遍现象。</b>生产级 agentic 工具（Claude Code、Cursor、Cline、Aider…）几乎都不用 LangChain——对<b>流式输出、上下文裁剪、重试、工具权限、token 计费</b>的精细控制，自己写循环比套框架更可控。LangChain 那类更多出现在原型 / demo 与 RAG 教程里。</li>
+  </ul>
+
+  <div class="callout">
+    <b>一句话：</b>两者都把 LLM 厂商 SDK 当「网络层」用，<b>编排逻辑全部自研</b>。差异只在自研内核的名字与形态——Claude Code 的 <span class="fn cc">ask()</span> 生成器 vs OpenClaw 的 <span class="fn oc">Pi</span> 引擎。
+  </div>
+
+  <!-- ============ 第七节：自研循环伪代码 ============ -->
+  <h2>7 · 自研循环长什么样（伪代码）</h2>
+  <p>两套都没有「框架的 <code>AgentExecutor.run()</code>」，而是各自一个流式 tool-call 循环。以下伪代码<b>骨架与控制流忠实于源码</b>，函数/字段名均为真实名称（已标注文件:行）。</p>
+
+  <div class="grid">
+    <div class="card cc">
+      <span class="tag cc">Claude Code · ask() 生成器</span>
+      <pre class="code cc"><span class="cm">// QueryEngine.ts —— 每个会话一个 QueryEngine 实例</span>
+<span class="kw">async function*</span> <span class="fnn">ask</span>({ prompt, tools, ... }) {
+  <span class="cm">// 委托给引擎，全程 async generator 流式产出</span>
+  <span class="kw">yield*</span> engine.<span class="fnn">submitMessage</span>(prompt, ...)   <span class="src">:1186</span>
+}
+
+<span class="kw">async</span> *<span class="fnn">submitMessage</span>(input) {            <span class="src">:209</span>
+  <span class="kw">let</span> lastStopReason = <span class="kw">null</span>
+  <span class="cm">// 1) 流式调一次模型，逐 block 产出</span>
+  <span class="kw">for await</span> (block <span class="kw">of</span> streamFromAPI()) {
+    <span class="kw">yield</span> block                       <span class="cm">// assistant 文本/思考</span>
+    lastStopReason = block.<span class="vr">stop_reason</span>
+  }
+  <span class="cm">// 2) 有 tool_use 就执行工具，再喂回</span>
+  <span class="kw">if</span> (hasToolUse) {
+    <span class="kw">yield*</span> <span class="fnn">runTools</span>(toolUses, ctx)     <span class="src">toolOrchestration.ts:19</span>
+    <span class="kw">yield*</span> <span class="fnn">submitMessage</span>(toolResults)  <span class="cm">// 递归续轮</span>
+  }
+  <span class="cm">// 3) stop_reason === 'end_turn' → 结束</span>
+}
+
+<span class="kw">async</span> *<span class="fnn">runTools</span>(toolUses, ctx) {            <span class="src">:19</span>
+  <span class="kw">if</span> (allConcurrencySafe)
+    <span class="kw">yield*</span> <span class="fnn">runToolsConcurrently</span>(...)   <span class="src">:152</span>
+  <span class="kw">else</span>
+    <span class="kw">yield*</span> <span class="fnn">runToolsSerially</span>(...)       <span class="src">:118</span>
+}
+
+<span class="kw">async</span> *<span class="fnn">runToolUse</span>(tool, input) {
+  <span class="kw">const</span> p = <span class="kw">await</span> tool.<span class="fnn">checkPermissions</span>(input)
+  <span class="kw">if</span> (p.behavior !== <span class="st">'allow'</span>) <span class="kw">return</span> deny
+  <span class="kw">yield</span> <span class="kw">await</span> tool.<span class="fnn">call</span>(input, ctx)   <span class="cm">// 真正执行</span>
+}</pre>
+      <p class="pill">要点：单一生成器递归续轮；工具默认<b>并发</b>执行；每个工具自带 <span class="fn cc">checkPermissions()</span> 权限门。</p>
+    </div>
+
+    <div class="card oc">
+      <span class="tag oc">OpenClaw · Pi 引擎</span>
+      <pre class="code oc"><span class="cm">// pi-embedded-runner/run.ts —— 内核代号 Pi</span>
+<span class="kw">async function</span> <span class="fnn">runEmbeddedPiAgent</span>(params) {     <span class="src">:268</span>
+  <span class="kw">let</span> runLoopIterations = 0
+  <span class="cm">// 显式 while 循环（非递归）</span>
+  <span class="kw">while</span> (<span class="kw">true</span>) {                              <span class="src">:885</span>
+    <span class="cm">// 1) 一次「尝试」= 选 provider + 流式调模型</span>
+    <span class="kw">const</span> attempt = <span class="kw">await</span> <span class="fnn">runEmbeddedAttempt</span>({
+      provider, modelId, prompt, tools, ...   <span class="src">run/attempt.ts</span>
+    })
+    <span class="kw">const</span> last = attempt.lastAssistant
+
+    <span class="cm">// 2) 模型出错 → 沿 profileCandidates 故障转移</span>
+    <span class="kw">if</span> (last.<span class="vr">stopReason</span> === <span class="st">"error"</span>) {       <span class="src">:1045</span>
+      <span class="kw">if</span> (isContextOverflow) <span class="fnn">compact</span>()         <span class="cm">// 自研压缩</span>
+      <span class="kw">else</span> failoverToNextProfile()             <span class="src">:718/:760</span>
+      <span class="kw">continue</span>
+    }
+    <span class="cm">// 3) 要调工具 → 执行后把结果塞回 history，续循环</span>
+    <span class="kw">if</span> (attempt.<span class="vr">clientToolCall</span>) {              <span class="src">:1687</span>
+      <span class="kw">const</span> result = <span class="kw">await</span> <span class="fnn">executeClientTool</span>(
+        attempt.clientToolCall.name,
+        attempt.clientToolCall.params)
+      history.push(toolResult(result))
+      <span class="kw">continue</span>
+    }
+    <span class="cm">// 4) stopReason === "stop"/"end_turn" → 跳出</span>
+    <span class="kw">break</span>
+  }
+}
+
+<span class="cm">// 多 provider：各家一套流包装器</span>
+<span class="cm">// anthropic-stream-wrappers.ts / openai-…/ google.ts</span>
+<span class="cm">// minimax / moonshot / deepseek / doubao …</span></pre>
+      <p class="pill">要点：显式 <span class="fn oc">while(true)</span> 循环；内建<b>多 provider 故障转移</b>（<span class="fn oc">profileCandidates</span>）与<b>上下文压缩</b>（<span class="fn oc">compact</span>）；工具结果 push 进 history 续轮。</p>
+    </div>
+  </div>
+
+  <table>
+    <tr><td class="feat">循环对比</td><th class="cc">Claude Code · ask()</th><th class="oc">OpenClaw · Pi</th></tr>
+    <tr><td class="feat">循环形态</td><td>async generator <b>递归</b>续轮（<span class="fn cc">submitMessage</span> 自调）</td><td>显式 <b><span class="fn oc">while(true)</span></b> 迭代</td></tr>
+    <tr><td class="feat">续轮判据</td><td><code>stop_reason !== 'end_turn'</code> 且有 tool_use</td><td><code>attempt.clientToolCall</code> 存在</td></tr>
+    <tr><td class="feat">工具执行</td><td><span class="fn cc">runTools→runToolUse→call()</span>，默认<b>并发</b></td><td><span class="fn oc">executeClientTool</span>，串行 push 回 history</td></tr>
+    <tr><td class="feat">权限门</td><td>每工具 <span class="fn cc">checkPermissions()</span></td><td>exec 类走 <code>/approve</code> 审批流（渠道侧）</td></tr>
+    <tr><td class="feat">多模型/容错</td><td>主打 Anthropic，单一 provider</td><td>内建<b>故障转移 + 多 provider 流包装器</b></td></tr>
+    <tr><td class="feat">上下文管理</td><td>snip/compact 投影（<span class="fn cc">snipCompactIfNeeded</span>）</td><td><span class="fn oc">compact.ts</span> + overflow 自动压缩</td></tr>
+    <tr><td class="feat">输出方式</td><td><b>yield</b> 流给 Ink TUI 渲染</td><td><b>emit</b> 事件 → 路由回聊天渠道</td></tr>
+  </table>
+  <p class="pill">两条循环都没出现任何框架符号——没有 <code>Chain</code>、没有 <code>AgentExecutor</code>、没有 <code>Runnable</code>。全是各自的纯 TypeScript 控制流。</p>
+
+  <hr>
+  <p class="foot">
+    本文结论均来自两套仓库的实际源码：<br>
+    · Claude Code — <span class="src">claudecode/constants/prompts.ts</span>、<span class="src">claudecode/tools/AskUserQuestionTool/{AskUserQuestionTool.tsx,prompt.ts}</span>、<span class="src">claudecode/QueryEngine.ts</span>、<span class="src">claudecode/tools/{WebSearchTool,WebFetchTool,FileWriteTool}/</span><br>
+    · OpenClaw — <span class="src">openclaw-2026.3.23/src/agents/system-prompt.ts</span>、<span class="src">.../tools/{message-tool.ts,canvas-tool.ts}</span>、<span class="src">.../poll-params.ts</span>、<span class="src">.../web-search/runtime.ts</span>、<span class="src">.../agents/cli-runner.ts</span><br>
+    · 依赖结论来自 <span class="src">openclaw-2026.3.23/package.json</span> 与 claudecode 源码 import 统计（leaked src 无 package.json）。<br>
+    文中函数名/常量名与源码逐一对应；行为描述基于提示词与工具 schema 的实际定义。
+  </p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenClaw Architecture</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      padding: 32px 24px 64px;
+      min-width: 900px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #8b949e;
+      font-size: 0.95rem;
+      margin-bottom: 40px;
+    }
+
+    /* ── layout helpers ── */
+    .col   { display: flex; flex-direction: column; gap: 12px; }
+    .row   { display: flex; flex-direction: row;    gap: 12px; }
+    .fill  { flex: 1; }
+
+    /* ── section wrappers ── */
+    .section {
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 16px;
+      position: relative;
+    }
+
+    .section-label {
+      position: absolute;
+      top: -11px;
+      left: 14px;
+      background: #0d1117;
+      padding: 0 8px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #8b949e;
+    }
+
+    /* ── card ── */
+    .card {
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 0.82rem;
+      line-height: 1.6;
+      border: 1px solid transparent;
+    }
+
+    .card-title {
+      font-weight: 700;
+      font-size: 0.88rem;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .card-title .icon { font-size: 1rem; }
+
+    .badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.08);
+      border-radius: 20px;
+      padding: 1px 8px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      color: #8b949e;
+      margin-left: 4px;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 6px;
+    }
+
+    .tag {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-size: 0.72rem;
+      color: #c9d1d9;
+    }
+
+    /* ── color themes ── */
+    .blue   { background: #0d1f38; border-color: #1f6feb; }
+    .blue   .card-title { color: #58a6ff; }
+
+    .green  { background: #0d2218; border-color: #238636; }
+    .green  .card-title { color: #3fb950; }
+
+    .purple { background: #1c1038; border-color: #6e40c9; }
+    .purple .card-title { color: #a371f7; }
+
+    .orange { background: #271c0d; border-color: #9e6a03; }
+    .orange .card-title { color: #e3b341; }
+
+    .red    { background: #2a1018; border-color: #da3633; }
+    .red    .card-title { color: #f85149; }
+
+    .teal   { background: #0d2626; border-color: #1e7e6e; }
+    .teal   .card-title { color: #39d353; }
+
+    .gray   { background: #161b22; border-color: #30363d; }
+    .gray   .card-title { color: #8b949e; }
+
+    .pink   { background: #2a0d1e; border-color: #bf4b8a; }
+    .pink   .card-title { color: #ff7fc2; }
+
+    /* ── arrow connectors ── */
+    .arrow-down {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 28px;
+      color: #30363d;
+      font-size: 1.4rem;
+      position: relative;
+    }
+    .arrow-down::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 0;
+      width: 2px;
+      height: 100%;
+      background: linear-gradient(to bottom, #30363d, #30363d);
+    }
+    .arrow-down .chevron {
+      position: relative;
+      z-index: 1;
+      background: #0d1117;
+      padding: 0 4px;
+      color: #4d9bf0;
+      font-size: 0.9rem;
+    }
+
+    .arrow-label {
+      position: relative;
+      z-index: 1;
+      background: #0d1117;
+      padding: 0 8px;
+      font-size: 0.65rem;
+      color: #4d9bf0;
+      letter-spacing: 0.05em;
+    }
+
+    /* ── tech stack bar ── */
+    .tech-bar {
+      margin-top: 40px;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 18px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 20px;
+    }
+    .tech-bar-title {
+      width: 100%;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #8b949e;
+      margin-bottom: 4px;
+    }
+    .tech-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+      color: #c9d1d9;
+    }
+    .tech-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── clients row specific ── */
+    .client-card {
+      text-align: center;
+      padding: 14px 10px;
+    }
+    .client-icon { font-size: 2rem; display: block; margin-bottom: 6px; }
+    .client-name { font-weight: 700; font-size: 0.82rem; }
+    .client-sub  { font-size: 0.70rem; color: #8b949e; margin-top: 2px; }
+
+    /* ── gateway big box ── */
+    .gateway-inner {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    /* ── channel grid ── */
+    .channel-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .ch-chip {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 6px;
+      text-align: center;
+      padding: 6px 4px;
+      font-size: 0.70rem;
+      color: #c9d1d9;
+    }
+    .ch-chip .ch-icon { display: block; font-size: 1.1rem; margin-bottom: 2px; }
+
+    /* ── extensions grid ── */
+    .ext-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    /* ── supporting systems ── */
+    .support-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .mini-list {
+      list-style: none;
+      margin-top: 4px;
+    }
+    .mini-list li {
+      font-size: 0.74rem;
+      color: #8b949e;
+      padding: 1px 0;
+    }
+    .mini-list li::before {
+      content: '· ';
+      color: #4d9bf0;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🦞 OpenClaw (ClawBot)</h1>
+  <p class="subtitle">AI-Powered Multi-Channel Messaging Gateway — Architecture Overview</p>
+
+  <!-- ══════════════════════════════════════════
+       CLIENTS / FRONTENDS
+  ══════════════════════════════════════════ -->
+  <div class="section">
+    <span class="section-label">Clients / Frontends</span>
+    <div class="row">
+      <div class="card blue client-card fill">
+        <span class="client-icon">🖥️</span>
+        <div class="client-name">macOS App</div>
+        <div class="client-sub">menubar · gateway host<br/>Swift / SwiftUI</div>
+      </div>
+      <div class="card blue client-card fill">
+        <span class="client-icon">📱</span>
+        <div class="client-name">iOS App</div>
+        <div class="client-sub">+ watchOS + widgets<br/>Swift / SwiftUI</div>
+      </div>
+      <div class="card blue client-card fill">
+        <span class="client-icon">🤖</span>
+        <div class="client-name">Android App</div>
+        <div class="client-sub">Kotlin / Jetpack Compose<br/>native client</div>
+      </div>
+      <div class="card blue client-card fill">
+        <span class="client-icon">🌐</span>
+        <div class="client-name">Web UI</div>
+        <div class="client-sub">React + Vite<br/>chat · settings · dashboard</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <span class="chevron">▼</span>
+    <span class="arrow-label">WebSocket / HTTP</span>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       GATEWAY
+  ══════════════════════════════════════════ -->
+  <div class="section" style="border-color:#1f6feb;">
+    <span class="section-label" style="color:#58a6ff;">Gateway — Core Orchestration Engine (src/gateway/)</span>
+    <div class="gateway-inner">
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🔌</span> WebSocket / HTTP Server</div>
+        <ul class="mini-list">
+          <li>Real-time RPC</li>
+          <li>Client multiplexing</li>
+          <li>Protocol handling</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">📡</span> Message Routing</div>
+        <ul class="mini-list">
+          <li>Channel dispatch</li>
+          <li>Thread binding</li>
+          <li>Fallback routing</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🔐</span> Pairing / Auth</div>
+        <ul class="mini-list">
+          <li>Device pairing</li>
+          <li>OAuth flows</li>
+          <li>API key management</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">⚙️</span> Config Management</div>
+        <ul class="mini-list">
+          <li>YAML / JSON configs</li>
+          <li>Schema validation</li>
+          <li>Hot reload</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">❤️</span> Health Monitoring</div>
+        <ul class="mini-list">
+          <li>Channel health checks</li>
+          <li>Doctor diagnostics</li>
+          <li>OpenTelemetry tracing</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🪝</span> Hooks System</div>
+        <ul class="mini-list">
+          <li>Message lifecycle hooks</li>
+          <li>Channel hooks</li>
+          <li>Agent hooks</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <span class="chevron">▼</span>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       MIDDLE TIER: Agent + Channels + Plugin
+  ══════════════════════════════════════════ -->
+  <div class="row" style="align-items:stretch;">
+
+    <!-- Agent Engine -->
+    <div class="section green fill">
+      <span class="section-label" style="color:#3fb950;">Agent Engine (src/agents/)</span>
+      <div class="col">
+        <div class="card green">
+          <div class="card-title"><span class="icon">🧠</span> Auth Profile Rotation</div>
+          <div class="tag-list"><span class="tag">OAuth failover</span><span class="tag">rate-limit fallback</span></div>
+        </div>
+        <div class="card green">
+          <div class="card-title"><span class="icon">💻</span> Runner Modes</div>
+          <div class="tag-list"><span class="tag">CLI runner</span><span class="tag">Pi runner</span><span class="tag">cron-isolated</span></div>
+        </div>
+        <div class="card green">
+          <div class="card-title"><span class="icon">🛠️</span> Tool Calling</div>
+          <div class="tag-list"><span class="tag">function schema</span><span class="tag">sandbox exec</span></div>
+        </div>
+        <div class="card green">
+          <div class="card-title"><span class="icon">⚡</span> Skills System</div>
+          <div class="tag-list"><span class="tag">reusable workflows</span><span class="tag">composable</span></div>
+        </div>
+        <div class="card green">
+          <div class="card-title"><span class="icon">🔒</span> Sandbox</div>
+          <div class="tag-list"><span class="tag">isolated execution</span><span class="tag">resource limits</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Channels System -->
+    <div class="section blue fill" style="min-width:340px;">
+      <span class="section-label" style="color:#58a6ff;">Channels System (src/channels/)</span>
+      <div class="col">
+        <div class="card blue">
+          <div class="card-title"><span class="icon">🔀</span> Multi-Channel Router</div>
+          <div class="tag-list"><span class="tag">allow-lists</span><span class="tag">typing indicators</span><span class="tag">read receipts</span></div>
+        </div>
+        <div class="card blue">
+          <div class="card-title"><span class="icon">🧵</span> Thread Bindings</div>
+          <div class="tag-list"><span class="tag">conversation mapping</span><span class="tag">cross-platform</span></div>
+        </div>
+        <div style="margin-top:4px;">
+          <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px;font-weight:600;">CHANNEL PLUGINS <span class="badge">26+</span></div>
+          <div class="channel-grid">
+            <div class="ch-chip"><span class="ch-icon">✈️</span>Telegram</div>
+            <div class="ch-chip"><span class="ch-icon">💬</span>Discord</div>
+            <div class="ch-chip"><span class="ch-icon">📣</span>Slack</div>
+            <div class="ch-chip"><span class="ch-icon">🍎</span>iMessage</div>
+            <div class="ch-chip"><span class="ch-icon">🟢</span>WhatsApp</div>
+            <div class="ch-chip"><span class="ch-icon">🔵</span>Signal</div>
+            <div class="ch-chip"><span class="ch-icon">🏢</span>Teams</div>
+            <div class="ch-chip"><span class="ch-icon">💠</span>Matrix</div>
+            <div class="ch-chip"><span class="ch-icon">🟡</span>LINE</div>
+            <div class="ch-chip"><span class="ch-icon">🦋</span>Nostr</div>
+            <div class="ch-chip"><span class="ch-icon">🌐</span>IRC</div>
+            <div class="ch-chip"><span class="ch-icon">➕</span>more…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Plugin System -->
+    <div class="section purple fill">
+      <span class="section-label" style="color:#a371f7;">Plugin System (src/plugin-sdk/)</span>
+      <div class="col">
+        <div class="card purple">
+          <div class="card-title"><span class="icon">📦</span> Plugin SDK</div>
+          <div class="tag-list"><span class="tag">public API</span><span class="tag">extension contracts</span><span class="tag">jiti alias</span></div>
+        </div>
+        <div class="card purple">
+          <div class="card-title"><span class="icon">🗂️</span> Extensions Registry</div>
+          <div class="tag-list"><span class="tag">discovery</span><span class="tag">lazy loading</span><span class="tag">runtime deps</span></div>
+        </div>
+        <div class="card purple">
+          <div class="card-title"><span class="icon">🔑</span> Secrets / Security</div>
+          <div class="tag-list"><span class="tag">credential store</span><span class="tag">key rotation</span><span class="tag">TLS</span></div>
+        </div>
+        <div class="card purple">
+          <div class="card-title"><span class="icon">⏰</span> Cron / Scheduler</div>
+          <div class="tag-list"><span class="tag">scheduled agents</span><span class="tag">isolated runners</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="arrow-down">
+    <span class="chevron">▼</span>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       EXTENSIONS
+  ══════════════════════════════════════════ -->
+  <div class="section" style="border-color:#6e40c9;">
+    <span class="section-label" style="color:#a371f7;">Extensions / Plugins (extensions/) <span class="badge" style="color:#a371f7;">85+</span></span>
+    <div class="ext-grid">
+
+      <div class="card purple">
+        <div class="card-title"><span class="icon">🤖</span> AI Model Providers <span class="badge">18+</span></div>
+        <div class="tag-list">
+          <span class="tag">anthropic</span><span class="tag">openai</span><span class="tag">google</span>
+          <span class="tag">mistral</span><span class="tag">deepseek</span><span class="tag">groq</span>
+          <span class="tag">bedrock</span><span class="tag">vertex</span><span class="tag">ollama</span>
+          <span class="tag">vllm</span><span class="tag">xai</span><span class="tag">perplexity</span>
+          <span class="tag">minimax</span><span class="tag">moonshot</span><span class="tag">+more</span>
+        </div>
+      </div>
+
+      <div class="card orange">
+        <div class="card-title"><span class="icon">🔍</span> Search & Web Tools <span class="badge">7</span></div>
+        <div class="tag-list">
+          <span class="tag">brave</span><span class="tag">tavily</span><span class="tag">exa</span>
+          <span class="tag">duckduckgo</span><span class="tag">firecrawl</span><span class="tag">open-prose</span>
+        </div>
+      </div>
+
+      <div class="card teal">
+        <div class="card-title"><span class="icon">🧠</span> Memory & Storage <span class="badge">2</span></div>
+        <div class="tag-list">
+          <span class="tag">memory-core</span><span class="tag">memory-lancedb</span>
+          <span class="tag">vector search</span><span class="tag">semantic recall</span>
+        </div>
+      </div>
+
+      <div class="card pink">
+        <div class="card-title"><span class="icon">🔊</span> Speech & Audio <span class="badge">3</span></div>
+        <div class="tag-list">
+          <span class="tag">elevenlabs</span><span class="tag">deepgram</span><span class="tag">microsoft-tts</span>
+          <span class="tag">TTS synthesis</span><span class="tag">audio transcription</span>
+        </div>
+      </div>
+
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🌩️</span> AI Gateways / Proxies <span class="badge">5</span></div>
+        <div class="tag-list">
+          <span class="tag">openrouter</span><span class="tag">together</span><span class="tag">vercel-ai</span>
+          <span class="tag">cloudflare</span><span class="tag">copilot-proxy</span>
+        </div>
+      </div>
+
+      <div class="card red">
+        <div class="card-title"><span class="icon">📊</span> Infra & Monitoring <span class="badge">3</span></div>
+        <div class="tag-list">
+          <span class="tag">diagnostics-otel</span><span class="tag">lobster</span><span class="tag">acpx</span>
+          <span class="tag">OpenTelemetry tracing</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <span class="chevron">▼</span>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SUPPORTING SYSTEMS
+  ══════════════════════════════════════════ -->
+  <div class="section">
+    <span class="section-label">Supporting Systems</span>
+    <div class="support-grid">
+
+      <div class="card orange">
+        <div class="card-title"><span class="icon">🎬</span> Media Pipeline (src/media/)</div>
+        <ul class="mini-list">
+          <li>Image / Video AI vision</li>
+          <li>Audio transcription</li>
+          <li>TTS synthesis</li>
+          <li>Caching + preflight</li>
+        </ul>
+      </div>
+
+      <div class="card teal">
+        <div class="card-title"><span class="icon">📚</span> Context Engine</div>
+        <ul class="mini-list">
+          <li>Message history aggregation</li>
+          <li>Pluggable context providers</li>
+          <li>Context delegation</li>
+        </ul>
+      </div>
+
+      <div class="card green">
+        <div class="card-title"><span class="icon">💾</span> Memory System</div>
+        <ul class="mini-list">
+          <li>Persistent conversation memory</li>
+          <li>LanceDB vector store</li>
+          <li>Semantic search + pruning</li>
+        </ul>
+      </div>
+
+      <div class="card blue">
+        <div class="card-title"><span class="icon">⌨️</span> CLI (src/cli/)</div>
+        <ul class="mini-list">
+          <li>Command dispatch</li>
+          <li>Onboarding wizard</li>
+          <li>Update / upgrade system</li>
+          <li>Doctor diagnostics</li>
+        </ul>
+      </div>
+
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🖥️</span> Terminal UI</div>
+        <ul class="mini-list">
+          <li>Progress bars (osc-progress)</li>
+          <li>Tables + ANSI-safe wrapping</li>
+          <li>Clack spinners</li>
+          <li>Lobster palette</li>
+        </ul>
+      </div>
+
+      <div class="card red">
+        <div class="card-title"><span class="icon">🔒</span> Secrets / Security</div>
+        <ul class="mini-list">
+          <li>Credential storage + rotation</li>
+          <li>TLS / certificate handling</li>
+          <li>Security policy checks</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       TECH STACK BAR
+  ══════════════════════════════════════════ -->
+  <div class="tech-bar">
+    <div class="tech-bar-title">Tech Stack</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#3178c6;"></span> TypeScript (ESM, strict)</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#68a063;"></span> Node.js 22+ / Bun</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#f69220;"></span> pnpm workspaces</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#6e40c9;"></span> Vitest + V8 coverage</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#61dafb;"></span> React + Vite (Web UI)</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#f05138;"></span> Swift / SwiftUI (macOS / iOS)</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#7f52ff;"></span> Kotlin / Compose (Android)</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#e3b341;"></span> Oxlint + Oxfmt</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#238636;"></span> Mintlify docs</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#8b949e;"></span> Version: 2026.3.23</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#da3633;"></span> License: MIT</div>
+  </div>
+
+</body>
+</html>

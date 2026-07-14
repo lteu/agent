@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLI Agent 构造手册</title>
+<style>
+  :root{
+    --bg:#F6F2E7; --panel:#FCFAF2; --panel2:#EEE7D6; --ink:#2B271F; --muted:#6B6555;
+    --line:#E1D8C0; --line2:#D6CAA8;
+    --cc:#B85C36; --oc:#2E6FA6; --pi:#2E8657; --hs:#B84571; --accent:#8F5A19;
+    --mono:"IBM Plex Mono","SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{background:var(--bg)}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    line-height:1.75;font-size:15px;-webkit-font-smoothing:antialiased}
+  ::selection{background:#E7D6AE;color:var(--ink)}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px 100px}
+  a{color:inherit}
+
+  /* ---------- background paper grid ---------- */
+  .bp-grid{
+    background-image:
+      linear-gradient(rgba(60,52,36,.05) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(60,52,36,.05) 1px,transparent 1px);
+    background-size:28px 28px;
+  }
+  .reg{position:absolute;width:22px;height:22px;opacity:.6}
+  .reg::before,.reg::after{content:"";position:absolute;background:var(--accent)}
+  .reg::before{left:10px;top:0;width:2px;height:22px}
+  .reg::after{left:0;top:10px;width:22px;height:2px}
+  .reg i{position:absolute;left:26px;top:-2px;font-family:var(--mono);font-size:9px;color:var(--accent);
+    letter-spacing:.5px;white-space:nowrap}
+
+  /* ---------- hero ---------- */
+  .hero{position:relative;padding:64px 24px 46px;border-bottom:1px solid var(--line);overflow:hidden}
+  .hero .reg.tl{top:18px;left:18px}
+  .hero .reg.tr{top:18px;right:18px}
+  .hero .reg.tr::before,.hero .reg.tr::after{left:auto;right:0}
+  .hero .reg.tr i{left:auto;right:26px;text-align:right}
+  .hero-inner{max-width:1120px;margin:0 auto;position:relative}
+  .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:2.5px;color:var(--accent);
+    text-transform:uppercase;margin:0 0 16px;display:flex;align-items:center;gap:10px}
+  .eyebrow::before{content:"";width:20px;height:1px;background:var(--accent)}
+  .hero h1{font-family:var(--mono);font-weight:600;font-size:38px;letter-spacing:.5px;margin:0 0 14px;
+    color:var(--ink)}
+  .hero .sub{font-size:17px;color:var(--muted);max-width:680px;margin:0 0 22px}
+  .hero .meta{font-family:var(--mono);font-size:12.5px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .hero .meta .chip{border:1px solid var(--line);border-radius:4px;padding:3px 9px;background:var(--panel)}
+  .hero .meta .chip.cc{color:var(--cc);border-color:#E0B594}
+  .hero .meta .chip.oc{color:var(--oc);border-color:#A9CBE8}
+  .hero .meta .chip.pi{color:var(--pi);border-color:#A8D2B8}
+  .hero .meta .chip.hs{color:var(--hs);border-color:#E8B7CB}
+
+  /* ---------- sections ---------- */
+  section{padding:56px 0 0}
+  section.tight{padding-top:40px}
+  h2{font-size:22px;margin:0 0 6px;color:var(--ink);font-weight:700}
+  .sec-eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:2px;color:var(--muted);
+    text-transform:uppercase;margin:0 0 8px}
+  .sec-eyebrow b{color:var(--accent)}
+  .section-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:14px;margin-bottom:6px}
+  .section-head .sec-eyebrow{margin:0;font-size:13px}
+  .section-head h2{margin:0}
+  .section-note{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:2px;
+    text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:20px;
+    padding:3px 12px;white-space:nowrap;background:var(--panel)}
+  .lead{color:var(--ink);font-size:15.5px;max-width:760px;margin:14px 0 22px}
+  p{margin:10px 0}
+  hr.div{border:none;border-top:1px solid var(--line);margin:56px 0 0}
+
+  code,.fn{font-family:var(--mono);font-size:.85em;background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;color:var(--ink)}
+  .fn.cc{color:var(--cc);border-color:#E0B594}
+  .fn.oc{color:var(--oc);border-color:#A9CBE8}
+  .fn.pi{color:var(--pi);border-color:#A8D2B8}
+  .fn.hs{color:var(--hs);border-color:#E8B7CB}
+  .src{display:block;font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+
+  /* ---------- versus strip (section 0) ---------- */
+  .versus{display:grid;grid-template-columns:1fr auto 1fr;gap:18px;align-items:stretch;margin:20px 0}
+  .vcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 22px}
+  .vcard .tag{font-family:var(--mono);font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+  .vcard.no{opacity:.82}
+  .vcard.yes{border-top:3px solid var(--accent)}
+  .vcard .flow-mini{font-family:var(--mono);font-size:13px;color:var(--ink);line-height:2.1}
+  .vcard .flow-mini .arrow{color:var(--muted);margin:0 6px}
+  .vs-mid{display:flex;align-items:center;justify-content:center;font-family:var(--mono);color:var(--muted);font-size:13px}
+
+  /* ---------- diagram frame ---------- */
+  .diagram{position:relative;background:var(--panel2);border:1px solid var(--line);border-radius:14px;
+    padding:26px 10px 18px;margin:22px 0}
+  .diagram .reg{opacity:.5}
+  .diagram .reg.tl{top:10px;left:10px}
+  .diagram .reg.tr{top:10px;right:10px}
+  .diagram .reg.tr::before,.diagram .reg.tr::after{left:auto;right:0}
+  .diagram .reg.tr i{left:auto;right:26px}
+  .diagram svg{display:block;width:100%;height:auto}
+  .diagram .cap{text-align:center;font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    margin-top:6px;letter-spacing:.3px}
+
+  /* ---------- component blocks ---------- */
+  .comp{display:grid;grid-template-columns:64px 1fr;gap:18px;margin:30px 0;align-items:start}
+  .comp .num{font-family:var(--mono);font-size:13px;color:var(--accent);border:1px solid #D9B571;
+    background:#F3E7CE;border-radius:8px;width:48px;height:48px;display:flex;align-items:center;justify-content:center;
+    font-weight:700}
+  .comp h3{margin:2px 0 6px;font-size:17px}
+  .comp p{color:var(--ink);font-size:14.5px;margin:6px 0}
+
+  .stack{display:flex;flex-direction:column;gap:6px;margin:14px 0;max-width:640px}
+  .stack .layer{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:0 8px 8px 0;padding:9px 14px;font-size:13.5px;color:var(--ink)}
+  .stack .layer b{color:var(--accent);font-family:var(--mono);font-size:12px;margin-right:8px}
+
+  .stage3{display:flex;align-items:center;gap:0;margin:16px 0;flex-wrap:wrap}
+  .stage3 .box{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:12px 16px;
+    font-size:13.5px;flex:1;min-width:150px;color:var(--ink)}
+  .stage3 .box .t{color:var(--accent);font-family:var(--mono);font-size:11px;letter-spacing:.5px;margin-bottom:4px}
+  .stage3 .sep{flex:0 0 34px;text-align:center;color:var(--muted);font-family:var(--mono)}
+
+  .flow{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 0;margin:16px 0;max-width:680px}
+  .step{display:flex;gap:14px;padding:11px 20px;border-bottom:1px dashed var(--line)}
+  .step:last-child{border-bottom:none}
+  .step .n{flex:0 0 24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:11.5px;background:var(--panel2);color:var(--accent);font-family:var(--mono)}
+  .step .body{flex:1}
+  .step .t{font-weight:600;margin-bottom:2px;font-size:14px}
+  .step .d{color:var(--muted);font-size:13px}
+  .step.deny .n{background:#F6DCDA;color:#A9433C}
+  .step.ask .n{background:#F3E7CE;color:var(--accent)}
+  .step.allow .n{background:#DEEEE1;color:var(--pi)}
+
+  /* ---------- tables ---------- */
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px;table-layout:fixed}
+  th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+  th{background:var(--panel2);font-weight:600;font-family:var(--mono);font-size:11.5px;letter-spacing:.5px;
+    text-transform:uppercase;color:var(--muted)}
+  th.cc{color:var(--cc)} th.oc{color:var(--oc)} th.pi{color:var(--pi)} th.hs{color:var(--hs)}
+  td.feat{color:var(--ink);font-weight:600;background:var(--panel2)}
+  table th:first-child,table td:first-child{width:17%}
+  td.dot-yes{color:var(--pi)} td.dot-no{color:#A39A85}
+  .tblwrap{overflow-x:auto}
+
+  /* ---------- issue verdict cells (section 07) ---------- */
+  td.v-yes{color:var(--pi)} td.v-mid{color:var(--accent)} td.v-no{color:#A9433C}
+  td.v-yes .src,td.v-mid .src,td.v-no .src{color:var(--muted)}
+  .issue-tbl th:first-child,.issue-tbl td:first-child{width:22%}
+  .cat-label{display:flex;align-items:center;gap:10px;margin:34px 0 4px}
+  .cat-label .num{font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid #D9B571;
+    background:#F3E7CE;border-radius:6px;padding:2px 8px}
+  .cat-label h4{margin:0;font-size:15px;color:var(--ink)}
+  .obs-list{display:flex;flex-direction:column;gap:10px;margin:12px 0}
+  .obs-list .o{font-size:13.5px;color:var(--ink);display:flex;gap:10px}
+  .obs-list .o b{color:var(--accent);font-family:var(--mono);flex:0 0 20px}
+
+  /* ---------- project datasheet cards ---------- */
+  .cards4{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 22px;position:relative}
+  .card.cc{border-top:3px solid var(--cc)} .card.oc{border-top:3px solid var(--oc)}
+  .card.pi{border-top:3px solid var(--pi)} .card.hs{border-top:3px solid var(--hs)}
+  .card .name{font-family:var(--mono);font-weight:700;font-size:16px;margin-bottom:2px}
+  .card.cc .name{color:var(--cc)} .card.oc .name{color:var(--oc)}
+  .card.pi .name{color:var(--pi)} .card.hs .name{color:var(--hs)}
+  .card .tagline{color:var(--muted);font-size:13px;margin-bottom:12px}
+  .card ul{margin:8px 0 0;padding-left:18px;font-size:13.5px;color:var(--ink)}
+  .card li{margin:5px 0}
+  .card .kv{font-size:12.5px;color:var(--muted);margin-top:10px;font-family:var(--mono)}
+
+  /* ---------- code block ---------- */
+  pre.code{font-family:var(--mono);font-size:12.5px;line-height:1.65;background:var(--panel2);
+    border:1px solid var(--line);border-radius:10px;padding:18px 20px;overflow-x:auto;
+    margin:14px 0;color:var(--ink);white-space:pre}
+  pre.code .cm{color:#857D66;font-style:italic}
+  pre.code .kw{color:#8B4C9E}
+  pre.code .fnn{color:#2B6FA0}
+  pre.code .st{color:#3E7A45}
+  pre.code .mk{color:var(--accent)}
+  .callouts{display:flex;flex-direction:column;gap:8px;margin:14px 0;max-width:680px}
+  .callouts .c{font-size:13.5px;color:var(--ink);display:flex;gap:10px}
+  .callouts .c b{color:var(--accent);font-family:var(--mono);flex:0 0 22px}
+
+  /* ---------- checklist ---------- */
+  .checklist{display:flex;flex-direction:column;gap:10px;margin:18px 0;max-width:760px}
+  .chk{display:flex;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:13px 16px;align-items:flex-start}
+  .chk .box{flex:0 0 20px;height:20px;border:1.5px solid var(--accent);border-radius:4px;margin-top:1px;position:relative}
+  .chk .box::after{content:"";position:absolute;left:4px;top:0px;width:5px;height:10px;border:solid var(--accent);
+    border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .chk .t{font-weight:600;font-size:14px;margin-bottom:2px}
+  .chk .d{color:var(--muted);font-size:13px}
+
+  .callout{background:#F3ECD8;border-left:3px solid var(--accent);border-radius:0 8px 8px 0;
+    padding:13px 18px;margin:18px 0;color:var(--ink);font-size:14px;max-width:760px}
+  .callout b{color:var(--accent)}
+
+  footer{margin-top:70px;padding:28px 0 40px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+  footer .paths{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2;white-space:pre-line}
+
+  @media (max-width:760px){
+    .versus{grid-template-columns:1fr}
+    .vs-mid{padding:6px 0}
+    .cards4{grid-template-columns:1fr}
+    .comp{grid-template-columns:1fr}
+    .hero h1{font-size:28px}
+    .section-note{margin-left:0}
+  }
+</style>
+</head>
+<body class="bp-grid">
+
+<div class="hero">
+  <div class="reg tl"><i>X:00 Y:00</i></div>
+  <div class="reg tr"><i>REV 2026.07</i></div>
+  <div class="hero-inner">
+    <p class="eyebrow">Agent Engineering · 内部分享</p>
+    <h1>CLI Agent 构造手册</h1>
+    <p class="sub">拆开四个真实项目的引擎盖，看看"终端里的智能体"到底是怎么拼出来的——原理、六个必备构件、以及一份能自己动手跑起来的最小实现。</p>
+    <div class="meta">
+      <span>案例源码：</span>
+      <span class="chip cc">claudecode</span>
+      <span class="chip oc">openclaw-2026.3.23</span>
+      <span class="chip pi">pi</span>
+      <span class="chip hs">hermes-agent</span>
+      <span style="margin-left:auto">整理日期 2026-07-12</span>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+<!-- ===================== 0. 什么是 CLI Agent ===================== -->
+<section class="tight">
+  <div class="section-head"><p class="sec-eyebrow"><b>00</b></p>
+    <h2>CLI Agent 到底是什么</h2>
+    <span class="section-note">定义</span>
+  </div>
+  <p class="lead">一句话：<b>CLI Agent = 一个跑在终端里、能反复"思考 → 调用工具 → 观察结果"直到任务做完的程序</b>，而不是一问一答的聊天框。区别不在"用了大模型"，而在有没有那个<b>循环</b>。</p>
+
+  <div class="versus">
+    <div class="vcard no">
+      <div class="tag">聊天机器人</div>
+      <div class="flow-mini">输入 <span class="arrow">→</span> 模型 <span class="arrow">→</span> 输出文字</div>
+      <p style="color:var(--muted);font-size:13px;margin-top:10px">一次性、只能吐文字，看不见你的文件系统，也碰不了你的 shell。</p>
+    </div>
+    <div class="vs-mid">≠</div>
+    <div class="vcard yes">
+      <div class="tag" style="color:var(--accent)">CLI Agent</div>
+      <div class="flow-mini">输入 <span class="arrow">→</span> ⟲ 模型 ⇄ 工具(读写文件/跑命令/搜索) ⟲ <span class="arrow">→</span> 最终答案</div>
+      <p style="color:var(--muted);font-size:13px;margin-top:10px">活在你的文件系统和 shell 里，能循环很多轮，直到模型自己觉得任务完成。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 1. Agent Loop ===================== -->
+<section>
+  <div class="section-head"><p class="sec-eyebrow"><b>01</b></p>
+    <h2>所有 CLI Agent 的心脏：Agent Loop</h2>
+    <span class="section-note">核心原理</span>
+  </div>
+  <p class="lead">不管是几万行的 <span class="fn cc">claudecode</span>，还是几十行的最小实现，本质都是同一个循环：</p>
+
+  <div class="flow">
+    <div class="step">
+      <div class="n">①</div>
+      <div class="body"><div class="t">发消息给模型</div>
+        <div class="d">把「系统提示词 + 历史消息 + 可用工具清单」一起发给 LLM。</div></div>
+    </div>
+    <div class="step">
+      <div class="n">②</div>
+      <div class="body"><div class="t">模型做判断</div>
+        <div class="d">要么直接吐文本（任务结束），要么要求调用某个工具（继续）。</div></div>
+    </div>
+    <div class="step">
+      <div class="n">③</div>
+      <div class="body"><div class="t">真正执行工具</div>
+        <div class="d">在你的机器上跑这个函数（读文件 / 跑命令 / 搜索…），拿到结果。</div></div>
+    </div>
+    <div class="step">
+      <div class="n">④</div>
+      <div class="body"><div class="t">结果塞回消息列表，回到①</div>
+        <div class="d">模型在下一轮"看到"工具的执行结果，据此继续决策，直到不再要求工具，或触发轮次上限。</div></div>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="reg tl"><i>LOOP.SCH</i></div>
+    <div class="reg tr"><i>1000×480</i></div>
+    <svg viewBox="0 0 1000 480" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#736C5A"></path>
+        </marker>
+        <marker id="arrowAccent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8F5A19"></path>
+        </marker>
+      </defs>
+
+      <!-- traces -->
+      <path d="M200,222 L300,222" stroke="#736C5A" stroke-width="2" fill="none" marker-end="url(#arrow)"></path>
+      <path d="M460,222 L535,222" stroke="#736C5A" stroke-width="2" fill="none" marker-end="url(#arrow)"></path>
+      <path d="M600,182 L600,92 L800,92" stroke="#8F5A19" stroke-width="2" fill="none" marker-end="url(#arrowAccent)"></path>
+      <path d="M600,262 L600,340" stroke="#736C5A" stroke-width="2" fill="none" marker-end="url(#arrow)"></path>
+      <path d="M890,124 L890,430 L240,430 L240,404" stroke="#2E6FA6" stroke-width="2" fill="none" marker-end="url(#arrow)" stroke-dasharray="1,0"></path>
+      <path d="M240,340 L240,300 L110,300 L110,254" stroke="#2E6FA6" stroke-width="2" fill="none" marker-end="url(#arrow)"></path>
+
+      <!-- labels on traces -->
+      <text x="615" y="115" font-family="IBM Plex Mono,monospace" font-size="12" fill="#8F5A19">是 · 有 tool_use</text>
+      <text x="612" y="300" font-family="IBM Plex Mono,monospace" font-size="12" fill="#736C5A">否 · 纯文本</text>
+      <text x="500" y="452" font-family="IBM Plex Mono,monospace" font-size="12" fill="#2E6FA6">④ 结果塞回 messages → 回到①，再问一次模型</text>
+
+      <!-- chip1: messages -->
+      <rect x="20" y="190" width="180" height="64" rx="10" fill="#FDFBF4" stroke="#D6CAA8" stroke-width="1.5"></rect>
+      <text x="110" y="216" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="11" fill="#8F5A19">① INPUT</text>
+      <text x="110" y="236" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="12.5" fill="#2B271F">系统提示词</text>
+      <text x="110" y="251" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="12.5" fill="#2B271F">+ 历史消息 + 工具清单</text>
+
+      <!-- chip2: LLM -->
+      <rect x="300" y="190" width="160" height="64" rx="10" fill="#FDFBF4" stroke="#D6CAA8" stroke-width="1.5"></rect>
+      <text x="380" y="216" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="11" fill="#8F5A19">② LLM</text>
+      <text x="380" y="238" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="13" fill="#2B271F">调用模型</text>
+
+      <!-- diamond -->
+      <polygon points="600,182 665,222 600,262 535,222" fill="#FDFBF4" stroke="#D6CAA8" stroke-width="1.5"></polygon>
+      <text x="600" y="218" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="11.5" fill="#2B271F">要工具？</text>
+      <text x="600" y="232" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="11.5" fill="#2B271F">tool_use</text>
+
+      <!-- chip_A: tool exec -->
+      <rect x="800" y="60" width="180" height="64" rx="10" fill="#FDFBF4" stroke="#D9B571" stroke-width="1.5"></rect>
+      <text x="890" y="86" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="11" fill="#8F5A19">③ EXECUTE</text>
+      <text x="890" y="108" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="12.5" fill="#2B271F">工具执行</text>
+      <text x="890" y="123" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="11" fill="#736C5A">（并行 / 串行）</text>
+
+      <!-- chip5: final answer -->
+      <rect x="510" y="340" width="180" height="64" rx="10" fill="#FDFBF4" stroke="#9BCBAE" stroke-width="1.5"></rect>
+      <text x="600" y="366" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="11" fill="#2E8657">EXIT</text>
+      <text x="600" y="388" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="13" fill="#2B271F">最终回答</text>
+
+      <!-- chip6: compaction -->
+      <rect x="140" y="340" width="200" height="64" rx="10" fill="#FDFBF4" stroke="#A9CBE8" stroke-width="1.5"></rect>
+      <text x="240" y="366" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="11" fill="#2E6FA6">PRE-STEP</text>
+      <text x="240" y="388" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="12.5" fill="#2B271F">上下文压缩 / 裁剪</text>
+
+      <!-- pads -->
+      <circle cx="200" cy="222" r="3" fill="#736C5A"></circle>
+      <circle cx="535" cy="222" r="3" fill="#736C5A"></circle>
+      <circle cx="800" cy="92" r="3" fill="#8F5A19"></circle>
+      <circle cx="600" cy="340" r="3" fill="#736C5A"></circle>
+      <circle cx="890" cy="124" r="3" fill="#2E6FA6"></circle>
+      <circle cx="110" cy="254" r="3" fill="#2E6FA6"></circle>
+    </svg>
+    <div class="cap">Agent Loop 电路图 — ①输入 ②模型判断 ③执行工具 ④结果回流，形成闭环</div>
+  </div>
+
+  <p style="font-size:14px;color:var(--ink)">四个项目里真正对应这个循环的入口函数：</p>
+  <div class="callouts">
+    <div class="c"><b class="fn cc">cc</b><span><span class="fn cc">queryLoop()</span> · <span class="src" style="display:inline">query.ts</span> —— 一个 <code>while(true)</code> 的 async generator，每个 chunk 都 yield 出来，UI 增量渲染。</span></div>
+    <div class="c"><b class="fn oc">oc</b><span>自己不写循环，委托给外部 SDK <span class="fn oc">pi-agent-core</span>，编排入口是 <span class="fn oc">runEmbeddedPiAgent()</span> · <span class="src" style="display:inline">pi-embedded-runner/run.ts</span>。</span></div>
+    <div class="c"><b class="fn pi">pi</b><span><span class="fn pi">runLoop()</span> · <span class="src" style="display:inline">agent-loop.ts</span> —— 外层 while 处理"用户中途追加消息"，内层 while 处理"还有没有工具调用"。</span></div>
+    <div class="c"><b class="fn hs">hs</b><span><span class="fn hs">run_conversation()</span> · <span class="src" style="display:inline">agent/conversation_loop.py</span> —— <code>while api_call_count &lt; max_iterations</code>（默认 90 轮）。</span></div>
+  </div>
+</section>
+
+<!-- ===================== 2. 六大构件 ===================== -->
+<section>
+  <div class="section-head"><p class="sec-eyebrow"><b>02</b></p>
+    <h2>把 Agent Loop 拆成六个可以单独理解的构件</h2>
+    <span class="section-note">拆解</span>
+  </div>
+  <p class="lead">循环本身只有几行，难的是"循环转起来不崩"所需要的周边系统。下面按你自己动手实现时会遇到的顺序，逐个拆解——每个都回答一个问题：<b>这东西为什么存在？</b></p>
+
+  <div class="comp">
+    <div class="num">01</div>
+    <div>
+      <h3>循环引擎（Loop Engine）</h3>
+      <p>所有智能都发生在"调模型"这一步，循环引擎本身很笨——它只负责"再问一次"。真正决定 agent 好不好用的，是这个循环要不要处理<b>流式输出</b>、要不要<b>并行</b>跑多个工具、要不要在中途允许用户插话。循环笨，周边不笨。</p>
+    </div>
+  </div>
+
+  <div class="comp">
+    <div class="num">02</div>
+    <div>
+      <h3>工具接口与注册表（Tool Registry）</h3>
+      <p>LLM 不会真的"调用"任何东西——它只是吐出一段结构化文本（工具名 + 参数），是你的程序读懂这段文本、在注册表里找到对应函数、真正执行、再把结果写回对话。工具的 JSON Schema 就是喂给模型的"菜单"，菜单设计得好不好，直接决定模型点菜点不点得准。</p>
+    </div>
+  </div>
+
+  <div class="comp">
+    <div class="num">03</div>
+    <div>
+      <h3>系统提示词的动态拼装（System Prompt Assembly）</h3>
+      <p>系统提示词不是一次写死、永远不变的字符串，它更像每轮现拼的三明治——层次越拆得清楚，越容易做提示词前缀缓存（prefix cache）省钱：</p>
+      <div class="stack">
+        <div class="layer"><b>L1</b>产品身份 / 工具使用规范（几乎不变，最利于缓存命中）</div>
+        <div class="layer"><b>L2</b>运行环境信息（cwd、git 状态、操作系统、当前时间）</div>
+        <div class="layer"><b>L3</b>项目 / 用户专属规则文件（<code>CLAUDE.md</code> / <code>AGENTS.md</code> / <code>SOUL.md</code>…）</div>
+        <div class="layer"><b>L4</b>记忆快照 / 本轮追加指令（最易变，放最后）</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="comp">
+    <div class="num">04</div>
+    <div>
+      <h3>上下文压缩（Context Compaction）</h3>
+      <p>对话开得越久，历史消息越多，而模型的上下文窗口是有限的。四个项目不约而同用了同一套<b>分级</b>策略，越往后成本越高、触发越少：</p>
+      <div class="stage3">
+        <div class="box"><div class="t">STAGE 1</div>截断/落盘超大工具输出<br><span style="color:var(--muted);font-size:12px">比如读了几万行的文件</span></div>
+        <div class="sep">→</div>
+        <div class="box"><div class="t">STAGE 2</div>轻量合并 / 剪枝<br><span style="color:var(--muted);font-size:12px">去掉重复、过期的历史片段</span></div>
+        <div class="sep">→</div>
+        <div class="box"><div class="t">STAGE 3</div>触发阈值 → 模型自我总结<br><span style="color:var(--muted);font-size:12px">用摘要替换原始历史</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="comp">
+    <div class="num">05</div>
+    <div>
+      <h3>权限与审批（Permission Gate）</h3>
+      <p>凡是会"动手"的工具（写文件、跑命令、发消息）都要过一道闸门：按规则直接判定，判不出来就弹出来问用户一句。这道闸门放在哪、松紧到什么程度，决定了 agent 是"放心用"还是"提心吊胆用"。典型判定顺序：</p>
+      <div class="flow" style="max-width:520px">
+        <div class="step deny"><div class="n">✕</div><div class="body"><div class="t">命中黑名单规则</div><div class="d">直接拒绝，不问模型也不问用户</div></div></div>
+        <div class="step ask"><div class="n">?</div><div class="body"><div class="t">命中"需询问"规则 / 工具自检未通过</div><div class="d">弹窗给用户，等待 允许一次 / 本次会话 / 始终允许 / 拒绝</div></div></div>
+        <div class="step allow"><div class="n">✓</div><div class="body"><div class="t">命中白名单 / 只读安全操作</div><div class="d">直接放行，无需打断用户</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="comp">
+    <div class="num">06</div>
+    <div>
+      <h3>进阶能力（生产级的加分项）</h3>
+      <p>循环 + 工具 + 提示词 + 压缩 + 权限，五件套凑齐就是一个能用的 agent 了。再往上，是让它"敢在生产里跑"的加分项——是否流式、能不能并行、能不能拆子任务、能不能沙箱化、接不接得了多个模型和多个消息渠道。见下方矩阵。</p>
+    </div>
+  </div>
+
+  <p style="font-size:14px;color:var(--ink);margin-top:8px">一张表看四个项目怎么落地这六个构件（点位为函数名 + 文件，可去仓库里对照原文）：</p>
+  <div class="tblwrap">
+  <table>
+    <tr><th>构件</th><th class="cc">claudecode</th><th class="oc">openclaw</th><th class="pi">pi</th><th class="hs">hermes-agent</th></tr>
+    <tr>
+      <td class="feat">01 循环引擎</td>
+      <td><span class="fn cc">queryLoop()</span><span class="src">query.ts</span></td>
+      <td>委托 <span class="fn oc">pi-agent-core</span><span class="src">runEmbeddedPiAgent() · attempt.ts</span></td>
+      <td><span class="fn pi">runLoop()</span><span class="src">agent-loop.ts</span></td>
+      <td><span class="fn hs">run_conversation()</span><span class="src">conversation_loop.py</span></td>
+    </tr>
+    <tr>
+      <td class="feat">02 工具接口</td>
+      <td><span class="fn cc">Tool&lt;Input,Output&gt;</span><span class="src">Tool.ts + getAllBaseTools()·tools.ts</span></td>
+      <td><span class="fn oc">AnyAgentTool</span><span class="src">createOpenClawCodingTools()·pi-tools.ts</span></td>
+      <td><span class="fn pi">ToolDefinition</span>(typebox)<span class="src">coding-agent/core/tools/*.ts</span></td>
+      <td><span class="fn hs">registry.register()</span><span class="src">tools/registry.py（自动发现）</span></td>
+    </tr>
+    <tr>
+      <td class="feat">03 系统提示词</td>
+      <td><span class="fn cc">buildEffectiveSystemPrompt()</span><span class="src">systemPrompt.ts + CLAUDE.md</span></td>
+      <td><span class="fn oc">buildAgentSystemPrompt()</span><span class="src">system-prompt.ts + AGENTS.md/SOUL.md</span></td>
+      <td><span class="fn pi">buildSystemPrompt()</span><span class="src">system-prompt.ts + AGENTS.md</span></td>
+      <td><span class="fn hs">build_system_prompt_parts()</span><span class="src">stable/context/volatile 三层 + 前缀缓存</span></td>
+    </tr>
+    <tr>
+      <td class="feat">04 上下文压缩</td>
+      <td>budget→<span class="fn cc">microcompact</span>→<span class="fn cc">autoCompact</span><span class="src">services/compact/*</span></td>
+      <td>truncate→<span class="fn oc">compaction.ts</span>（分段摘要）<span class="src">agents/compaction.ts</span></td>
+      <td><span class="fn pi">shouldCompact→generateSummary→compact()</span><span class="src">harness/compaction/compaction.ts</span></td>
+      <td><span class="fn hs">ContextCompressor</span> 五步算法<span class="src">context_compressor.py</span></td>
+    </tr>
+    <tr>
+      <td class="feat">05 权限审批</td>
+      <td><span class="fn cc">hasPermissionsToUseToolInner()</span> 五级判定<span class="src">permissions.ts</span></td>
+      <td>ExecSecurity 三级 + Gateway 两阶段 RPC<span class="src">exec-approvals.ts</span></td>
+      <td>官方声明：<b>无内置权限系统</b>，审批是扩展可选钩子<span class="src">README.md + extensions/types.ts</span></td>
+      <td><span class="fn hs">check_all_command_guards()</span> + 交互式选择<span class="src">tools/approval.py</span></td>
+    </tr>
+  </table>
+  </div>
+
+  <p style="font-size:14px;color:var(--ink);margin-top:26px">进阶能力矩阵——谁做了、谁没做：</p>
+  <div class="tblwrap">
+  <table>
+    <tr><th>能力</th><th class="cc">claudecode</th><th class="oc">openclaw</th><th class="pi">pi</th><th class="hs">hermes-agent</th></tr>
+    <tr><td class="feat">流式输出</td><td class="dot-yes">✓ AsyncGenerator 逐 chunk</td><td class="dot-yes">✓ 继承底层 streamFn</td><td class="dot-yes">✓ EventStream 事件流</td><td class="dot-yes">✓ 流式采集</td></tr>
+    <tr><td class="feat">并行工具调用</td><td class="dot-yes">✓ 只读并行 / 写操作串行</td><td class="dot-yes">✓ 依赖底层 SDK</td><td class="dot-yes">✓ executeToolCallsParallel</td><td class="dot-yes">✓ 并发/串行两种执行器</td></tr>
+    <tr><td class="feat">子代理 Sub-agent</td><td class="dot-yes">✓ AgentTool 递归调用自身</td><td class="dot-yes">✓ sessions_spawn（限深度）</td><td class="dot-no">— 未发现</td><td class="dot-no">— 未发现</td></tr>
+    <tr><td class="feat">沙箱隔离</td><td class="dot-no">— 依赖 hooks 自行接入</td><td class="dot-yes">✓ Docker，后端可插拔</td><td class="dot-no">— 明确建议自行容器化</td><td class="dot-yes">✓ local/docker/ssh/daytona/modal</td></tr>
+    <tr><td class="feat">多模型 Provider</td><td class="dot-no">— 绑定 Claude API</td><td class="dot-yes">✓ 18+ providers</td><td class="dot-yes">✓ 30+ providers（独立 ai 包）</td><td class="dot-no">— 依赖网关配置</td></tr>
+    <tr><td class="feat">多渠道接入（IM 等）</td><td class="dot-no">—</td><td class="dot-yes">✓ Gateway + 82 个插件</td><td class="dot-no">—</td><td class="dot-yes">✓ Telegram/Slack/微信/QQ/iMessage…</td></tr>
+  </table>
+  </div>
+</section>
+
+<!-- ===================== 3. 四个项目速览 ===================== -->
+<section>
+  <div class="section-head"><p class="sec-eyebrow"><b>03</b></p>
+    <h2>四个项目速览</h2>
+    <span class="section-note">案例</span>
+  </div>
+  <p class="lead">同样是"CLI agent"，四份项目的定位其实完全不同——从"编辑器里的编码助手"到"全渠道消息平台"，跨度很大。</p>
+
+  <div class="cards4">
+    <div class="card cc">
+      <div class="name">claudecode</div>
+      <div class="tagline">Anthropic 官方 CLI 编码助手</div>
+      <ul>
+        <li>TypeScript 单体应用，围绕"编码任务"深度打磨</li>
+        <li>工具按需加载（ToolSearch），压低系统提示词体积</li>
+        <li>Stop Hooks / PreToolUse 等生命周期钩子，用户可编程干预</li>
+        <li>子代理即"递归调用自己的 query()"，架构自相似</li>
+      </ul>
+      <div class="kv">语言：TypeScript　定位：单人编码助手</div>
+    </div>
+    <div class="card oc">
+      <div class="name">openclaw</div>
+      <div class="tagline">多渠道消息驱动的 agent 网关</div>
+      <ul>
+        <li>自己不写 agent loop，委托给独立 SDK <span class="fn oc">pi-agent-core</span>，专注"编排层"</li>
+        <li>Gateway 统一网关 + 82 个扩展插件（渠道/模型/工具）</li>
+        <li>Docker 沙箱可插拔，<span class="fn oc">cron/</span> 支持定时自主任务</li>
+        <li>危险操作走网关两阶段 RPC 审批，多端（macOS/iOS/Web）可响应</li>
+      </ul>
+      <div class="kv">语言：TypeScript monorepo　定位：团队/个人全渠道助理</div>
+    </div>
+    <div class="card pi">
+      <div class="name">pi</div>
+      <div class="tagline">分层良好的 agent 运行时 + CLI</div>
+      <ul>
+        <li>五个包分工清晰：<code>ai</code>（LLM 抽象）/ <code>agent</code>（运行时）/ <code>coding-agent</code>（CLI）/ <code>tui</code> / <code>orchestrator</code></li>
+        <li>自研差分渲染 TUI，不依赖 Ink/blessed</li>
+        <li>30+ 模型 provider，事件流架构，UI 增量订阅渲染</li>
+        <li>明确声明<b>不做权限系统</b>，把裁量权交给使用者或容器</li>
+      </ul>
+      <div class="kv">语言：TypeScript monorepo　定位：可复用 agent 运行时</div>
+    </div>
+    <div class="card hs">
+      <div class="name">hermes-agent</div>
+      <div class="tagline">全渠道 agent 平台 + ACP 协议适配</div>
+      <ul>
+        <li>Python，工具注册表<b>自动发现</b> <code>tools/*.py</code>，无需手工登记列表</li>
+        <li>系统提示词 stable/context/volatile 三层，SQLite 缓存，复用 LLM 前缀缓存</li>
+        <li>gateway/platforms 打通 Telegram / Slack / 微信 / QQ / iMessage 等</li>
+        <li>支持 ACP（Agent Client Protocol），可被 Zed 等编辑器当作 agent 驱动</li>
+      </ul>
+      <div class="kv">语言：Python　定位：全渠道个人/团队助理</div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 3.5 运行时与终端渲染 ===================== -->
+<section>
+  <div class="section-head"><p class="sec-eyebrow"><b>04</b></p>
+    <h2>怎么让它变成一条能敲的命令：运行时、终端渲染与进程控制</h2>
+    <span class="section-note">落地</span>
+  </div>
+  <p class="lead">前面讲的都是"脑子"——循环怎么转、工具怎么调。但你在终端里敲下 <code>pi</code> / <code>openclaw</code> 这几个字母时，背后还有三层容易被忽略的东西：<b>谁把它注册成一条命令</b>、<b>谁把它画到你的屏幕上</b>，以及<b>谁来真正执行你敲的那条 shell 命令</b>。</p>
+
+  <h3 style="font-size:15px;margin:24px 0 8px;color:var(--ink)">运行时与分发：Node + npm（以及 Python 那条平行线）</h3>
+  <p style="color:var(--ink);font-size:14.5px;max-width:820px">claudecode / openclaw / pi 三个都是 TypeScript 项目，跑在 Node.js 上；把它们变成一条全局命令，靠的都是 <code>package.json</code> 里的 <code>"bin"</code> 字段——告诉 npm："装的时候，在 PATH 里放一个叫这个名字的可执行文件，指向这个入口脚本"。<code>npm install -g</code> 之后，敲命令名其实就是在跑 <code>node 入口文件.js</code>。hermes-agent 是 Python，走的是同一件事的另一套实现：<code>pyproject.toml</code> 里的 <code>[project.scripts]</code> 把命令名映射到 Python 函数，<code>pip install</code> 之后同样注册进 PATH。殊途同归——都是"把一个函数入口，注册成 shell 里的一个名字"。</p>
+
+  <div class="tblwrap">
+  <table>
+    <tr><th>项目</th><th>运行时</th><th>命令怎么注册的</th></tr>
+    <tr><td class="feat">claudecode</td><td>Node.js（从周边依赖 react-reconciler / lodash-es 等推断）</td><td>npm 全局安装注册 bin（本仓库是反编译源码，未附带 package.json）</td></tr>
+    <tr><td class="feat">openclaw</td><td>Node.js ≥ 22.16.0</td><td><span class="fn oc">"bin": {"openclaw": "openclaw.mjs"}</span></td></tr>
+    <tr><td class="feat">pi</td><td>Node.js ≥ 22.19.0</td><td><span class="fn pi">"bin": {"pi": "dist/cli.js"}</span>（coding-agent 包）</td></tr>
+    <tr><td class="feat">hermes-agent</td><td>Python</td><td><span class="fn hs">[project.scripts]</span> → hermes / hermes-agent / hermes-acp 三个命令</td></tr>
+  </table>
+  </div>
+
+  <h3 style="font-size:15px;margin:28px 0 8px;color:var(--ink)">终端渲染层：TUI</h3>
+  <p style="color:var(--ink);font-size:14.5px;max-width:820px">Agent Loop 决定"想说什么"，TUI（Terminal UI）决定"怎么画到你的屏幕上"——这是两个完全独立的关注点，很多教程会把它们混在一起讲，容易让人误以为"循环"本身很复杂。</p>
+
+  <div class="versus" style="margin-top:14px">
+    <div class="vcard no">
+      <div class="tag">最简单：直接 print</div>
+      <p style="color:var(--muted);font-size:13px;margin-top:6px">流式 token 直接 <code>stdout.write</code>，工具结果原样打印。几行代码能跑，但没有多行编辑框、没有实时刷新、长输出会刷屏。</p>
+    </div>
+    <div class="vs-mid">→</div>
+    <div class="vcard yes">
+      <div class="tag" style="color:var(--accent)">生产级：差分渲染引擎</div>
+      <p style="color:var(--muted);font-size:13px;margin-top:6px">把终端当成一块屏幕，维护一棵组件树，每帧只重绘"变化的部分"，配合终端同步输出协议做到不闪烁。</p>
+    </div>
+  </div>
+
+  <div class="callouts" style="margin-top:16px">
+    <div class="c"><b class="fn cc">cc</b><span>自研了一套类似 <b>Ink</b>（React for CLI）的引擎——<span class="fn cc">ink.tsx</span> / <span class="fn cc">ink.ts</span>，用 <code>react-reconciler</code> + 自研 Yoga 布局把组件树差分渲染到终端字符网格，支持同步刷新和 Kitty 键盘协议。</span></div>
+    <div class="c"><b class="fn pi">pi</b><span>把 TUI 拆成独立发布的包 <span class="fn pi">@earendil-works/pi-tui</span>——差分渲染 + <code>CSI 2026</code> 同步输出（不闪烁），内置 Editor / Markdown / SelectList 等组件，支持在 Kitty / iTerm2 协议终端里内联渲染图片。</span></div>
+    <div class="c"><b class="fn hs">hs</b><span>用 Python 的 <span class="fn hs">prompt_toolkit</span> 做交互式 CLI——审批弹窗、多行编辑器都靠它，实现不同但目标一样：让终端"能编辑、能刷新、不难看"。</span></div>
+    <div class="c"><b class="fn oc">oc</b><span>更偏"消息"形态——大多数交互通过 Gateway 推给 Telegram / Slack / 微信等外部 IM 客户端渲染，本地并不强求一个富交互终端 UI。</span></div>
+  </div>
+
+  <div class="callout"><b>一句话</b>：TUI 花的功夫和"好不好用"强相关，但和"能不能跑"无关——最小实现里 print 就够了，差分渲染引擎是规模大了之后解决"闪烁 / 编辑体验 / 长会话可读性"的加固项，跟上一节的压缩、权限是同一类东西：不是核心原理，是工程加固。</div>
+
+  <h3 style="font-size:15px;margin:28px 0 8px;color:var(--ink)">进程与信号控制：谁来真正"跑"这条命令</h3>
+  <p style="color:var(--ink);font-size:14.5px;max-width:820px">bash 工具的 <code>execute()</code> 函数体里，藏着三个最容易被最小实现忽略、但一上真实场景就会炸的问题：<b>要不要开一个真终端</b>（普通管道 vs 伪终端 PTY）、<b>Ctrl+C 该打断谁</b>（当前工具，还是整个 agent 进程），以及<b>命令派生出的子子孙孙进程谁来收尸</b>。</p>
+
+  <div class="tblwrap">
+  <table>
+    <tr><th>项目</th><th>怎么执行命令</th><th>中断 / 清理机制</th></tr>
+    <tr><td class="feat">claudecode</td><td>维持一个常驻的"影子 shell"会话（<span class="fn cc">ShellSnapshot</span>），cwd / 环境变量跨多次工具调用保留，更像你自己连续敲命令</td><td><span class="fn cc">AbortController</span> 把中断精确路由到当前这次 bash 调用（<code>result.interrupted</code>），不影响整个循环</td></tr>
+    <tr><td class="feat">openclaw</td><td>默认走真伪终端（<span class="fn oc">@lydell/node-pty</span>），环境不支持时自动降级为普通 <code>child_process</code></td><td><span class="fn oc">killProcessTree()</span> 连带清理整棵子孙进程树，避免孤儿进程占着端口不放</td></tr>
+    <tr><td class="feat">pi</td><td>Node <code>child_process.spawn()</code>，一次性子进程，无 PTY</td><td>监听 <span class="fn pi">AbortSignal</span> 的 abort 事件，触发后 kill 子进程</td></tr>
+    <tr><td class="feat">hermes-agent</td><td>把决定权交给模型：工具参数 <span class="fn hs">pty=true</span> 时才开伪终端；执行地点还可能是 docker/ssh/daytona 等远程环境，不一定在本机</td><td><span class="fn hs">process_registry.py</span> 登记后台进程，滚动输出缓冲 + 崩溃后靠 JSON checkpoint 恢复</td></tr>
+  </table>
+  </div>
+
+  <div class="callouts" style="margin-top:16px">
+    <div class="c"><b class="fn hs">hs</b><span>把"要不要 PTY"这个工程约束直接写进了工具描述里给模型看：<i>"Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal."</i> ——不是代码里悄悄兜底，而是教模型自己判断。</span></div>
+    <div class="c"><b class="fn oc">oc</b><span><span class="fn oc">killProcessTree()</span> 处理的是一个很常见的坑：一条 <code>npm run dev</code> 会在背后拉起好几个 watcher 子进程，只 kill 直接子进程的话，这些孙进程会变成孤儿继续跑。</span></div>
+  </div>
+
+  <div class="callout"><b>为什么值得单独拎出来</b>：很多最小实现直接用一句 <code>os.system()</code>/<code>exec()</code> 糊弄过去，平时看不出问题——直到模型跑出一条需要交互输入的命令（<code>vim</code>、密码提示、<code>git rebase -i</code>）卡死不动，或者用户按 Ctrl+C 把整个 agent 干掉、丢了正在进行的对话，才发现这层地基没打好。</div>
+</section>
+
+<!-- ===================== 4. 动手实现最小 Agent ===================== -->
+<section>
+  <div class="section-head"><p class="sec-eyebrow"><b>05</b></p>
+    <h2>最小可行 Agent：不到 60 行</h2>
+    <span class="section-note">动手</span>
+  </div>
+  <p class="lead">抛开工程细节，一个"能跑"的 CLI agent 用不了多少代码。对照着看，六个构件里真正躲不掉的只有<b>①循环 ②工具表 ③LLM 调用</b>三件——其余都是"规模大了以后不得不加"的加固。</p>
+
+  <pre class="code"><span class="cm"># 伪代码：一个能跑的最小 CLI agent</span>
+
+TOOLS = {
+    <span class="st">"read_file"</span>: {<span class="st">"schema"</span>: {...}, <span class="st">"run"</span>: read_file},
+    <span class="st">"bash"</span>:      {<span class="st">"schema"</span>: {...}, <span class="st">"run"</span>: run_bash},
+}
+
+<span class="kw">def</span> <span class="fnn">agent_loop</span>(user_input, system_prompt):
+    messages = [{<span class="st">"role"</span>: <span class="st">"user"</span>, <span class="st">"content"</span>: user_input}]
+
+    <span class="kw">for</span> turn <span class="kw">in</span> range(MAX_TURNS):
+        response = llm.call(
+            system=system_prompt,
+            messages=messages,
+            tools=[t[<span class="st">"schema"</span>] <span class="kw">for</span> t <span class="kw">in</span> TOOLS.values()],
+        )
+        messages.append(response.to_message())
+
+        <span class="kw">if not</span> response.tool_calls:
+            <span class="kw">return</span> response.text          <span class="mk"># ① 模型直接回答 → 循环结束</span>
+
+        <span class="kw">for</span> call <span class="kw">in</span> response.tool_calls:  <span class="mk"># ② 一次可能要求多个工具</span>
+            tool = TOOLS[call.name]
+            <span class="kw">if</span> is_dangerous(call) <span class="kw">and not</span> ask_user_permission(call):
+                result = <span class="st">"denied by user"</span>
+            <span class="kw">else</span>:
+                result = tool[<span class="st">"run"</span>](**call.arguments)
+            messages.append(tool_result_message(call.id, result))
+        <span class="mk"># ③ 结果已塞回 messages，回到循环顶部，让模型"看到"结果</span>
+
+    <span class="kw">return</span> <span class="st">"达到最大轮次，任务未完成"</span></pre>
+
+  <div class="callouts">
+    <div class="c"><b>①</b>结束条件只有一个：模型这一轮<b>没有</b>要求任何工具调用。</div>
+    <div class="c"><b>②</b>一次响应里可能带多个工具调用（比如同时读两个文件），要循环处理，别只取第一个。</div>
+    <div class="c"><b>③</b>整个 agent 没有"隐藏状态"——<code>messages</code> 这个列表本身就是全部状态，模型的"记忆"就是把它整段重新发一遍。</div>
+  </div>
+
+  <div class="callout"><b>把这 60 行放进生产</b>，你需要：上下文超限时压缩（04）、危险操作弹窗确认（05）、流式展示进度、工具执行沙箱化——这正是上一节六大构件存在的原因，而不是额外的"炫技"。</div>
+</section>
+
+<!-- ===================== 5. 加固清单 ===================== -->
+<section>
+  <div class="section-head"><p class="sec-eyebrow"><b>06</b></p>
+    <h2>从 MVP 到生产级：加固清单</h2>
+    <span class="section-note">清单</span>
+  </div>
+  <p class="lead">按"什么时候会痛"来排序，痛了再加，不必一开始就全都做。</p>
+
+  <div class="checklist">
+    <div class="chk"><div class="box"></div><div><div class="t">对话开长了会报错 / 变慢 → 加上下文压缩</div><div class="d">先截断超大工具输出，再轻量剪枝，最后才用模型自我总结（构件 04）。</div></div></div>
+    <div class="chk"><div class="box"></div><div><div class="t">敢让它碰真实文件系统 / 生产环境 → 加权限闸门</div><div class="d">写操作、删除、执行命令都要过一道 允许/询问/拒绝（构件 05）。</div></div></div>
+    <div class="chk"><div class="box"></div><div><div class="t">用户等得着急 → 加流式输出</div><div class="d">把 LLM 的 token 和工具执行进度实时吐给终端，而不是等全部跑完再显示。</div></div></div>
+    <div class="chk"><div class="box"></div><div><div class="t">一次任务要读/搜很多文件 → 加并行工具执行</div><div class="d">只读、无副作用的工具可以并发跑；有副作用的（写文件）必须串行。</div></div></div>
+    <div class="chk"><div class="box"></div><div><div class="t">任务太复杂，一个循环装不下 → 加子代理</div><div class="d">把子任务委派给一个新的、独立上下文的 agent 循环，做完汇报结果（如 Task / sessions_spawn）。</div></div></div>
+    <div class="chk"><div class="box"></div><div><div class="t">要在多用户 / CI / 不受信输入下跑 → 加沙箱</div><div class="d">工具执行换成容器/远程执行后端，而不是直接跑在宿主机上。</div></div></div>
+    <div class="chk"><div class="box"></div><div><div class="t">想换模型，或想接入 IM → 加 provider 抽象层 + 消息网关</div><div class="d">把"调用哪个模型""从哪个渠道收发消息"从核心循环里剥离出去。</div></div></div>
+    <div class="chk"><div class="box"></div><div><div class="t">想让同事 npm install -g / pip install 就能用 → 配好 bin / [project.scripts]</div><div class="d">这是"脚本"和"命令行工具"的分界线（见 04 · 落地）——本地能跑不等于能分发。</div></div></div>
+    <div class="chk"><div class="box"></div><div><div class="t">长会话刷屏、编辑体验差 → 换成差分渲染 TUI</div><div class="d">从 print 升级成组件化、只重绘变化部分的终端渲染引擎（见 04 · 落地）。</div></div></div>
+  </div>
+</section>
+
+<!-- ===================== 6. 已知问题库 ===================== -->
+<section>
+  <div class="section-head"><p class="sec-eyebrow"><b>07</b></p>
+    <h2>已知问题库：13 个坑，四个项目怎么应对（或没应对）</h2>
+    <span class="section-note">对照 ISSUES.md</span>
+  </div>
+  <p class="lead">上面几节讲的是"怎么搭出一个能跑的 agent"，这一节反过来，是一份内部踩坑清单——上下文管理、执行可靠性、安全、规模化四类共 13 个已知难题，逐条核对四个项目在源码里<b>怎么应对</b>，或者<b>压根没应对</b>。<span class="v-yes" style="color:var(--pi)">✓ 已应对</span> / <span class="v-mid" style="color:var(--accent)">~ 部分应对</span> / <span class="v-no" style="color:#A9433C">✕ 未应对</span>，每格附源码定位，方便去仓库里对照原文核实。</p>
+
+  <div class="cat-label"><span class="num">01</span><h4>上下文管理类</h4></div>
+  <div class="tblwrap">
+  <table class="issue-tbl">
+    <tr><th>问题</th><th class="cc">claudecode</th><th class="oc">openclaw</th><th class="pi">pi</th><th class="hs">hermes-agent</th></tr>
+    <tr>
+      <td class="feat">压缩丢失关键信息<br><span style="font-weight:400;color:var(--muted);font-size:12px">UUID / 路径 / 用户约束</span></td>
+      <td class="v-yes">✓ 压缩后原文件整块重新附加<span class="src">services/compact/compact.ts:1415</span></td>
+      <td class="v-yes">✓ 强制保留标识符原样，可配置策略<span class="src">agents/compaction.ts:31</span></td>
+      <td class="v-mid">~ 结构化提取文件路径单独拼接摘要末尾<span class="src">harness/compaction/compaction.ts:35</span></td>
+      <td class="v-mid">~ Critical Context 段 + 路径正则兜底<span class="src">context_compressor.py:1829 / 231</span></td>
+    </tr>
+    <tr>
+      <td class="feat">流式 tool_call<br><span style="font-weight:400;color:var(--muted);font-size:12px">参数拼接完整性</span></td>
+      <td class="v-yes">✓ 只拼字符串，block-stop 后才 parse<span class="src">services/api/claude.ts:2087</span></td>
+      <td class="v-no">✕ 依赖外部 SDK；自研 WS 客户端未处理增量完整性<span class="src">agents/openai-ws-stream.ts:559</span></td>
+      <td class="v-yes">✓ 截断（stopReason=length）时拒绝执行残缺调用<span class="src">agent-loop.ts:383</span></td>
+      <td class="v-yes">✓ 额外区分"主动截断"与"连接掉线"两种情况<span class="src">chat_completion_helpers.py:2225</span></td>
+    </tr>
+    <tr>
+      <td class="feat">超长输入<br><span style="font-weight:400;color:var(--muted);font-size:12px">千页书 / 万行代码找 bug</span></td>
+      <td class="v-mid">~ 分页 Read + Grep + explore 子代理委派</td>
+      <td class="v-mid">~ 仅 PDF/网页局部分块，大代码库整体委派外部 CLI</td>
+      <td class="v-mid">~ read/grep 有硬上限，无自动分块编排</td>
+      <td class="v-mid">~ read_file/search 统一 offset/limit 分页，最规整</td>
+    </tr>
+    <tr>
+      <td class="feat">Long horizon 任务<br><span style="font-weight:400;color:var(--muted);font-size:12px">跨多轮的规划/分解</span></td>
+      <td class="v-yes">✓ TodoWrite + Task 系列工具，支持委派给其他 agent</td>
+      <td class="v-no">✕ 无 TODO 工具，靠子代理委派 + cron 定时任务</td>
+      <td class="v-no">✕ 无 TODO 工具，仅压缩摘要里被动生成的 Progress 段</td>
+      <td class="v-yes">✓ 专门 todo 工具，压缩后自动重新注入<span class="src">tools/todo_tool.py</span></td>
+    </tr>
+    <tr>
+      <td class="feat">跨会话信息复用</td>
+      <td class="v-yes">✓ 后台子 agent 自动写会话笔记 + 分层 CLAUDE.md<span class="src">SessionMemory/sessionMemory.ts</span></td>
+      <td class="v-yes">✓ MEMORY.md+每日日志+语义检索，明确"没写下就没了"</td>
+      <td class="v-mid">~ JSONL 会话可续接 + AGENTS.md，无独立理解缓存</td>
+      <td class="v-yes">✓ 会话全文可搜索 + 唯一有"技能沉淀图谱"<span class="src">learning_graph.py</span></td>
+    </tr>
+  </table>
+  </div>
+
+  <div class="cat-label"><span class="num">02</span><h4>执行可靠性类</h4></div>
+  <div class="tblwrap">
+  <table class="issue-tbl">
+    <tr><th>问题</th><th class="cc">claudecode</th><th class="oc">openclaw</th><th class="pi">pi</th><th class="hs">hermes-agent</th></tr>
+    <tr>
+      <td class="feat">并发写入竞态</td>
+      <td class="v-yes">✓ isConcurrencySafe 按工具分类，写类独占<span class="src">Tool.ts:402</span></td>
+      <td class="v-mid">~ 有 mutating 分类，但只用于警告，未接入调度<span class="src">tool-mutation.ts</span></td>
+      <td class="v-yes">✓ 工具级 + 文件级（realpath 队列）双重保护<span class="src">file-mutation-queue.ts</span></td>
+      <td class="v-yes">✓ 路径重叠才强制串行<span class="src">tool_dispatch_helpers.py:104</span></td>
+    </tr>
+    <tr>
+      <td class="feat">循环卡死 / 重复无效调用</td>
+      <td class="v-no">✕ 未发现</td>
+      <td class="v-yes">✓ before-tool-call 钩子，4 种检测器+全局熔断<span class="src">tool-loop-detection.ts（默认关）</span></td>
+      <td class="v-no">✕ 未发现</td>
+      <td class="v-yes">✓ ToolCallGuardrailController，签名哈希+阈值<span class="src">tool_guardrails.py（硬熔断默认关）</span></td>
+    </tr>
+    <tr>
+      <td class="feat">中断一致性</td>
+      <td class="v-mid">~ 区分真中断/插队两种粒度，写入无原子写保护</td>
+      <td class="v-mid">~ 整个 run 粒度中断，无断点续跑能力</td>
+      <td class="v-mid">~ 能真正杀掉正在跑的 shell 进程树，但文件写入不接 abort</td>
+      <td class="v-mid">~ 只挡"下一个"工具，已在执行的工具无法被抢占</td>
+    </tr>
+  </table>
+  </div>
+
+  <div class="cat-label"><span class="num">03</span><h4>安全类</h4></div>
+  <div class="tblwrap">
+  <table class="issue-tbl">
+    <tr><th>问题</th><th class="cc">claudecode</th><th class="oc">openclaw</th><th class="pi">pi</th><th class="hs">hermes-agent</th></tr>
+    <tr>
+      <td class="feat">提示注入防御</td>
+      <td class="v-mid">~ 外部消息打标 + WebFetch 二级模型隔离，非统一机制</td>
+      <td class="v-yes">✓ 专门模块，随机边界标记+同形字符折叠<span class="src">security/external-content.ts（四家最系统化）</span></td>
+      <td class="v-no">✕ SECURITY.md 明确声明不做，责任交给用户</td>
+      <td class="v-yes">✓ 专门模块 + 信任边界标记<span class="src">tools/threat_patterns.py</span></td>
+    </tr>
+    <tr>
+      <td class="feat">权限疲劳</td>
+      <td class="v-yes">✓ 四级作用域持久化 + LLM 分类器自动批准<span class="src">yoloClassifier.ts</span></td>
+      <td class="v-yes">✓ on-miss 模式，只有未知命令才问</td>
+      <td class="v-no">✕ 无分级，靠一次性"项目信任"整体放行后不再问</td>
+      <td class="v-yes">✓ 硬底线不可被 yolo 绕过 + 智能审批<span class="src">tools/approval.py（分级最清晰）</span></td>
+    </tr>
+    <tr>
+      <td class="feat">歧义下的破坏性操作</td>
+      <td class="v-mid">~ 正则识别危险命令，仅警告不阻断<span class="src">destructiveCommandWarning.ts</span></td>
+      <td class="v-no">✕ 未发现专门机制，走通用审批门禁</td>
+      <td class="v-no">✕ 未接入 bash/edit/write 执行链路</td>
+      <td class="v-yes">✓ HARDLINE_PATTERNS 无条件阻断，且在 yolo 绕过<b>之前</b>生效</td>
+    </tr>
+  </table>
+  </div>
+
+  <div class="cat-label"><span class="num">04</span><h4>规模化类</h4></div>
+  <div class="tblwrap">
+  <table class="issue-tbl">
+    <tr><th>问题</th><th class="cc">claudecode</th><th class="oc">openclaw</th><th class="pi">pi</th><th class="hs">hermes-agent</th></tr>
+    <tr>
+      <td class="feat">多 provider 抽象</td>
+      <td class="v-no">✕ 单一供应商（Anthropic 自家 4 种后端）</td>
+      <td class="v-mid">~ 两层：薄 extensions + 自研约 3000 行归一化补丁层</td>
+      <td class="v-yes">✓ 独立 packages/ai 包，统一 Model 接口，最规整</td>
+      <td class="v-yes">✓ ProviderProfile 注册表 + 一供应商一 adapter 文件</td>
+    </tr>
+    <tr>
+      <td class="feat">成本 / 预算失控</td>
+      <td class="v-mid">~ 硬轮次上限，子代理独立轮次，无 token/美元硬顶</td>
+      <td class="v-mid">~ 无 token 硬顶，但限制子代理递归深度/并发数（唯一）</td>
+      <td class="v-no">✕ 主循环 while(true) 无上限，且没有子代理机制</td>
+      <td class="v-yes">✓ IterationBudget，父子代理预算独立且可退还<span class="src">agent/iteration_budget.py（与笔记描述完全吻合）</span></td>
+    </tr>
+  </table>
+  </div>
+
+  <p style="font-size:14px;color:var(--ink);margin-top:26px">几处最值得拎出来讲的细节：</p>
+  <div class="callouts">
+    <div class="c"><b class="fn oc">oc</b><span>流式 tool_call 解析这个问题在它自己的代码库里其实没被解决——被"外包"给了看不到源码的外部 SDK；但在提示注入防御、循环检测、执行审批分级这几项上，反而是四家里做得最系统化、最像"安全产品"的，体现了它"编排层很厚、执行层很薄"的定位。</span></div>
+    <div class="c"><b class="fn pi">pi</b><span><code>SECURITY.md</code> 原话："AGENTS.md 或注释里的指令可以轻易对 agent 做提示注入，这个没法防"，并把提示注入和沙箱缺失列为 Out of Scope——是态度选择（轻量工具，信任你的运行环境），不是遗漏。同样没有循环检测、任务规划工具、成本预算上限。</span></div>
+    <div class="c"><b class="fn hs">hs</b><span>笔记里点名的"IterationBudget，子代理不占用父级步数"在源码里得到精确验证：父 agent 默认 90 轮，每个子代理独立 50 轮，二者互不相扣，总迭代数之和可以超过父级上限。</span></div>
+    <div class="c"><b style="flex-basis:52px">共同</b><span>没有一家能安全地打断<b>正在执行中</b>的单个动作（都只能挡下"下一个"动作），也没有一家做到超长输入的自动化分块编排——都停留在"手动分页/搜索原语，交给模型自己调度"的水平。</span></div>
+  </div>
+
+  <div class="callout">
+    <b>总体观察</b>
+    <div class="obs-list">
+      <div class="o"><b>①</b>同一问题在不同代码库里常收敛到相似的技术模式——压缩防丢信息普遍是"提示词强制指令+结构化路径提取"组合，流式 JSON 组装普遍是"delta 只拼字符串，block-stop 后才 parse"，说明这些不是某家的独创设计，而是这类问题的"标准解"。</div>
+      <div class="o"><b>②</b>claudecode 和 hermes-agent 覆盖面最全，共同点是都把安全/可靠性当作核心产品功能在做，而不是外围加固。</div>
+      <div class="o"><b>③</b>openclaw 不是从零写 agent loop 的项目，核心执行机制依赖外部 SDK，导致底层问题（流式解析、并发调度）表现较弱，但上层策略（安全、审批、子代理限流）做得最像产品。</div>
+      <div class="o"><b>④</b>pi 是四家里最"轻量工具"取向的——多 provider 抽象层很扎实，但循环检测、任务规划、成本预算、破坏性操作确认、提示注入防御全部缺失，且是主动选择而非疏漏。</div>
+      <div class="o"><b>⑤</b>四家共同的技术空白：中断正在执行的单个动作、超长输入的自动化分块——这两项可以作为后续自研的重点方向。</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>本文基于对四个仓库源码的静态阅读整理，函数名 / 文件行号可能随版本演进变化，以仓库当前代码为准。已知问题库部分对应 <code>ISSUES.md</code> 的调研，逐条证据交叉整理于 <code>summary.md</code>。</p>
+  <div class="paths">
+claudecode      → /studio/claudecode
+openclaw        → /studio/openclaw-2026.3.23
+pi              → /studio/pi
+hermes-agent    → /studio/hermes-agent
+issues 调研原文  → /studio/ISSUES.md , /studio/summary.md
+  </div>
+  <p style="margin-top:14px">由 Claude Code 协助整理 · 2026-07-13</p>
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenClaw 架构图</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
+      padding: 32px 24px 64px;
+      min-width: 900px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #8b949e;
+      font-size: 0.95rem;
+      margin-bottom: 40px;
+    }
+
+    /* ── 布局辅助 ── */
+    .col   { display: flex; flex-direction: column; gap: 12px; }
+    .row   { display: flex; flex-direction: row;    gap: 12px; }
+    .fill  { flex: 1; }
+
+    /* ── 区块容器 ── */
+    .section {
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 16px;
+      position: relative;
+    }
+
+    .section-label {
+      position: absolute;
+      top: -11px;
+      left: 14px;
+      background: #0d1117;
+      padding: 0 8px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: #8b949e;
+    }
+
+    /* ── 卡片 ── */
+    .card {
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 0.82rem;
+      line-height: 1.6;
+      border: 1px solid transparent;
+    }
+
+    .card-title {
+      font-weight: 700;
+      font-size: 0.88rem;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .card-title .icon { font-size: 1rem; }
+
+    .badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.08);
+      border-radius: 20px;
+      padding: 1px 8px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      color: #8b949e;
+      margin-left: 4px;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 6px;
+    }
+
+    .tag {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-size: 0.72rem;
+      color: #c9d1d9;
+    }
+
+    /* ── 配色方案 ── */
+    .blue   { background: #0d1f38; border-color: #1f6feb; }
+    .blue   .card-title { color: #58a6ff; }
+
+    .green  { background: #0d2218; border-color: #238636; }
+    .green  .card-title { color: #3fb950; }
+
+    .purple { background: #1c1038; border-color: #6e40c9; }
+    .purple .card-title { color: #a371f7; }
+
+    .orange { background: #271c0d; border-color: #9e6a03; }
+    .orange .card-title { color: #e3b341; }
+
+    .red    { background: #2a1018; border-color: #da3633; }
+    .red    .card-title { color: #f85149; }
+
+    .teal   { background: #0d2626; border-color: #1e7e6e; }
+    .teal   .card-title { color: #39d353; }
+
+    .gray   { background: #161b22; border-color: #30363d; }
+    .gray   .card-title { color: #8b949e; }
+
+    .pink   { background: #2a0d1e; border-color: #bf4b8a; }
+    .pink   .card-title { color: #ff7fc2; }
+
+    /* ── 箭头连接线 ── */
+    .arrow-down {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 28px;
+      color: #30363d;
+      font-size: 1.4rem;
+      position: relative;
+    }
+    .arrow-down::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 0;
+      width: 2px;
+      height: 100%;
+      background: linear-gradient(to bottom, #30363d, #30363d);
+    }
+    .arrow-down .chevron {
+      position: relative;
+      z-index: 1;
+      background: #0d1117;
+      padding: 0 4px;
+      color: #4d9bf0;
+      font-size: 0.9rem;
+    }
+
+    .arrow-label {
+      position: relative;
+      z-index: 1;
+      background: #0d1117;
+      padding: 0 8px;
+      font-size: 0.65rem;
+      color: #4d9bf0;
+      letter-spacing: 0.05em;
+    }
+
+    /* ── 技术栈横条 ── */
+    .tech-bar {
+      margin-top: 40px;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 18px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 20px;
+    }
+    .tech-bar-title {
+      width: 100%;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: #8b949e;
+      margin-bottom: 4px;
+    }
+    .tech-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+      color: #c9d1d9;
+    }
+    .tech-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── 客户端卡片 ── */
+    .client-card {
+      text-align: center;
+      padding: 14px 10px;
+    }
+    .client-icon { font-size: 2rem; display: block; margin-bottom: 6px; }
+    .client-name { font-weight: 700; font-size: 0.82rem; }
+    .client-sub  { font-size: 0.70rem; color: #8b949e; margin-top: 2px; }
+
+    /* ── 网关内部网格 ── */
+    .gateway-inner {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    /* ── 频道网格 ── */
+    .channel-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .ch-chip {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 6px;
+      text-align: center;
+      padding: 6px 4px;
+      font-size: 0.70rem;
+      color: #c9d1d9;
+    }
+    .ch-chip .ch-icon { display: block; font-size: 1.1rem; margin-bottom: 2px; }
+
+    /* ── 扩展插件网格 ── */
+    .ext-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    /* ── 基础系统网格 ── */
+    .support-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .mini-list {
+      list-style: none;
+      margin-top: 4px;
+    }
+    .mini-list li {
+      font-size: 0.74rem;
+      color: #8b949e;
+      padding: 1px 0;
+    }
+    .mini-list li::before {
+      content: '· ';
+      color: #4d9bf0;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🦞 OpenClaw（ClawBot）</h1>
+  <p class="subtitle">AI 驱动的多渠道消息网关 — 系统架构总览</p>
+
+  <!-- ══════════════════════════════════════════
+       客户端 / 前端
+  ══════════════════════════════════════════ -->
+  <div class="section">
+    <span class="section-label">客户端 / 前端</span>
+    <div class="row">
+      <div class="card blue client-card fill">
+        <span class="client-icon">🖥️</span>
+        <div class="client-name">macOS 应用</div>
+        <div class="client-sub">菜单栏 · 网关宿主<br/>Swift / SwiftUI</div>
+      </div>
+      <div class="card blue client-card fill">
+        <span class="client-icon">📱</span>
+        <div class="client-name">iOS 应用</div>
+        <div class="client-sub">+ watchOS + 小组件<br/>Swift / SwiftUI</div>
+      </div>
+      <div class="card blue client-card fill">
+        <span class="client-icon">🤖</span>
+        <div class="client-name">Android 应用</div>
+        <div class="client-sub">Kotlin / Jetpack Compose<br/>原生客户端</div>
+      </div>
+      <div class="card blue client-card fill">
+        <span class="client-icon">🌐</span>
+        <div class="client-name">Web 界面</div>
+        <div class="client-sub">React + Vite<br/>聊天 · 设置 · 控制台</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <span class="chevron">▼</span>
+    <span class="arrow-label">WebSocket / HTTP</span>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       网关
+  ══════════════════════════════════════════ -->
+  <div class="section" style="border-color:#1f6feb;">
+    <span class="section-label" style="color:#58a6ff;">网关 — 核心编排引擎（src/gateway/）</span>
+    <div class="gateway-inner">
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🔌</span> WebSocket / HTTP 服务器</div>
+        <ul class="mini-list">
+          <li>实时 RPC 调用</li>
+          <li>多客户端复用</li>
+          <li>协议处理</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">📡</span> 消息路由</div>
+        <ul class="mini-list">
+          <li>频道分发</li>
+          <li>线程绑定</li>
+          <li>降级路由</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🔐</span> 配对 / 认证</div>
+        <ul class="mini-list">
+          <li>设备配对</li>
+          <li>OAuth 流程</li>
+          <li>API 密钥管理</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">⚙️</span> 配置管理</div>
+        <ul class="mini-list">
+          <li>YAML / JSON 配置</li>
+          <li>Schema 校验</li>
+          <li>热重载</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">❤️</span> 健康监控</div>
+        <ul class="mini-list">
+          <li>频道健康检查</li>
+          <li>Doctor 诊断</li>
+          <li>OpenTelemetry 追踪</li>
+        </ul>
+      </div>
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🪝</span> 钩子系统</div>
+        <ul class="mini-list">
+          <li>消息生命周期钩子</li>
+          <li>频道钩子</li>
+          <li>Agent 钩子</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <span class="chevron">▼</span>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       中间层：Agent + 频道 + 插件
+  ══════════════════════════════════════════ -->
+  <div class="row" style="align-items:stretch;">
+
+    <!-- Agent 引擎 -->
+    <div class="section green fill">
+      <span class="section-label" style="color:#3fb950;">Agent 引擎（src/agents/）</span>
+      <div class="col">
+        <div class="card green">
+          <div class="card-title"><span class="icon">🧠</span> 认证配置轮换</div>
+          <div class="tag-list"><span class="tag">OAuth 故障转移</span><span class="tag">限速降级</span></div>
+        </div>
+        <div class="card green">
+          <div class="card-title"><span class="icon">💻</span> 运行模式</div>
+          <div class="tag-list"><span class="tag">CLI 运行器</span><span class="tag">Pi 运行器</span><span class="tag">定时隔离</span></div>
+        </div>
+        <div class="card green">
+          <div class="card-title"><span class="icon">🛠️</span> 工具调用</div>
+          <div class="tag-list"><span class="tag">函数 Schema</span><span class="tag">沙箱执行</span></div>
+        </div>
+        <div class="card green">
+          <div class="card-title"><span class="icon">⚡</span> 技能系统</div>
+          <div class="tag-list"><span class="tag">可复用工作流</span><span class="tag">可组合</span></div>
+        </div>
+        <div class="card green">
+          <div class="card-title"><span class="icon">🔒</span> 沙箱</div>
+          <div class="tag-list"><span class="tag">隔离执行</span><span class="tag">资源限制</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 频道系统 -->
+    <div class="section blue fill" style="min-width:340px;">
+      <span class="section-label" style="color:#58a6ff;">频道系统（src/channels/）</span>
+      <div class="col">
+        <div class="card blue">
+          <div class="card-title"><span class="icon">🔀</span> 多频道路由器</div>
+          <div class="tag-list"><span class="tag">允许名单</span><span class="tag">正在输入提示</span><span class="tag">已读回执</span></div>
+        </div>
+        <div class="card blue">
+          <div class="card-title"><span class="icon">🧵</span> 线程绑定</div>
+          <div class="tag-list"><span class="tag">会话映射</span><span class="tag">跨平台</span></div>
+        </div>
+        <div style="margin-top:4px;">
+          <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px;font-weight:600;">频道插件 <span class="badge">26+</span></div>
+          <div class="channel-grid">
+            <div class="ch-chip"><span class="ch-icon">✈️</span>Telegram</div>
+            <div class="ch-chip"><span class="ch-icon">💬</span>Discord</div>
+            <div class="ch-chip"><span class="ch-icon">📣</span>Slack</div>
+            <div class="ch-chip"><span class="ch-icon">🍎</span>iMessage</div>
+            <div class="ch-chip"><span class="ch-icon">🟢</span>WhatsApp</div>
+            <div class="ch-chip"><span class="ch-icon">🔵</span>Signal</div>
+            <div class="ch-chip"><span class="ch-icon">🏢</span>Teams</div>
+            <div class="ch-chip"><span class="ch-icon">💠</span>Matrix</div>
+            <div class="ch-chip"><span class="ch-icon">🟡</span>LINE</div>
+            <div class="ch-chip"><span class="ch-icon">🦋</span>Nostr</div>
+            <div class="ch-chip"><span class="ch-icon">🌐</span>IRC</div>
+            <div class="ch-chip"><span class="ch-icon">➕</span>更多…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 插件系统 -->
+    <div class="section purple fill">
+      <span class="section-label" style="color:#a371f7;">插件系统（src/plugin-sdk/）</span>
+      <div class="col">
+        <div class="card purple">
+          <div class="card-title"><span class="icon">📦</span> 插件 SDK</div>
+          <div class="tag-list"><span class="tag">公开 API</span><span class="tag">扩展契约</span><span class="tag">jiti 别名</span></div>
+        </div>
+        <div class="card purple">
+          <div class="card-title"><span class="icon">🗂️</span> 扩展注册表</div>
+          <div class="tag-list"><span class="tag">自动发现</span><span class="tag">懒加载</span><span class="tag">运行时依赖</span></div>
+        </div>
+        <div class="card purple">
+          <div class="card-title"><span class="icon">🔑</span> 密钥 / 安全</div>
+          <div class="tag-list"><span class="tag">凭证存储</span><span class="tag">密钥轮换</span><span class="tag">TLS</span></div>
+        </div>
+        <div class="card purple">
+          <div class="card-title"><span class="icon">⏰</span> 定时任务</div>
+          <div class="tag-list"><span class="tag">定时 Agent</span><span class="tag">隔离运行器</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="arrow-down">
+    <span class="chevron">▼</span>
+  </div>
+
+<br />
+<br />
+<br />
+<br />
+<br />
+  <!-- ══════════════════════════════════════════
+       扩展插件
+  ══════════════════════════════════════════ -->
+  <div class="section" style="border-color:#6e40c9;">
+    <span class="section-label" style="color:#a371f7;">扩展 / 插件（extensions/）<span class="badge" style="color:#a371f7;">85+</span></span>
+    <div class="ext-grid">
+
+      <div class="card purple">
+        <div class="card-title"><span class="icon">🤖</span> AI 模型提供商 <span class="badge">18+</span></div>
+        <div class="tag-list">
+          <span class="tag">anthropic</span><span class="tag">openai</span><span class="tag">google</span>
+          <span class="tag">mistral</span><span class="tag">deepseek</span><span class="tag">groq</span>
+          <span class="tag">bedrock</span><span class="tag">vertex</span><span class="tag">ollama</span>
+          <span class="tag">vllm</span><span class="tag">xai</span><span class="tag">perplexity</span>
+          <span class="tag">minimax</span><span class="tag">moonshot</span><span class="tag">更多</span>
+        </div>
+      </div>
+
+      <div class="card orange">
+        <div class="card-title"><span class="icon">🔍</span> 搜索 & 网页工具 <span class="badge">7</span></div>
+        <div class="tag-list">
+          <span class="tag">brave</span><span class="tag">tavily</span><span class="tag">exa</span>
+          <span class="tag">duckduckgo</span><span class="tag">firecrawl</span><span class="tag">open-prose</span>
+        </div>
+      </div>
+
+      <div class="card teal">
+        <div class="card-title"><span class="icon">🧠</span> 记忆 & 存储 <span class="badge">2</span></div>
+        <div class="tag-list">
+          <span class="tag">memory-core</span><span class="tag">memory-lancedb</span>
+          <span class="tag">向量检索</span><span class="tag">语义召回</span>
+        </div>
+      </div>
+
+      <div class="card pink">
+        <div class="card-title"><span class="icon">🔊</span> 语音 & 音频 <span class="badge">3</span></div>
+        <div class="tag-list">
+          <span class="tag">elevenlabs</span><span class="tag">deepgram</span><span class="tag">microsoft-tts</span>
+          <span class="tag">TTS 合成</span><span class="tag">音频转写</span>
+        </div>
+      </div>
+
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🌩️</span> AI 网关 / 代理 <span class="badge">5</span></div>
+        <div class="tag-list">
+          <span class="tag">openrouter</span><span class="tag">together</span><span class="tag">vercel-ai</span>
+          <span class="tag">cloudflare</span><span class="tag">copilot-proxy</span>
+        </div>
+      </div>
+
+      <div class="card red">
+        <div class="card-title"><span class="icon">📊</span> 基础设施 & 监控 <span class="badge">3</span></div>
+        <div class="tag-list">
+          <span class="tag">diagnostics-otel</span><span class="tag">lobster</span><span class="tag">acpx</span>
+          <span class="tag">OpenTelemetry 链路追踪</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <span class="chevron">▼</span>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       基础支撑系统
+  ══════════════════════════════════════════ -->
+  <div class="section">
+    <span class="section-label">基础支撑系统</span>
+    <div class="support-grid">
+
+      <div class="card orange">
+        <div class="card-title"><span class="icon">🎬</span> 媒体处理管线（src/media/）</div>
+        <ul class="mini-list">
+          <li>图片 / 视频 AI 视觉</li>
+          <li>音频转写</li>
+          <li>TTS 语音合成</li>
+          <li>缓存 + 预检</li>
+        </ul>
+      </div>
+
+      <div class="card teal">
+        <div class="card-title"><span class="icon">📚</span> 上下文引擎</div>
+        <ul class="mini-list">
+          <li>消息历史聚合</li>
+          <li>可插拔上下文提供商</li>
+          <li>上下文委托</li>
+        </ul>
+      </div>
+
+      <div class="card green">
+        <div class="card-title"><span class="icon">💾</span> 记忆系统</div>
+        <ul class="mini-list">
+          <li>持久化会话记忆</li>
+          <li>LanceDB 向量存储</li>
+          <li>语义检索 + 剪枝</li>
+        </ul>
+      </div>
+
+      <div class="card blue">
+        <div class="card-title"><span class="icon">⌨️</span> 命令行（src/cli/）</div>
+        <ul class="mini-list">
+          <li>命令分发</li>
+          <li>引导向导</li>
+          <li>更新 / 升级系统</li>
+          <li>Doctor 诊断</li>
+        </ul>
+      </div>
+
+      <div class="card gray">
+        <div class="card-title"><span class="icon">🖥️</span> 终端界面</div>
+        <ul class="mini-list">
+          <li>进度条（osc-progress）</li>
+          <li>表格 + ANSI 安全换行</li>
+          <li>Clack 加载动画</li>
+          <li>Lobster 调色板</li>
+        </ul>
+      </div>
+
+      <div class="card red">
+        <div class="card-title"><span class="icon">🔒</span> 密钥 / 安全</div>
+        <ul class="mini-list">
+          <li>凭证存储 + 轮换</li>
+          <li>TLS / 证书处理</li>
+          <li>安全策略检查</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       技术栈横条
+  ══════════════════════════════════════════ -->
+  <div class="tech-bar">
+    <div class="tech-bar-title">技术栈</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#3178c6;"></span> TypeScript（ESM · 严格模式）</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#68a063;"></span> Node.js 22+ / Bun</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#f69220;"></span> pnpm 工作区</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#6e40c9;"></span> Vitest + V8 覆盖率</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#61dafb;"></span> React + Vite（Web 界面）</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#f05138;"></span> Swift / SwiftUI（macOS / iOS）</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#7f52ff;"></span> Kotlin / Compose（Android）</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#e3b341;"></span> Oxlint + Oxfmt</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#238636;"></span> Mintlify 文档</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#8b949e;"></span> 版本：2026.3.23</div>
+    <div class="tech-item"><span class="tech-dot" style="background:#da3633;"></span> 开源协议：MIT</div>
+  </div>
+
+</body>
+</html>

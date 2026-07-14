@@ -1,0 +1,81 @@
+graph TD
+    subgraph CLIENTS["CLIENTS / FRONTENDS"]
+        macos["macOS App\nSwift · SwiftUI · menubar · gateway host"]
+        ios["iOS App\nSwift · SwiftUI · watchOS · widgets"]
+        android["Android App\nKotlin · Jetpack Compose"]
+        webui["Web UI\nReact · Vite · chat · settings"]
+    end
+
+    macos & ios & android & webui -->|WebSocket / HTTP| GW_WS
+
+    subgraph GW["GATEWAY — Core Orchestration Engine  src/gateway/"]
+        GW_WS["WebSocket / HTTP Server\nreal-time RPC · client multiplexing"]
+        GW_RT["Message Routing\nchannel dispatch · thread binding · fallback"]
+        GW_AU["Pairing / Auth\ndevice pairing · OAuth · API key management"]
+        GW_CF["Config Management\nYAML/JSON · schema validation · hot reload"]
+        GW_HE["Health Monitoring\nchannel health · doctor diagnostics · OTel"]
+        GW_HK["Hooks System\nmessage · channel · agent lifecycle hooks"]
+    end
+
+    GW --> AE
+    GW --> CH
+    GW --> PS
+
+    subgraph AE["AGENT ENGINE  src/agents/"]
+        AE_AR["Auth Profile Rotation\nOAuth failover · rate-limit fallback"]
+        AE_RN["Runner Modes\nCLI · Pi embedded · cron-isolated"]
+        AE_TC["Tool Calling\nfunction schema · sandbox exec"]
+        AE_SK["Skills System\nreusable AI workflows · composable"]
+        AE_SB["Sandbox\nisolated execution · resource limits"]
+    end
+
+    subgraph CH["CHANNELS SYSTEM  src/channels/"]
+        CH_MR["Multi-Channel Router\nallow-lists · typing indicators · read receipts"]
+        CH_TB["Thread Bindings\ncross-platform conversation mapping"]
+        CH_PL["Channel Plugins  26+\nTelegram · Discord · Slack · iMessage · WhatsApp\nSignal · Teams · Matrix · LINE · Nostr · IRC · more"]
+    end
+
+    subgraph PS["PLUGIN SYSTEM  src/plugin-sdk/"]
+        PS_SDK["Plugin SDK\npublic API · extension contracts · jiti alias"]
+        PS_REG["Extensions Registry\ndiscovery · lazy loading · runtime deps"]
+        PS_SEC["Secrets / Security\ncredential store · key rotation · TLS"]
+        PS_CRN["Cron / Scheduler\nscheduled agents · isolated runners"]
+    end
+
+    AE & CH & PS --> EXT
+
+    subgraph EXT["EXTENSIONS  extensions/   85+ plugins"]
+        EXT_AI["AI Model Providers  18+\nanthropic · openai · google · mistral · deepseek\ngroq · bedrock · vertex · ollama · vllm · xai · more"]
+        EXT_SR["Search & Web Tools\nbrave · tavily · exa · duckduckgo · firecrawl · open-prose"]
+        EXT_ME["Memory & Storage\nmemory-core · memory-lancedb · vector semantic search"]
+        EXT_SP["Speech & Audio\nelevenlabs · deepgram · microsoft-tts · TTS synthesis"]
+        EXT_GW["AI Gateways / Proxies\nopenrouter · together · vercel-ai · cloudflare · copilot-proxy"]
+        EXT_MO["Infra & Monitoring\ndiagnostics-otel · lobster · acpx · OpenTelemetry"]
+    end
+
+    EXT --> SUP
+
+    subgraph SUP["SUPPORTING SYSTEMS"]
+        SUP_MD["Media Pipeline  src/media/\nimage · video AI · audio transcription · TTS caching"]
+        SUP_CT["Context Engine\nmessage history · pluggable providers · delegation"]
+        SUP_MM["Memory System\npersistent memory · LanceDB · semantic search · pruning"]
+        SUP_CL["CLI  src/cli/\ncommands · onboarding wizard · update · doctor"]
+        SUP_TU["Terminal UI\nprogress bars · ANSI tables · clack spinners · palette"]
+        SUP_SC["Secrets / Security\ncredential storage · TLS · security policy checks"]
+    end
+
+    classDef clientStyle  fill:#0d1f38,stroke:#1f6feb,color:#58a6ff
+    classDef gatewayStyle fill:#161b22,stroke:#30363d,color:#c9d1d9
+    classDef agentStyle   fill:#0d2218,stroke:#238636,color:#3fb950
+    classDef channelStyle fill:#0d1f38,stroke:#1f6feb,color:#58a6ff
+    classDef pluginStyle  fill:#1c1038,stroke:#6e40c9,color:#a371f7
+    classDef extStyle     fill:#1c1038,stroke:#6e40c9,color:#a371f7
+    classDef supportStyle fill:#161b22,stroke:#30363d,color:#8b949e
+
+    class macos,ios,android,webui clientStyle
+    class GW_WS,GW_RT,GW_AU,GW_CF,GW_HE,GW_HK gatewayStyle
+    class AE_AR,AE_RN,AE_TC,AE_SK,AE_SB agentStyle
+    class CH_MR,CH_TB,CH_PL channelStyle
+    class PS_SDK,PS_REG,PS_SEC,PS_CRN pluginStyle
+    class EXT_AI,EXT_SR,EXT_ME,EXT_SP,EXT_GW,EXT_MO extStyle
+    class SUP_MD,SUP_CT,SUP_MM,SUP_CL,SUP_TU,SUP_SC supportStyle
