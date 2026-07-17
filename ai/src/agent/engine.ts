@@ -17,6 +17,7 @@
 import { streamCompletion, type ChatMessage, type RawToolCall, type Completion } from '../llm.js'
 import { TOOL_SCHEMAS, runTool, describeToolCall, summarizeToolFailure, type ToolContext } from '../tools.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
+import { verifyFinalResult, verifyToolResult, type VerifyResult } from './verify.js'
 
 export type AgentEvent =
   // 流式文本增量：给终端做实时显示；channel（QQ/微信）按段发送，忽略它。
@@ -42,6 +43,16 @@ export type EngineDeps = CompactDeps & {
   depth?: number
   /** 关掉上下文压缩（默认开启）。 */
   noCompact?: boolean
+  /**
+   * 验证级别：
+   *   0 = 关闭所有验证
+   *   1 = 仅最终核验（#1）：主循环结束后对比原始需求与最终交付，不通过则打回修正
+   *   2 = 全开（#1 + #2）：最终核验 + 每次工具调用结果校验
+   * 默认 0（关闭）。
+   */
+  verifyLevel?: 0 | 1 | 2
+  /** 最终核验最多重试次数，默认 2。 */
+  maxVerifyRetries?: number
 }
 
 /**
@@ -108,6 +119,18 @@ export async function* runAgent(
   const MAX_OUTPUT_RECOVERY = 3
   let outputRecovery = 0
   let reactiveCompactAttempted = false
+
+  // 验证闸：级别 & 最终核验重试次数
+  const verifyLevel = deps.verifyLevel ?? 0
+  const maxVerifyRetries = deps.maxVerifyRetries ?? 2
+  let verifyRetries = 0
+  const verifyDeps = {
+    apiKey: deps.apiKey,
+    model: deps.model,
+    baseURL: deps.baseURL,
+    provider: deps.provider,
+    signal: deps.signal,
+  }
 
   for (let step = 0; step < maxSteps; step++) {
     // ⓪ 用户已中断（Esc/Ctrl+C）：立刻收手，别再压缩历史或发起下一次模型调用。
@@ -193,6 +216,18 @@ export async function* runAgent(
         // 工具结果只回灌给模型，用户看不到——失败时把原因冒泡成一条进度行，省得「报错没说为什么」。
         const fail = summarizeToolFailure(call.function.name, result)
         if (fail) yield { type: 'tool', name: call.function.name, summary: `✗ ${fail}` }
+
+        // #2 级验证：工具结果校验（仅 verifyLevel >= 2 时开启）
+        if (verifyLevel >= 2) {
+          const tv = await verifyToolResult(call.function.name, result, verifyDeps)
+          if (!tv.pass) {
+            history.push({
+              role: 'system',
+              content: `【核验提示】工具 ${call.function.name} 的结果可能有问题：${tv.feedback}。如果确实有问题请修正，没问题则忽略此提示继续。`,
+            })
+            yield { type: 'tool', name: 'verify', summary: `⚠ ${call.function.name}: ${tv.feedback}` }
+          }
+        }
       }
       continue
     }
@@ -209,6 +244,31 @@ export async function* runAgent(
       })
       yield { type: 'tool', name: 'system', summary: `↻ 输出被截断，自动续写（第 ${outputRecovery} 次）` }
       continue
+    }
+
+    // #1 级验证：最终核验 — 对比原始需求与最终交付，不通过则打回修正
+    if (verifyLevel >= 1 && verifyRetries < maxVerifyRetries) {
+      yield { type: 'tool', name: 'verify', summary: '🔍 正在核验最终结果…' }
+      const v: VerifyResult = await verifyFinalResult(history, verifyDeps)
+      if (!v.pass) {
+        verifyRetries++
+        const issueList = v.issues.length ? v.issues.map((s, i) => `${i + 1}. ${s}`).join('\n') : v.suggestion
+        history.push({
+          role: 'user',
+          content:
+            `【核验反馈】你的回答可能未完全满足原始需求（得分 ${v.score}/100）。\n` +
+            `问题：\n${issueList}\n\n` +
+            `建议：${v.suggestion}\n\n` +
+            `请针对上述问题修正后重新给出最终结果。如果认为自己的答案是对的，也可以说明理由。`,
+        })
+        yield {
+          type: 'tool',
+          name: 'verify',
+          summary: `↻ 核验不通过（${v.score}/100），第 ${verifyRetries} 次修正`,
+        }
+        continue
+      }
+      yield { type: 'tool', name: 'verify', summary: `✓ 核验通过（${v.score}/100）` }
     }
 
     return // 正常完成

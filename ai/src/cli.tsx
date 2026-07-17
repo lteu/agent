@@ -33,10 +33,19 @@ import {
 import { sendMail } from './smtp.js'
 import { getQuotes, formatQuote } from './stocks.js'
 import { runAgent } from './agent/engine.js'
+import { formatWorkedFor } from './duration.js'
 import { buildSystemPrompt } from './agent/session.js'
 import { loadSkills, readSkill, scaffoldSkill } from './skills.js'
 import { logChat, writeLogBanner } from './agent/chatlog.js'
 import { writeCrash } from './crashlog.js'
+
+/** 把环境变量字符串转成验证级别（0|1|2），无效值返回 undefined（走 engine 默认值）。 */
+function parseVerifyLevel(raw: string | undefined): 0 | 1 | 2 | undefined {
+  if (raw == null || raw === '') return undefined
+  const n = Number(raw)
+  if (n === 0 || n === 1 || n === 2) return n
+  return undefined
+}
 
 // 启动时写 banner，快速确认日志系统运行
 writeLogBanner('terminal', `ai 终端启动，工作目录: ${process.cwd()}`)
@@ -97,10 +106,15 @@ if (argv[0] === '--help' || argv[0] === '-h') {
     ai --set-key <你的-key>
 
 配置（优先级从高到低）:
-  环境变量 AI_API_KEY / AI_MODEL / AI_BASE_URL / AI_PROVIDER
+  环境变量 AI_API_KEY / AI_MODEL / AI_BASE_URL / AI_PROVIDER / AI_VERIFY_LEVEL
   （兼容旧名 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL）
   配置文件 ${CONFIG_PATH}
   代码默认值
+
+验证级别（AI_VERIFY_LEVEL）:
+  0 = 关闭所有验证
+  1 = 仅最终核验：回答结束后对比原始需求，不通过则自动修正
+  2 = 全开：最终核验 + 每次工具调用结果校验
 
 对话框内命令:
   /models           列出已保存的模型预设
@@ -459,12 +473,14 @@ if (argv[0] === 'ask') {
   ]
 
   const answers: string[] = []
+  const startedAt = Date.now()
   try {
     for await (const ev of runAgent(history, {
       apiKey: cfg.apiKey,
       model: cfg.model,
       baseURL: cfg.baseURL,
       provider: cfg.provider,
+      verifyLevel: parseVerifyLevel(process.env.AI_VERIFY_LEVEL),
     })) {
       if (ev.type === 'text') {
         answers.push(ev.content)
@@ -476,6 +492,7 @@ if (argv[0] === 'ask') {
     }
     const answer = answers.join('\n')
     console.log(answer)
+    console.error(formatWorkedFor(Date.now() - startedAt))
     logChat({ channel: 'terminal', sessionId: 'ask', question, answer })
     process.exit(0)
   } catch (e: any) {
@@ -609,11 +626,11 @@ const MessageRow = memo(({ role, content, gap }: { role: string; content: string
     )
   }
   if (role === 'tool') {
-    // 失败行（✗ 开头）用红色凸显，普通进度行维持暗黄。
+    // 失败行（✗ 开头）使用较柔和的 warning 黄，普通进度行维持暗黄。
     const failed = content.startsWith('✗')
     return (
       <Box marginBottom={0}>
-        <Text color={failed ? 'red' : 'yellow'} dimColor={!failed}>
+        <Text color="yellow" dimColor={!failed}>
           {failed ? '' : '⚙ '}{content}
         </Text>
       </Box>
@@ -787,6 +804,7 @@ function App() {
       }
 
       setBusy(true)
+      const startedAt = Date.now()
 
       const history = historyRef.current
       history.push({ role: 'user', content: text })
@@ -814,6 +832,7 @@ function App() {
           baseURL: modelConfig.baseURL,
           provider: modelConfig.provider,
           signal: controller.signal,
+          verifyLevel: parseVerifyLevel(process.env.AI_VERIFY_LEVEL),
         })) {
           if (ev.type === 'delta') {
             // 流式增量：拼到尾巴上，每凑满一整行（遇 \n）就立刻沉淀进 Static 历史，
@@ -842,6 +861,7 @@ function App() {
             pushRow('tool', ev.summary)
           }
         }
+        pushRow('tool', formatWorkedFor(Date.now() - startedAt), true)
         logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: answers.join('\n') })
       } catch (e: any) {
         if (controller.signal.aborted) {

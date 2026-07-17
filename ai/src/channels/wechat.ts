@@ -21,6 +21,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createHash, createDecipheriv } from 'node:crypto'
 import { runAgent } from '../agent/engine.js'
 import { isStopCommand } from './stopwords.js'
+import { formatWorkedFor } from '../duration.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadWechatConfig } from '../config.js'
@@ -154,6 +155,7 @@ export function startWechat(): void {
       return
     }
     busy.add(sessionId)
+    const startedAt = Date.now()
     const controller = new AbortController()
     controllers.set(sessionId, controller)
     const history = sessions.get(sessionId)
@@ -172,6 +174,7 @@ export function startWechat(): void {
         }
       }
       if (!said) await sendText(fromUser, '(已完成，无文字输出)')
+      await sendText(fromUser, formatWorkedFor(Date.now() - startedAt))
       logChat({ channel: 'wechat', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {

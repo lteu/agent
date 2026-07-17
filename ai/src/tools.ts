@@ -881,6 +881,7 @@ export async function runTool(
         signal: ctx.signal,
         maxSteps: 15,
         depth: (ctx.depth ?? 0) + 1,
+        verifyLevel: 0, // 子 agent 默认关闭验证，避免递归成本爆炸
       })) {
         if (ev.type === 'text' && ev.content) texts.push(ev.content)
       }

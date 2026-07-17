@@ -24,6 +24,7 @@ import { loadConfig, loadQQConfig, loadDoubaoTtsConfig } from '../config.js'
 import { synthesizeWav } from '../tts.js'
 import { synthesizeDoubaoWav } from '../doubao.js'
 import { keepAwake } from '../keepawake.js'
+import { formatWorkedFor } from '../duration.js'
 
 type Target = { kind: 'group'; id: string } | { kind: 'c2c'; id: string }
 
@@ -130,7 +131,7 @@ export function startQQ(): void {
   // 每个在跑会话的「最新进度」：begin=任务开始时刻，text/at=最后一条工具进度及其时刻。
   // 用户在任务进行中再发消息时，回这条最新进度（而非干巴巴的「还在处理中」）。
   const progress = new Map<string, { begin: number; text: string; at: number }>()
-  const elapsed = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`)
+  const elapsed = (ms: number) => formatWorkedFor(ms).slice('Worked for '.length)
 
   const authHeader = async () => ({ Authorization: `QQBot ${await tokens.get()}`, 'Content-Type': 'application/json' })
 
@@ -354,7 +355,8 @@ export function startQQ(): void {
       return
     }
     busy.add(sessionId)
-    progress.set(sessionId, { begin: Date.now(), text: '正在思考…', at: Date.now() })
+    const startedAt = Date.now()
+    progress.set(sessionId, { begin: startedAt, text: '正在思考…', at: startedAt })
     const controller = new AbortController()
     controllers.set(sessionId, controller)
 
@@ -426,6 +428,7 @@ export function startQQ(): void {
         }
       }
       if (!said) await sendReply(target, msgId, '(已完成，无文字输出)')
+      await sendReply(target, msgId, formatWorkedFor(Date.now() - startedAt))
       logChat({ channel: 'qq', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {

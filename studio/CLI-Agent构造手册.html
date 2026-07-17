@@ -195,6 +195,63 @@
     padding:13px 18px;margin:18px 0;color:var(--ink);font-size:14px;max-width:760px}
   .callout b{color:var(--accent)}
 
+  /* ---------- harness formula ---------- */
+  .formula{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:28px 32px;margin:24px 0;max-width:720px;text-align:center;
+    border-top:3px solid var(--accent)}
+  .formula .eq{font-family:var(--mono);font-size:22px;font-weight:600;color:var(--ink);
+    letter-spacing:.5px;margin-bottom:10px}
+  .formula .eq .llm{color:var(--oc)}
+  .formula .eq .plus{color:var(--muted);margin:0 10px;font-weight:400}
+  .formula .eq .harness{color:var(--accent)}
+  .formula .eq .eqsign{color:var(--muted);margin:0 14px;font-weight:400}
+  .formula .quote{font-family:var(--mono);font-size:12.5px;color:var(--muted);
+    margin-top:14px;padding-top:14px;border-top:1px dashed var(--line);font-style:italic}
+  .formula .quote b{color:var(--accent);font-style:normal}
+
+  /* ---------- harness vs framework ---------- */
+  .hvf{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0}
+  .hvf .side{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 22px}
+  .hvf .side.framework{border-top:3px solid var(--oc)}
+  .hvf .side.harness{border-top:3px solid var(--accent)}
+  .hvf .side h4{margin:0 0 4px;font-size:16px;font-family:var(--mono)}
+  .hvf .side .sub{font-size:12px;color:var(--muted);font-family:var(--mono);
+    letter-spacing:1px;text-transform:uppercase;margin-bottom:12px}
+  .hvf .side ul{margin:0;padding-left:18px;font-size:13.5px;color:var(--ink)}
+  .hvf .side li{margin:5px 0}
+  .hvf .side .example{margin-top:10px;font-size:12px;color:var(--muted);font-family:var(--mono)}
+  .hvf .side .example b{color:var(--ink)}
+
+  /* ---------- reliability math ---------- */
+  .reliability{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:20px 24px;margin:18px 0;display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+  .reliability .big{font-family:var(--mono);font-size:34px;font-weight:700;color:#A9433C;line-height:1}
+  .reliability .big small{display:block;font-size:12px;font-weight:400;color:var(--muted);
+    margin-top:4px;letter-spacing:1px}
+  .reliability .desc{flex:1;min-width:240px;font-size:13.5px;color:var(--ink)}
+  .reliability .desc b{color:var(--accent)}
+
+  /* ---------- context rot callout ---------- */
+  .rot-box{background:#FAEFEA;border:1px solid #E8C4B0;border-left:3px solid #B85C36;
+    border-radius:0 8px 8px 0;padding:14px 18px;margin:16px 0;max-width:760px}
+  .rot-box .t{font-weight:600;color:#8B3A1E;font-size:14px;margin-bottom:4px;
+    font-family:var(--mono);letter-spacing:.5px}
+  .rot-box .d{font-size:13.5px;color:var(--ink)}
+
+  /* ---------- verif-badge ---------- */
+  .verif-badge{display:inline-block;font-family:var(--mono);font-size:10.5px;
+    letter-spacing:1px;text-transform:uppercase;padding:2px 8px;border-radius:4px;
+    background:#DEEEE1;color:var(--pi);border:1px solid #9BCBAE;margin-left:8px;vertical-align:middle}
+
+  /* ---------- phase 4-col ---------- */
+  .phase-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}
+  .phase-grid .ph{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 14px}
+  .phase-grid .ph .n{font-family:var(--mono);font-size:11px;color:var(--accent);
+    letter-spacing:1px;margin-bottom:4px}
+  .phase-grid .ph .t{font-weight:600;font-size:13px;margin-bottom:4px}
+  .phase-grid .ph .d{font-size:12px;color:var(--muted);line-height:1.6}
+  @media (max-width:860px){.phase-grid{grid-template-columns:1fr 1fr}}
+
   footer{margin-top:70px;padding:28px 0 40px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
   footer .paths{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:2;white-space:pre-line}
 
@@ -216,7 +273,7 @@
   <div class="hero-inner">
     <p class="eyebrow">Agent Engineering · 内部分享</p>
     <h1>CLI Agent 构造手册</h1>
-    <p class="sub">拆开四个真实项目的引擎盖，看看"终端里的智能体"到底是怎么拼出来的——原理、六个必备构件、以及一份能自己动手跑起来的最小实现。</p>
+    <p class="sub">拆开四个真实项目的引擎盖，看看"终端里的智能体"到底是怎么拼出来的——<b>AI Agent = Raw LLM + Agent Harness</b>，核心循环、六个必备构件、从 Demo 到生产级的加固路径，以及一份能自己动手跑起来的最小实现。</p>
     <div class="meta">
       <span>案例源码：</span>
       <span class="chip cc">claudecode</span>
@@ -251,6 +308,26 @@
       <p style="color:var(--muted);font-size:13px;margin-top:10px">活在你的文件系统和 shell 里，能循环很多轮，直到模型自己觉得任务完成。</p>
     </div>
   </div>
+
+  <div class="formula">
+    <div class="eq">
+      <span class="agent-text" style="color:var(--ink)">AI Agent</span>
+      <span class="eqsign">=</span>
+      <span class="llm">Raw LLM Model</span>
+      <span class="plus">+</span>
+      <span class="harness">Agent Harness</span>
+    </div>
+    <p style="color:var(--muted);font-size:13px;margin:6px 0 0">模型只负责"生成文字"。Harness 负责让它在真实环境里可靠地跑完任务。</p>
+    <div class="quote">
+      行业里有一句话说清了这件事：<br>
+      <b>"The model is commodity. The harness is moat."</b>
+      <span style="display:block;margin-top:6px;font-style:normal;font-size:11.5px;color:var(--muted)">
+        — Dr. Sarah Chen, Harness Engineering
+      </span>
+    </div>
+  </div>
+
+  <p class="lead" style="margin-top:30px">换个比方：大模型是一匹力气很大的马，但它不知道方向、不知道边界、也不知道什么时候该停。<b>Harness（马具）就是缰绳、马鞍和笼头</b>——把原始能力引导成可控、有用的工作。Hugging Face 的 Phil Schmid 说得更直白：<b>模型是 CPU，Harness 是操作系统</b>——CPU 只管执行指令，内存管理、权限控制、错误恢复全靠 OS。没有 OS 的 CPU 只是个发热体；没有 Harness 的模型只是个 Demo。</p>
 </section>
 
 <!-- ===================== 1. Agent Loop ===================== -->
@@ -363,6 +440,61 @@
 </section>
 
 <!-- ===================== 2. 六大构件 ===================== -->
+<!-- ===================== 1B. Agent Harness：从 Demo 到生产的鸿沟 ===================== -->
+<section>
+  <div class="section-head"><p class="sec-eyebrow"><b>01B</b></p>
+    <h2>Agent Harness：为什么 Demo 好用，生产就崩</h2>
+    <span class="section-note">概念补充</span>
+  </div>
+
+  <p class="lead">所有 CLI agent 都跑在同一个循环上，但"能跑的循环"和"生产环境里不崩的循环"之间，差的就是 <b>Agent Harness</b>——包裹着模型和循环的那层基础设施。这一层不是锦上添花，而是可靠性的来源。</p>
+
+  <div class="reliability">
+    <div class="big">36%<small>20 步 × 每步 95%</small></div>
+    <div class="desc">
+      <b>可靠性数学就是这么残酷。</b>假设 agent 每一步的成功率是 95%——听起来已经很靠谱了——但只要任务链条有 20 步，端到端成功率就会跌到 <b>36%</b>。这就是为什么团队总说"agent 95% 时间都好使"，但真实任务有三分之一会失败。
+      <br><br>
+      Harness 干的事，就是通过<b>验证循环、重试策略、断点续跑</b>，把这个复利式的失败率拉回可接受的水平。
+    </div>
+  </div>
+
+  <div class="callout">
+    <b>Vercel 悖论：</b>他们在做 v0 编码 agent 时发现，<b>砍掉 80% 的工具，效果反而变好了</b>。工具越多，模型越容易选错，错误越多，任务越失败。Harness 的工具编排层要做的不是"给模型更多选择"，而是<b>根据任务阶段动态收窄可选范围</b>——规划阶段不需要写文件权限，编码阶段不需要全网搜索。<b>能力更少，可靠性更高。</b>
+  </div>
+
+  <h3 style="margin-top:28px">Harness 不是 Framework：蓝图 vs 车间</h3>
+  <p>两个词经常被混用，但说的不是一回事：</p>
+
+  <div class="hvf">
+    <div class="side framework">
+      <h4 style="color:var(--oc)">Agent Framework</h4>
+      <div class="sub">构建时组件 · 蓝图和建材</div>
+      <ul>
+        <li>提供零件：提示词模板、工具抽象、内存接口、agent 循环</li>
+        <li>帮你"把 agent 拼出来"</li>
+        <li>面向开发者，关注设计与实现阶段</li>
+      </ul>
+      <div class="example">代表：<b>LangChain / CrewAI / AutoGen</b></div>
+    </div>
+    <div class="side harness">
+      <h4 style="color:var(--accent)">Agent Harness</h4>
+      <div class="sub">运行时环境 · 工厂车间</div>
+      <ul>
+        <li>管执行：上下文怎么进、工具怎么验、失败了怎么办、什么时候叫人</li>
+        <li>让 agent"在生产里跑得稳"</li>
+        <li>面向基础设施，关注部署与运维阶段</li>
+      </ul>
+      <div class="example">代表：<b>Claude Agent SDK / Codex Harness</b></div>
+    </div>
+  </div>
+
+  <p>实际项目里两者经常都用——用 Framework 搭骨架，用 Harness 管住运行。但很多团队跳过了 Harness 这一步，直接把 Framework 拼出来的 agent 扔去生产，那就是后面所有故障的起点。</p>
+
+  <div class="callout" style="margin-top:24px">
+    <b>一个有说服力的例子：</b>同一个 Claude 模型，同时驱动着聊天界面、Claude Code 终端编码助手、企业 API 集成。<b>权重完全一样，表现天差地别</b>。差别就在 Harness——Claude Code 的 Harness 管文件系统、管终端会话、管验证循环、管跨会话状态；聊天界面的 Harness 只管对话历史和安全过滤。模型没变，周围的架构改变了一切。
+  </div>
+</section>
+
 <section>
   <div class="section-head"><p class="sec-eyebrow"><b>02</b></p>
     <h2>把 Agent Loop 拆成六个可以单独理解的构件</h2>
@@ -489,6 +621,68 @@
     <tr><td class="feat">多模型 Provider</td><td class="dot-no">— 绑定 Claude API</td><td class="dot-yes">✓ 18+ providers</td><td class="dot-yes">✓ 30+ providers（独立 ai 包）</td><td class="dot-no">— 依赖网关配置</td></tr>
     <tr><td class="feat">多渠道接入（IM 等）</td><td class="dot-no">—</td><td class="dot-yes">✓ Gateway + 82 个插件</td><td class="dot-no">—</td><td class="dot-yes">✓ Telegram/Slack/微信/QQ/iMessage…</td></tr>
   </table>
+  </div>
+
+  <hr class="div">
+
+  <h3 style="margin-top:34px">Harness 视角：六个构件，为什么缺了 Verification 不行</h3>
+  <p>上面六个构件是从"自己动手实现时会遇到的顺序"来拆的。如果换一个角度——从 <b>Agent Harness 的经典六组件框架</b>（Context / Tools / State / Verification / Human-in-the-loop / Lifecycle）来对照，会发现上面的清单里少了一个最有杠杆效应的东西：</p>
+
+  <div class="callout">
+    <b>验证循环（Verification Loop）</b>是所有 Harness 组件里<b>投入产出比最高</b>的一项——团队报告说加上结构化验证后，任务完成率从 83% 提到了 96%，<b>模型没变，Harness 变了</b>。
+    <br><br>
+    模式很简单：agent 产出结果 → 验证层按规则检查 → 通过就往下走，不通过就打回重试或升级。每次工具调用后验 schema、写代码后跑测试、发消息前查格式——这些静默失败如果不在每一步拦住，就会在多步执行后复利式地放大。
+  </div>
+
+  <p style="margin-top:18px">两套框架的对应关系：</p>
+
+  <div class="tblwrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Harness 经典六组件</th>
+          <th style="width:18%">对应本册构件</th>
+          <th>一句话解释</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="feat">1. Context Engineering<br><span style="font-weight:400;color:var(--muted);font-size:12px">上下文工程</span></td>
+          <td>构件 03 + 04<br><span style="font-size:12px;color:var(--muted)">系统提示词 + 上下文压缩</span></td>
+          <td>决定模型每一步"看到什么"——不只是提示词，还包括检索文档、历史消息、工具输出、环境状态的全链路管理。核心矛盾是上下文窗口有限，得主动决定留什么、总结什么、丢什么。</td>
+        </tr>
+        <tr>
+          <td class="feat">2. Tool Orchestration<br><span style="font-weight:400;color:var(--muted);font-size:12px">工具编排</span></td>
+          <td>构件 02<br><span style="font-size:12px;color:var(--muted)">工具注册表</span></td>
+          <td>不只是"有哪些工具"，还包括<b>按任务阶段动态收窄工具集</b>、参数校验、沙箱执行、超时管理、错误处理。Vercel 砍掉 80% 工具反而更好，就是这层的价值。</td>
+        </tr>
+        <tr>
+          <td class="feat">3. State &amp; Memory<br><span style="font-weight:400;color:var(--muted);font-size:12px">状态与记忆</span></td>
+          <td>构件 04（部分）<br><span style="font-size:12px;color:var(--muted)">上下文压缩 + 跨会话</span></td>
+          <td>跑几分钟甚至几小时的 agent 需要<b>持久化状态 + 断点续跑</b>——崩溃了能从上次检查点恢复，而不是从头再来。跨会话记忆（progress file、会话笔记）也属于这一层。</td>
+        </tr>
+        <tr>
+          <td class="feat" style="background:#DEEEE1">4. Verification &amp; Safety<br><span style="font-weight:400;color:var(--muted);font-size:12px">验证与安全 <span class="verif-badge">新增</span></span></td>
+          <td style="background:#E8F3EA">— 本册未单列 —<br><span style="font-size:12px;color:var(--muted)">散见于权限/钩子</span></td>
+          <td><b>单步 ROI 最高的 Harness 组件。</b>每次工具调用后验证输出 schema、写代码后跑测试、提交前过 linter——把静默失败拦在每一步，不让错误复利累积。OpenAI Codex Harness 靠闭环验证跑出了 100 万行 agent 生成的代码。</td>
+        </tr>
+        <tr>
+          <td class="feat">5. Human-in-the-Loop<br><span style="font-weight:400;color:var(--muted);font-size:12px">人机协同</span></td>
+          <td>构件 05<br><span style="font-size:12px;color:var(--muted)">权限与审批</span></td>
+          <td>高风险操作（删数据、发消息、动钱、改基础设施）要过审批闸门。关键是校准：闸门太多不如手动做，太少等于裸奔。好的 Harness 从紧开始，随着对 agent 的信心建立逐步放松。</td>
+        </tr>
+        <tr>
+          <td class="feat">6. Lifecycle Management<br><span style="font-weight:400;color:var(--muted);font-size:12px">生命周期管理</span></td>
+          <td>构件 06（部分）<br><span style="font-size:12px;color:var(--muted)">进阶能力</span></td>
+          <td>生产级 agent 不是请求-响应函数，是长跑进程——需要健康检查（是不是卡循环了？）、资源限制（最大 token/最大时长）、优雅停机（存状态、放资源）、崩溃恢复（检测失败 → 读检查点 → 退避重试）。</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="rot-box" style="margin-top:24px">
+    <div class="t">⚠ Context Rot（上下文腐烂）</div>
+    <div class="d">长跑 agent 最隐蔽的失败模式：跨多轮多会话后，上下文逐渐堆满噪音、过期工具输出、已解决的错误、被推翻的决策——模型慢慢分不清什么是当前的、什么是重要的，就像一个连续加班的工程师还在干活，但已经不在状态了。<b>Anthropic 的解法是双 agent 模式</b>：每次会话启动时用一个"初始化 agent"重新整理上下文（相当于医院交接班），而不是把昨天的聊天记录原样塞回去。</div>
   </div>
 </section>
 
@@ -669,7 +863,37 @@ TOOLS = {
     <h2>从 MVP 到生产级：加固清单</h2>
     <span class="section-note">清单</span>
   </div>
-  <p class="lead">按"什么时候会痛"来排序，痛了再加，不必一开始就全都做。</p>
+  <p class="lead">
+  <p class="lead" style="margin-top:6px">Harness 不是一口气堆出来的，是跟着 agent 的失败模式长出来的。业界的典型路径是四个阶段——<b>从最高回报率的验证循环开始</b>，按需往下加：</p>
+
+  <div class="phase-grid">
+    <div class="ph">
+      <div class="n">PHASE 01</div>
+      <div class="t">验证循环</div>
+      <div class="d">在不可逆动作前加一道检查——跑测试、验 schema、第二模型复核。单位工程小时可靠性提升最高。</div>
+    </div>
+    <div class="ph">
+      <div class="n">PHASE 02</div>
+      <div class="t">状态持久化</div>
+      <div class="d">每步成功后写检查点。崩溃了从断点续跑，不用重来。故障时 token 成本省 30–50%。</div>
+    </div>
+    <div class="ph">
+      <div class="n">PHASE 03</div>
+      <div class="t">可观测性</div>
+      <div class="d">每次工具调用/模型调用/决策点都打 trace。看板看完成率、失败模式、成本趋势。别等用户投诉才发现问题。</div>
+    </div>
+    <div class="ph">
+      <div class="n">PHASE 04</div>
+      <div class="t">人机协同闸门</div>
+      <div class="d">破坏性/对外/昂贵操作走审批。从紧开始，对具体类别建立信心后逐步放松。生产安全网。</div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <b>一个重要提醒：</b>Martin Fowler 团队有记录——<b>Harness 的工程量通常比 agent 逻辑本身还大</b>。生产级 Harness 以月计，不是天计。排期的时候留够预算。
+  </div>
+
+  <h3 style="margin-top:28px">按"什么时候会痛"来排序，痛了再加，不必一开始就全都做。</p>
 
   <div class="checklist">
     <div class="chk"><div class="box"></div><div><div class="t">对话开长了会报错 / 变慢 → 加上下文压缩</div><div class="d">先截断超大工具输出，再轻量剪枝，最后才用模型自我总结（构件 04）。</div></div></div>
@@ -840,7 +1064,13 @@ pi              → /studio/pi
 hermes-agent    → /studio/hermes-agent
 issues 调研原文  → /studio/ISSUES.md , /studio/summary.md
   </div>
-  <p style="margin-top:14px">由 Claude Code 协助整理 · 2026-07-13</p>
+  <p style="margin-top:14px">由 Claude Code 协助整理 · 2026-07-13
+<br><br>
+<span style="color:var(--muted)">补充概念参考：</span>
+<br>
+<span style="font-family:var(--mono);font-size:12px;color:var(--muted)">
+The Complete Guide to Agent Harness · Dr. Sarah Chen · harness-engineering.ai
+</span></p>
 </footer>
 
 </div>
