@@ -115,10 +115,12 @@ export async function* runAgent(
     }
   }
 
-  // 恢复闸的状态：输出截断续写次数、本轮是否已做过被动压缩。
+  // 恢复闸的状态：输出截断续写次数、本轮是否已做过被动压缩、网络中断已重试次数。
   const MAX_OUTPUT_RECOVERY = 3
+  const MAX_NETWORK_RETRY = 3
   let outputRecovery = 0
   let reactiveCompactAttempted = false
+  let networkRetry = 0
 
   // 验证闸：级别 & 最终核验重试次数
   const verifyLevel = deps.verifyLevel ?? 0
@@ -194,11 +196,25 @@ export async function* runAgent(
           continue
         }
       }
+      // 网络类瞬时错误（长连接被服务端/代理中途掐断，Node fetch 典型报 "terminated"，
+      // 也可能是 socket hang up / ECONNRESET 等）：退避后原样重试本轮请求，
+      // 不把这类对用户毫无意义的英文底层错误直接甩出去。
+      if (!deps.signal?.aborted && networkRetry < MAX_NETWORK_RETRY && isTransientNetworkError(e)) {
+        networkRetry++
+        yield {
+          type: 'tool',
+          name: 'system',
+          summary: `⚠ 网络连接中断，重试中（${networkRetry}/${MAX_NETWORK_RETRY}）…`,
+        }
+        await sleep(500 * networkRetry)
+        continue
+      }
       throw e // 不可恢复（含用户 abort）→ 抛给上层显示/反馈
     }
 
     const { content, toolCalls, finishReason } = completion
     reactiveCompactAttempted = false // 本轮模型成功应答 → 重置被动压缩闸
+    networkRetry = 0 // 本轮模型成功应答 → 重置网络重试闸
 
     // 收口：把整轮文本作为一段 text 产出（若前面因工具已收口过则不重复）。
     yield* flushText()
@@ -297,6 +313,30 @@ function isContextOverflow(e: any): boolean {
   }
   // token 与 exceed/超出 类词汇彼此邻近出现，视为「token 超限」的兜底判定。
   return /token[a-z]*[^.]{0,40}(exceed|too many|超出|超限)|(exceed|超出|超限)[^.]{0,40}token/.test(msg)
+}
+
+/**
+ * 判断一个错误是不是「网络/连接类瞬时故障」（可安全重试）：
+ * 长连接被服务端/代理中途掐断时，Node 内置 fetch（undici）典型报 TypeError('terminated')，
+ * 其 cause 常是 SocketError('other side closed')；此外 socket hang up / ECONNRESET /
+ * ETIMEDOUT 等也归为同类——都不是模型或参数的问题，重试大概率能恢复。
+ */
+function isTransientNetworkError(e: any): boolean {
+  const code = String(e?.cause?.code ?? e?.code ?? '')
+  if (/^(ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)$/.test(
+      code,
+    )
+  ) {
+    return true
+  }
+  const msg = String(e?.message ?? e).toLowerCase() + ' ' + String(e?.cause?.message ?? '').toLowerCase()
+  return /terminated|fetch failed|socket hang up|other side closed|premature close|network error|econnreset|etimedout/.test(
+    msg,
+  )
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function safeArgs(raw: string): Record<string, any> {
