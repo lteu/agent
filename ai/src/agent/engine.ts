@@ -11,7 +11,7 @@
 //
 // 本轮相较最初的「非流式 for 循环」升级了三处（对标 Claude Code）：
 //   1. 模型调用改为流式 streamCompletion，文本边出边产出 delta；
-//   2. StreamingToolExecutor —— 工具在「模型还在输出」时就并发开跑；
+//   2. 工具调用在流式阶段收集，待完整响应落入历史后再执行，避免流失败重试造成副作用重复；
 //   3. 每轮开头按需做上下文压缩 compactInPlace。
 
 import { streamCompletion, type ChatMessage, type RawToolCall, type Completion } from '../llm.js'
@@ -28,10 +28,28 @@ export type AgentEvent =
   // 撞到最大步数：不直接结束，而是问一句「要不要继续」，由消费方提示用户回复「继续」接着跑。
   | { type: 'limit'; steps: number }
 
+export type AgentTerminationErrorCode =
+  | 'empty_response'
+  | 'content_filtered'
+  | 'output_recovery_exhausted'
+  | 'unexpected_finish_reason'
+
+/** 模型没有以可接受的终止状态结束时抛出，供 CLI/channel 区分协议错误与普通网络错误。 */
+export class AgentTerminationError extends Error {
+  constructor(
+    public readonly code: AgentTerminationErrorCode,
+    message: string,
+    public readonly finishReason?: string,
+  ) {
+    super(message)
+    this.name = 'AgentTerminationError'
+  }
+}
+
 /** 由具体 channel 注入的额外工具（如 QQ 的 send_image），与内置工具合并提供给模型。 */
 export type ExtraTools = {
   schemas: readonly { function: { name: string } }[]
-  run: (name: string, args: Record<string, any>) => Promise<string> | string
+  run: (name: string, args: Record<string, any>, signal?: AbortSignal) => Promise<string> | string
 }
 
 export type EngineDeps = CompactDeps & {
@@ -56,28 +74,64 @@ export type EngineDeps = CompactDeps & {
 }
 
 /**
- * 流式工具执行器：拿到一个工具调用就「立刻开跑」（不 await），把进行中的 Promise 记下来；
- * 等本轮模型流结束后再 drain()，按提交顺序回收结果。
- * 效果 = 模型还在吐后续 token / 后续工具调用时，先到的工具已经在并发执行了。
+ * 工具执行器：流式阶段只收集调用，不执行；完整 assistant 响应成功写入历史后，
+ * 由 start() 统一启动。这样如果流在中途断开并触发重试，失败尝试里已经出现的
+ * write_file / run_bash / send_email 等调用不会留下未记录的副作用，更不会在重试时重复执行。
  */
-class StreamingToolExecutor {
-  private running: { call: RawToolCall; promise: Promise<string> }[] = []
-  constructor(private exec: (call: RawToolCall) => Promise<string>) {}
+class DeferredToolExecutor {
+  private queued: RawToolCall[] = []
+  private running: { call: RawToolCall; promise: Promise<string> }[] | null = null
+  private readonly abortController = new AbortController()
+  private detachParentAbort?: () => void
 
-  /** 收到一个已组装完整的工具调用：立即启动执行。 */
+  constructor(
+    private exec: (call: RawToolCall, signal: AbortSignal) => Promise<string>,
+    private readonly parentSignal?: AbortSignal,
+  ) {}
+
+  /** 收到一个已组装完整的工具调用：只排队，暂不产生副作用。 */
   add(call: RawToolCall): void {
-    this.running.push({ call, promise: this.exec(call) })
+    if (this.running) throw new Error('工具执行已开始，不能继续添加调用')
+    this.queued.push(call)
   }
 
   get size(): number {
-    return this.running.length
+    return this.queued.length
+  }
+
+  /** assistant 响应已成功提交后，统一启动本批工具。 */
+  start(): void {
+    if (this.running) return
+    if (this.parentSignal?.aborted) {
+      this.abortController.abort(this.parentSignal.reason)
+    } else if (this.parentSignal) {
+      const onAbort = () => this.abortController.abort(this.parentSignal!.reason)
+      this.parentSignal.addEventListener('abort', onAbort, { once: true })
+      this.detachParentAbort = () => this.parentSignal!.removeEventListener('abort', onAbort)
+    }
+    this.running = this.queued.map(call => ({
+      call,
+      promise: this.exec(call, this.abortController.signal),
+    }))
   }
 
   /** 按提交顺序逐个等待并产出结果（此时它们多半早已并发跑完）。 */
   async *drain(): AsyncGenerator<{ call: RawToolCall; result: string }> {
+    if (!this.running) throw new Error('工具执行尚未启动')
     for (const r of this.running) {
       yield { call: r.call, result: await r.promise }
     }
+  }
+
+  /**
+   * 中止仍在运行的工具并等待全部 Promise 收口，防止生成器被关闭或某个步骤抛错后
+   * 留下后台 shell / 子 agent 等孤儿任务。可重复调用。
+   */
+  async cancel(reason: unknown = new DOMException('工具批次已结束', 'AbortError')): Promise<void> {
+    this.detachParentAbort?.()
+    this.detachParentAbort = undefined
+    if (!this.abortController.signal.aborted) this.abortController.abort(reason)
+    if (this.running) await Promise.allSettled(this.running.map(r => r.promise))
   }
 }
 
@@ -99,7 +153,7 @@ export async function* runAgent(
   }
 
   // 执行单个工具调用 → 纯文本结果（异常转成字符串回灌，绝不中断循环）。
-  const execTool = async (call: RawToolCall): Promise<string> => {
+  const execTool = async (call: RawToolCall, signal: AbortSignal): Promise<string> => {
     let args: Record<string, any> = {}
     try {
       args = JSON.parse(call.function.arguments || '{}')
@@ -108,8 +162,8 @@ export async function* runAgent(
     }
     try {
       return extraNames.has(call.function.name)
-        ? await deps.extraTools!.run(call.function.name, args)
-        : await runTool(call.function.name, args, toolCtx)
+        ? await deps.extraTools!.run(call.function.name, args, signal)
+        : await runTool(call.function.name, args, { ...toolCtx, signal })
     } catch (e: any) {
       return '错误: ' + (e?.message ?? String(e))
     }
@@ -118,7 +172,9 @@ export async function* runAgent(
   // 恢复闸的状态：输出截断续写次数、本轮是否已做过被动压缩、网络中断已重试次数。
   const MAX_OUTPUT_RECOVERY = 3
   const MAX_NETWORK_RETRY = 3
+  const MAX_EMPTY_RESPONSE_RECOVERY = 1
   let outputRecovery = 0
+  let emptyResponseRecovery = 0
   let reactiveCompactAttempted = false
   let networkRetry = 0
 
@@ -147,8 +203,8 @@ export async function* runAgent(
       }
     }
 
-    // ② 流式调用模型，同时用 StreamingToolExecutor 让工具「边流边跑」。
-    const executor = new StreamingToolExecutor(execTool)
+    // ② 流式调用模型。工具调用在此阶段只排队，不能提前产生副作用。
+    const executor = new DeferredToolExecutor(execTool, deps.signal)
     const stream = streamCompletion(history, {
       apiKey: deps.apiKey,
       model: deps.model,
@@ -158,13 +214,14 @@ export async function* runAgent(
       tools,
     })
 
-    let textBuf = '' // 累积本轮文本
-    let textFlushed = false // 是否已把累积文本作为一段 text 产出
+    // channel 不消费 delta，只消费 text，所以这里按「工具调用分隔出的文本段」缓存。
+    // 每次 flush 后必须清空，才能正确处理 text → tool → text → tool → text 这类交错输出。
+    let textSegment = ''
     const flushText = function* (): Generator<AgentEvent> {
-      if (textBuf && !textFlushed) {
-        textFlushed = true
-        yield { type: 'text', content: textBuf } as AgentEvent
-      }
+      if (!textSegment) return
+      const content = textSegment
+      textSegment = ''
+      yield { type: 'text', content } as AgentEvent
     }
 
     let completion: Completion
@@ -173,14 +230,14 @@ export async function* runAgent(
       while (!res.done) {
         const part = res.value
         if (part.type === 'text') {
-          textBuf += part.delta
+          textSegment += part.delta
           yield { type: 'delta', content: part.delta }
         } else {
           // 工具调用先于其后内容到达时，先把已说的文本作为一段 text 收口（保证 channel 端顺序正确）。
           yield* flushText()
           const args = safeArgs(part.call.function.arguments)
           yield { type: 'tool', name: part.call.function.name, summary: describeToolCall(part.call.function.name, args) }
-          executor.add(part.call) // ← 立即并发开跑，不等流结束
+          executor.add(part.call)
         }
         res = await stream.next()
       }
@@ -216,7 +273,7 @@ export async function* runAgent(
     reactiveCompactAttempted = false // 本轮模型成功应答 → 重置被动压缩闸
     networkRetry = 0 // 本轮模型成功应答 → 重置网络重试闸
 
-    // 收口：把整轮文本作为一段 text 产出（若前面因工具已收口过则不重复）。
+    // 收口最后一个文本段；前面遇到工具时已产出的段不会重复。
     yield* flushText()
 
     history.push({
@@ -226,40 +283,92 @@ export async function* runAgent(
     })
 
     if (executor.size) {
-      // ③ 回收并发执行的工具结果（按调用顺序回灌，满足 OpenAI 的配对要求）。
-      for await (const { call, result } of executor.drain()) {
-        history.push({ role: 'tool', tool_call_id: call.id, content: result })
-        // 工具结果只回灌给模型，用户看不到——失败时把原因冒泡成一条进度行，省得「报错没说为什么」。
-        const fail = summarizeToolFailure(call.function.name, result)
-        if (fail) yield { type: 'tool', name: call.function.name, summary: `✗ ${fail}` }
+      // assistant 响应已经完整收到并提交进历史，此时才允许工具产生副作用。
+      // 若上面的流式请求中途失败，代码不会到达这里，队列会随本轮 executor 一起丢弃。
+      executor.start()
+      try {
+        // ③ 回收并发执行的工具结果（按调用顺序回灌，满足 OpenAI 的配对要求）。
+        for await (const { call, result } of executor.drain()) {
+          history.push({ role: 'tool', tool_call_id: call.id, content: result })
+          // 工具结果只回灌给模型，用户看不到——失败时把原因冒泡成一条进度行，省得「报错没说为什么」。
+          const fail = summarizeToolFailure(call.function.name, result)
+          if (fail) yield { type: 'tool', name: call.function.name, summary: `✗ ${fail}` }
 
-        // #2 级验证：工具结果校验（仅 verifyLevel >= 2 时开启）
-        if (verifyLevel >= 2) {
-          const tv = await verifyToolResult(call.function.name, result, verifyDeps)
-          if (!tv.pass) {
-            history.push({
-              role: 'system',
-              content: `【核验提示】工具 ${call.function.name} 的结果可能有问题：${tv.feedback}。如果确实有问题请修正，没问题则忽略此提示继续。`,
-            })
-            yield { type: 'tool', name: 'verify', summary: `⚠ ${call.function.name}: ${tv.feedback}` }
+          // #2 级验证：工具结果校验（仅 verifyLevel >= 2 时开启）
+          if (verifyLevel >= 2) {
+            const tv = await verifyToolResult(call.function.name, result, verifyDeps)
+            if (!tv.pass) {
+              history.push({
+                role: 'system',
+                content: `【核验提示】工具 ${call.function.name} 的结果可能有问题：${tv.feedback}。如果确实有问题请修正，没问题则忽略此提示继续。`,
+              })
+              yield { type: 'tool', name: 'verify', summary: `⚠ ${call.function.name}: ${tv.feedback}` }
+            }
           }
         }
+      } finally {
+        // for-await 消费方提前 return、用户中断、验证抛错等所有出口都会走这里。
+        await executor.cancel()
       }
       continue
     }
 
     // 无工具调用：本应结束；但若回复是被「输出长度上限」截断的（finish_reason==='length'），
     // 注入续写提示再来一轮，把没说完的话接着说完。
-    if (finishReason === 'length' && outputRecovery < MAX_OUTPUT_RECOVERY) {
-      outputRecovery++
-      history.push({
-        role: 'user',
-        content:
-          '（系统提示）你上一条回复因达到输出长度上限被截断。请直接从断点继续，' +
-          '不要重复已经输出的内容，也不要道歉或重述；剩余内容较多时可分小段输出。',
-      })
-      yield { type: 'tool', name: 'system', summary: `↻ 输出被截断，自动续写（第 ${outputRecovery} 次）` }
-      continue
+    if (finishReason === 'length') {
+      if (outputRecovery < MAX_OUTPUT_RECOVERY) {
+        outputRecovery++
+        history.push({
+          role: 'user',
+          content:
+            '（系统提示）你上一条回复因达到输出长度上限被截断。请直接从断点继续，' +
+            '不要重复已经输出的内容，也不要道歉或重述；剩余内容较多时可分小段输出。',
+        })
+        yield { type: 'tool', name: 'system', summary: `↻ 输出被截断，自动续写（第 ${outputRecovery} 次）` }
+        continue
+      }
+      throw new AgentTerminationError(
+        'output_recovery_exhausted',
+        `模型连续 ${MAX_OUTPUT_RECOVERY} 次达到输出长度上限，无法确认回答完整`,
+        finishReason,
+      )
+    }
+
+    if (finishReason === 'content_filter') {
+      throw new AgentTerminationError(
+        'content_filtered',
+        '模型响应被内容过滤器截断，无法确认结果完整',
+        finishReason,
+      )
+    }
+
+    if (!isNormalFinishReason(finishReason)) {
+      throw new AgentTerminationError(
+        'unexpected_finish_reason',
+        `模型以未支持的状态结束：${finishReason}`,
+        finishReason,
+      )
+    }
+
+    // 没有工具调用时，只有明确的正常停止（或部分兼容服务商缺失 finish_reason 但确有正文）才能结束。
+    // 空响应先做一次有界恢复；仍为空则报错，绝不能静默当成成功。
+    if (!content.trim()) {
+      if (emptyResponseRecovery < MAX_EMPTY_RESPONSE_RECOVERY) {
+        emptyResponseRecovery++
+        history.push({
+          role: 'user',
+          content:
+            '（系统提示）你上一条响应没有正文也没有工具调用。请重新完成当前任务；' +
+            '如果无法完成，请明确说明原因，不要返回空响应。',
+        })
+        yield { type: 'tool', name: 'system', summary: '↻ 模型返回空响应，自动重试（1/1）' }
+        continue
+      }
+      throw new AgentTerminationError(
+        'empty_response',
+        '模型连续返回空响应，未产生可交付结果',
+        finishReason,
+      )
     }
 
     // #1 级验证：最终核验 — 对比原始需求与最终交付，不通过则打回修正
@@ -345,4 +454,13 @@ function safeArgs(raw: string): Record<string, any> {
   } catch {
     return {}
   }
+}
+
+/**
+ * OpenAI 通常返回 stop；Anthropic 的 end_turn 已在 llm.ts 映射成 stop，
+ * stop_sequence 则同样表示正常结束。部分 OpenAI 兼容服务不返回 finish_reason，
+ * 只要已有非空正文也允许结束，以免破坏兼容性。
+ */
+function isNormalFinishReason(reason?: string): boolean {
+  return reason == null || reason === 'stop' || reason === 'stop_sequence'
 }

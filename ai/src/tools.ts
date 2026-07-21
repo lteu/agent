@@ -836,9 +836,13 @@ export async function runTool(
       if (!/^https?:\/\//i.test(url)) return 'url 必须以 http:// 或 https:// 开头'
       const max = Number(args.max_chars) > 0 ? Number(args.max_chars) : 20000
       try {
+        const timeoutSignal = AbortSignal.timeout(30_000)
+        const signal = ctx?.signal
+          ? AbortSignal.any([ctx.signal, timeoutSignal])
+          : timeoutSignal
         const res = await fetch(url, {
           headers: { 'User-Agent': 'ai-cli/0.1 (+local agent)' },
-          signal: AbortSignal.timeout(30_000),
+          signal,
         })
         const ctype = res.headers.get('content-type') ?? ''
         let body = await res.text()
