@@ -1,2 +1,13 @@
-claudecode
+node_modules/
+dist/
+*.log
 .DS_Store
+log/
+
+# studio 下外部参考仓库（体积太大，不纳入本仓库）
+studio/hermes-agent/
+studio/openclaw-2026.3.23/
+studio/claudecode/
+studio/pi/
+studio/ppt/
+studio/undefined/

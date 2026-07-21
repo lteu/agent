@@ -4,18 +4,18 @@
 
 它不只是聊天：内置 `write_file / read_file / list_dir / run_bash` 工具，能在你本机**真正建文件、跑命令**——通过 function calling 让模型直接动手，而不是回答"我没有权限操作你的设备"。
 
-技术栈：Node + [Ink](https://github.com/vadimdemedes/ink)（终端里的 React），参考自 `../claudecode`。
+技术栈：Node + [Ink](https://github.com/vadimdemedes/ink)（终端里的 React），参考自 Claude Code。
 
 ## 安装
 
 ```bash
-cd ai
+cd agent
 npm install
 npm run build      # 产出 dist/cli.js
 npm link           # 让全局可用 `ai`（或见下方“免 link”）
 ```
 
-> 不想 `npm link`，可加别名：`alias ai="node /Users/lteu/progetto/claude/ai/dist/cli.js"`
+> 不想 `npm link`，可加别名：`alias ai="node /Users/lteu/progetto/agent/dist/cli.js"`
 
 #### 换台 Mac 装时报 `EEXIST: file already exists /usr/local/bin/ai`
 
