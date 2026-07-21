@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "build": "esbuild src/cli.tsx --bundle --platform=node --target=node20 --format=esm --packages=external --jsx=automatic --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli.js",
+    "test": "tsx --test test/*.test.ts",
     "dev": "tsx src/cli.tsx",
     "start": "node dist/cli.js",
     "dmg": "bash scripts/make-dmg.sh",

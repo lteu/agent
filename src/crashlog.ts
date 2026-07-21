@@ -15,12 +15,38 @@ function getLogDir(): string {
   const projectRoot =
     selfDir.endsWith('/dist') || selfDir.endsWith('/dist/')
       ? dirname(selfDir)
-      : join(selfDir, '..', '..')
+      : selfDir.endsWith('/src') || selfDir.endsWith('/src/')
+        ? dirname(selfDir)
+        : join(selfDir, '..', '..')
   return join(projectRoot, 'log')
 }
 
 function getCrashLogPath(): string {
   return join(getLogDir(), 'crash.log')
+}
+
+function getToolErrorLogPath(): string {
+  return join(getLogDir(), 'tool-errors.jsonl')
+}
+
+/**
+ * 记录工具层的可恢复技术错误。普通 UI 只展示简短摘要，完整诊断留在这里。
+ * 调用方应避免传入原始工具参数、URL 查询串、密钥或文件内容。
+ */
+export function writeToolDebugEvent(
+  event: string,
+  details: Record<string, unknown>,
+): void {
+  if (process.env.AI_DISABLE_TOOL_DEBUG_LOG === '1') return
+  try {
+    mkdirSync(getLogDir(), { recursive: true })
+    appendFileSync(
+      getToolErrorLogPath(),
+      JSON.stringify({ time: new Date().toISOString(), event, ...details }) + '\n',
+    )
+  } catch {
+    /* 调试日志失败不能影响 agent 主流程 */
+  }
 }
 
 // 最近输入事件的环形缓冲。崩溃多半发生在敲键的当下，这段序列就是最好的线索。

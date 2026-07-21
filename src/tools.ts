@@ -2,6 +2,7 @@
 // 模型通过 function calling 请求这些工具，由本进程在本地执行后把结果回传。
 
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   readFileSync,
   writeFileSync,
@@ -12,6 +13,7 @@ import {
 } from 'node:fs'
 import { resolve, dirname, relative, sep } from 'node:path'
 import { loadSmtpConfig } from './config.js'
+import { writeToolDebugEvent } from './crashlog.js'
 import { sendMail, type Attachment } from './smtp.js'
 import { getQuotes, formatQuote } from './stocks.js'
 import { termOpen, termSend, termRead, termList, termKill } from './term.js'
@@ -27,7 +29,9 @@ import {
   browserList,
   browserClose,
 } from './browser.js'
-import type { ChatMessage } from './llm.js'
+import { interpretShellCommandResult } from './shell-command-semantics.js'
+import { classifyVerificationCommand, type VerificationCheckKind } from './agent/verification-policy.js'
+import { managedSubagents, type ManagedSubagentResult } from './agent/subagent-manager.js'
 import { PDFParse } from 'pdf-parse'
 import XLSX from 'xlsx'
 import JSZip from 'jszip'
@@ -41,6 +45,58 @@ export type ToolContext = {
   signal?: AbortSignal
   /** 子 agent 递归深度，防止 run_agent 无限自我派生。 */
   depth?: number
+  /** 最近一次 read_file/本进程写入后的文件快照，用于阻止盲写和覆盖外部修改。 */
+  readSnapshots?: Map<string, FileReadSnapshot>
+  /** 同一路径的写操作串行化，防止同一批并发工具互相覆盖。 */
+  fileMutationLocks?: Map<string, Promise<void>>
+  /** 单次执行的内部元数据容器；由结构化包装器创建，不在不同调用间共享。 */
+  executionMeta?: ToolExecutionMeta
+}
+
+export type FileReadSnapshot = {
+  mtimeMs: number
+  size: number
+  sha256: string
+}
+
+type ToolExecutionMeta = {
+  command?: string
+  exitCode?: number
+  commandIsError?: boolean
+  timedOut?: boolean
+  cancelled?: boolean
+  httpStatus?: number
+  fetchAttempts?: number
+  fetchError?: string
+  fetchErrorCode?: string
+  fetchCancelled?: boolean
+  readSnapshot?: FileReadSnapshot
+}
+
+export type ToolEvidence = {
+  kind: 'file_read' | 'file_write' | 'file_edit' | 'command' | 'test' | 'http' | 'legacy'
+  path?: string
+  bytes?: number
+  replacements?: number
+  command?: string
+  exitCode?: number
+  checkKind?: VerificationCheckKind
+  statusCode?: number
+  attempts?: number
+}
+
+export type ToolResult = {
+  ok: boolean
+  output: string
+  error?: {
+    code: string
+    /** 给模型和调试日志的完整错误。 */
+    message: string
+    /** 给普通 UI 的稳定摘要；省略时直接显示 message。 */
+    userMessage?: string
+  }
+  evidence?: ToolEvidence
+  durationMs: number
 }
 
 // 遍历/检索时跳过的目录，避免把 node_modules、.git 等翻个底朝天。
@@ -60,6 +116,39 @@ const MIME_TYPES: Record<string, string> = {
   csv: 'text/csv',
   json: 'application/json',
   zip: 'application/zip',
+}
+
+const WEB_FETCH_MAX_ATTEMPTS = 3
+const WEB_FETCH_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
+
+function fetchErrorDetails(error: unknown): { message: string; code?: string } {
+  const messages: string[] = []
+  let code: string | undefined
+  let current: unknown = error
+  const seen = new Set<unknown>()
+
+  for (let depth = 0; current && depth < 4 && !seen.has(current); depth++) {
+    seen.add(current)
+    if (current instanceof Error && current.message && !messages.includes(current.message)) {
+      messages.push(current.message)
+    }
+    if (typeof current === 'object') {
+      const record = current as Record<string, unknown>
+      if (!code && typeof record.code === 'string') code = record.code
+      current = record.cause
+    } else {
+      break
+    }
+  }
+
+  return {
+    message: (messages.join(': ') || String(error)) + (code ? ` [${code}]` : ''),
+    code,
+  }
+}
+
+function waitForWebFetchRetry(attempt: number): Promise<void> {
+  return new Promise(resolveWait => setTimeout(resolveWait, 300 * attempt))
 }
 function guessMime(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -333,12 +422,14 @@ export const TOOL_SCHEMAS = [
     function: {
       name: 'run_agent',
       description:
-        '派生一个子 agent 独立完成一项较复杂的子任务（它自带全套本地工具，会自己读写文件、跑命令、检索代码），完成后返回结果摘要。适合「调研/多步骤搜索」这类需要展开但你只想要结论的工作。',
+        '启动或续跑一个受管子 agent。每个新 agent 拥有独立上下文和默认 200 步预算，并返回 agent_id、完成状态和结果；达到上限时用同一 agent_id 续跑。用户要求并行时，必须在同一条 assistant 消息中发出多个 run_agent 调用。',
       parameters: {
         type: 'object',
         properties: {
           description: { type: 'string', description: '子任务的简短描述（3-5 个词）' },
           prompt: { type: 'string', description: '交给子 agent 的完整任务说明' },
+          agent_id: { type: 'string', description: '可选：续跑先前子 agent 时传回它的 agent_id；新任务不要传' },
+          max_steps: { type: 'number', description: '本次最多运行步数，默认 200，范围 1-500' },
         },
         required: ['description', 'prompt'],
       },
@@ -606,9 +697,94 @@ export type ToolCall = {
   arguments: string // JSON 字符串
 }
 
-// 执行单个工具调用，返回给模型看的纯文本结果。
-// ctx 仅 run_agent 这类需要回调模型的工具用得到，其余工具忽略它。
-export async function runTool(
+function fileSnapshot(path: string): FileReadSnapshot {
+  const content = readFileSync(path)
+  const stat = statSync(path)
+  return {
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    sha256: createHash('sha256').update(content).digest('hex'),
+  }
+}
+
+function sameSnapshot(a: FileReadSnapshot, b: FileReadSnapshot): boolean {
+  return a.size === b.size && a.sha256 === b.sha256
+}
+
+async function withFileMutationLock<T>(
+  path: string,
+  locks: Map<string, Promise<void>> | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!locks) return fn()
+  const previous = locks.get(path) ?? Promise.resolve()
+  let release!: () => void
+  const gate = new Promise<void>(resolveGate => { release = resolveGate })
+  const tail = previous.then(() => gate)
+  locks.set(path, tail)
+  await previous
+  try {
+    return await fn()
+  } finally {
+    release()
+    if (locks.get(path) === tail) locks.delete(path)
+  }
+}
+
+export function validateToolInput(name: string, args: Record<string, unknown>): string | null {
+  const schema = (TOOL_SCHEMAS as readonly any[]).find(tool => tool.function.name === name)?.function?.parameters
+  if (!schema) return `未知工具: ${name}`
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return '工具参数必须是 JSON 对象'
+
+  for (const required of schema.required ?? []) {
+    if (!(required in args) || args[required] === undefined || args[required] === null) {
+      return `缺少必填参数 ${required}`
+    }
+  }
+  for (const [key, value] of Object.entries(args)) {
+    const expected = schema.properties?.[key]?.type
+    if (!expected || value === undefined || value === null) continue
+    if (expected === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) {
+      return `参数 ${key} 必须是有限数字`
+    }
+    if (expected !== 'number' && typeof value !== expected) return `参数 ${key} 必须是 ${expected}`
+  }
+
+  if (name === 'run_bash' && !String(args.command ?? '').trim()) return 'command 不能为空'
+  if (name === 'edit_file') {
+    if (!String(args.old_string ?? '')) return 'old_string 不能为空'
+    if (args.old_string === args.new_string) return 'old_string 与 new_string 相同，无需修改'
+  }
+  if (name === 'web_fetch' && !/^https?:\/\//i.test(String(args.url ?? ''))) {
+    return 'url 必须以 http:// 或 https:// 开头'
+  }
+  return null
+}
+
+function failedToolResult(
+  code: string,
+  message: string,
+  startedAt: number,
+  userMessage?: string,
+): ToolResult {
+  return {
+    ok: false,
+    output: `错误: ${message}`,
+    error: { code, message, userMessage },
+    durationMs: Date.now() - startedAt,
+  }
+}
+
+export function formatToolResult(result: ToolResult): string {
+  if (result.ok) return result.output
+  const header = `错误[${result.error?.code ?? 'tool_failed'}]: ${result.error?.message ?? '工具执行失败'}`
+  return result.output && result.output !== `错误: ${result.error?.message}`
+    ? `${header}\n${result.output}`
+    : header
+}
+
+// 具体工具的文本执行体。结构化状态、证据和运行前校验由下方导出的 runTool 包装。
+async function runToolText(
   name: string,
   args: Record<string, any>,
   ctx?: ToolContext,
@@ -622,7 +798,16 @@ export async function runTool(
     }
     case 'read_file': {
       const path = resolve(String(args.path))
-      const text = readFileSync(path, 'utf8')
+      const content = readFileSync(path)
+      const stat = statSync(path)
+      if (ctx?.executionMeta) {
+        ctx.executionMeta.readSnapshot = {
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+          sha256: createHash('sha256').update(content).digest('hex'),
+        }
+      }
+      const text = content.toString('utf8')
       return text.length > 20000 ? text.slice(0, 20000) + '\n…（已截断）' : text
     }
     case 'excel_read': {
@@ -684,7 +869,11 @@ export async function runTool(
     }
     case 'run_bash': {
       const command = String(args.command ?? '')
-      if (ctx?.signal?.aborted) return '（已中断，未执行）'
+      if (ctx?.executionMeta) ctx.executionMeta.command = command
+      if (ctx?.signal?.aborted) {
+        if (ctx.executionMeta) ctx.executionMeta.cancelled = true
+        return '（已中断，未执行）'
+      }
       return await new Promise<string>(res => {
         execFile(
           '/bin/sh',
@@ -699,10 +888,26 @@ export async function runTool(
             const out = cap([stdout, stderr].filter(Boolean).join('\n').trim())
             // 被 Esc 中断（AbortError）：明确告知，别把它当成普通命令失败。
             if (err && (err as any).name === 'AbortError') {
+              if (ctx?.executionMeta) ctx.executionMeta.cancelled = true
               res(`命令已被用户中断${out ? `\n${out}` : ''}`)
             } else if (err && (err as any).code !== 0) {
-              res(`命令退出码 ${(err as any).code ?? 1}\n${out || (err as Error).message}`)
+              const exitCode = typeof (err as any).code === 'number' ? (err as any).code : 1
+              const interpretation = interpretShellCommandResult(command, exitCode)
+              if (ctx?.executionMeta) {
+                ctx.executionMeta.exitCode = exitCode
+                ctx.executionMeta.commandIsError = interpretation.isError
+                ctx.executionMeta.timedOut = Boolean((err as any).killed && (err as any).signal === 'SIGKILL')
+              }
+              if (interpretation.isError) {
+                res(`命令退出码 ${exitCode}\n${out || (err as Error).message}`)
+              } else {
+                res(out || interpretation.message || '(无输出)')
+              }
             } else {
+              if (ctx?.executionMeta) {
+                ctx.executionMeta.exitCode = 0
+                ctx.executionMeta.commandIsError = false
+              }
               res(out || '(无输出)')
             }
           },
@@ -835,61 +1040,84 @@ export async function runTool(
       const url = String(args.url ?? '')
       if (!/^https?:\/\//i.test(url)) return 'url 必须以 http:// 或 https:// 开头'
       const max = Number(args.max_chars) > 0 ? Number(args.max_chars) : 20000
-      try {
-        const timeoutSignal = AbortSignal.timeout(30_000)
-        const signal = ctx?.signal
-          ? AbortSignal.any([ctx.signal, timeoutSignal])
-          : timeoutSignal
-        const res = await fetch(url, {
-          headers: { 'User-Agent': 'ai-cli/0.1 (+local agent)' },
-          signal,
-        })
-        const ctype = res.headers.get('content-type') ?? ''
-        let body = await res.text()
-        if (ctype.includes('html')) {
-          body = body
-            .replace(/<script[\s\S]*?<\/script>/gi, '')
-            .replace(/<style[\s\S]*?<\/style>/gi, '')
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/&nbsp;/g, ' ')
-            .replace(/&amp;/g, '&')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/[ \t]+/g, ' ')
-            .replace(/\n\s*\n\s*\n+/g, '\n\n')
-            .trim()
+      for (let attempt = 1; attempt <= WEB_FETCH_MAX_ATTEMPTS; attempt++) {
+        if (ctx?.executionMeta) ctx.executionMeta.fetchAttempts = attempt
+        try {
+          const timeoutSignal = AbortSignal.timeout(30_000)
+          const signal = ctx?.signal
+            ? AbortSignal.any([ctx.signal, timeoutSignal])
+            : timeoutSignal
+          const res = await fetch(url, {
+            headers: { 'User-Agent': 'ai-cli/0.1 (+local agent)' },
+            signal,
+          })
+          if (ctx?.executionMeta) ctx.executionMeta.httpStatus = res.status
+
+          if (WEB_FETCH_RETRYABLE_STATUS.has(res.status) && attempt < WEB_FETCH_MAX_ATTEMPTS) {
+            await res.body?.cancel().catch(() => undefined)
+            await waitForWebFetchRetry(attempt)
+            continue
+          }
+
+          const ctype = res.headers.get('content-type') ?? ''
+          let body = await res.text()
+          if (ctype.includes('html')) {
+            body = body
+              .replace(/<script[\s\S]*?<\/script>/gi, '')
+              .replace(/<style[\s\S]*?<\/style>/gi, '')
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/&nbsp;/g, ' ')
+              .replace(/&amp;/g, '&')
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/[ \t]+/g, ' ')
+              .replace(/\n\s*\n\s*\n+/g, '\n\n')
+              .trim()
+          }
+          const head = `HTTP ${res.status} ${ctype}\n`
+          return head + (body.length > max ? body.slice(0, max) + '\n…（已截断）' : body)
+        } catch (error: unknown) {
+          if (ctx?.signal?.aborted) {
+            if (ctx.executionMeta) ctx.executionMeta.fetchCancelled = true
+            return '抓取已中断'
+          }
+
+          const detail = fetchErrorDetails(error)
+          if (attempt < WEB_FETCH_MAX_ATTEMPTS) {
+            await waitForWebFetchRetry(attempt)
+            continue
+          }
+
+          if (ctx?.executionMeta) {
+            ctx.executionMeta.fetchError = detail.message
+            ctx.executionMeta.fetchErrorCode = detail.code
+          }
+          return `抓取失败: ${detail.message}`
         }
-        const head = `HTTP ${res.status} ${ctype}\n`
-        return head + (body.length > max ? body.slice(0, max) + '\n…（已截断）' : body)
-      } catch (e: any) {
-        return `抓取失败: ${e?.message ?? String(e)}`
       }
+      return '抓取失败: 已耗尽重试次数'
     }
     case 'run_agent': {
       if (!ctx) return '当前环境不支持子 agent（缺少模型上下文）'
       if ((ctx.depth ?? 0) >= 2) return '子 agent 嵌套过深，已拒绝继续派生'
       const { runAgent } = await import('./agent/engine.js')
-      const sys =
-        `你是被主 agent 派生的子 agent，需独立完成下面这项子任务，完成后用简洁中文汇报结论。` +
-        `当前工作目录 ${process.cwd()}。你具备全套本地工具（读写/编辑文件、列目录、执行命令、glob/grep 检索、抓网页等），需要时直接调用，不要拒绝本地操作。`
-      const history: ChatMessage[] = [
-        { role: 'system', content: sys },
-        { role: 'user', content: String(args.prompt ?? args.description ?? '') },
-      ]
-      const texts: string[] = []
-      for await (const ev of runAgent(history, {
+      const result = await managedSubagents.run({
+        description: String(args.description ?? ''),
+        prompt: String(args.prompt ?? ''),
+        agentId: args.agent_id == null ? undefined : String(args.agent_id),
+        maxSteps: args.max_steps == null ? undefined : Number(args.max_steps),
+        cwd: process.cwd(),
+      }, (history, maxSteps) => runAgent(history, {
         apiKey: ctx.apiKey,
         model: ctx.model,
         baseURL: ctx.baseURL,
         provider: ctx.provider,
         signal: ctx.signal,
-        maxSteps: 15,
+        maxSteps,
         depth: (ctx.depth ?? 0) + 1,
-        verifyLevel: 0, // 子 agent 默认关闭验证，避免递归成本爆炸
-      })) {
-        if (ev.type === 'text' && ev.content) texts.push(ev.content)
-      }
-      return texts.join('\n').trim() || '(子 agent 无输出)'
+        verifyLevel: 0, // 子 agent 自行完成并结构化报告；避免递归调用裁判模型
+      }))
+      return JSON.stringify(result, null, 2)
     }
     case 'skill': {
       const { readSkill } = await import('./skills.js')
@@ -964,6 +1192,205 @@ export async function runTool(
       return await browserClose(String(args.name ?? ''))
     default:
       return `未知工具: ${name}`
+  }
+}
+
+/**
+ * 执行内置工具并返回机器可判定的状态与证据。
+ * 给模型看的字符串由 formatToolResult 单独生成，控制流不再依赖输出文案。
+ */
+export async function runTool(
+  name: string,
+  args: Record<string, any>,
+  ctx?: ToolContext,
+): Promise<ToolResult> {
+  const startedAt = Date.now()
+  const validationError = validateToolInput(name, args)
+  if (validationError) {
+    writeToolDebugEvent('tool_input_validation_failed', { toolName: name, error: validationError })
+    return failedToolResult('invalid_input', validationError, startedAt, '工具参数无效')
+  }
+
+  const snapshots = ctx?.readSnapshots ?? new Map<string, FileReadSnapshot>()
+  const locks = ctx?.fileMutationLocks
+  const meta: ToolExecutionMeta = {}
+  const executionContext = ctx ? { ...ctx, readSnapshots: snapshots, executionMeta: meta } : { readSnapshots: snapshots, executionMeta: meta }
+
+  try {
+    if (name === 'read_file') {
+      const path = resolve(String(args.path))
+      const output = await runToolText(name, args, executionContext)
+      const snapshot = meta.readSnapshot ?? fileSnapshot(path)
+      snapshots.set(path, snapshot)
+      return {
+        ok: true,
+        output,
+        evidence: { kind: 'file_read', path, bytes: snapshot.size },
+        durationMs: Date.now() - startedAt,
+      }
+    }
+
+    if (name === 'write_file' || name === 'edit_file') {
+      const path = resolve(String(args.path))
+      return await withFileMutationLock(path, locks, async () => {
+        let before: FileReadSnapshot | null = null
+        try { before = fileSnapshot(path) } catch { /* 新文件 */ }
+
+        if (before) {
+          const known = snapshots.get(path)
+          if (!known) {
+            return failedToolResult(
+              'file_not_read',
+              `修改已有文件前必须先用 read_file 读取：${path}`,
+              startedAt,
+            )
+          }
+          if (!sameSnapshot(known, before)) {
+            return failedToolResult(
+              'stale_file',
+              `文件在读取后已被其他进程修改，请重新 read_file 后再编辑：${path}`,
+              startedAt,
+            )
+          }
+        } else if (name === 'edit_file') {
+          return failedToolResult('file_not_found', `目标文件不存在：${path}`, startedAt)
+        }
+
+        let replacements: number | undefined
+        if (name === 'edit_file') {
+          const text = readFileSync(path, 'utf8')
+          const oldString = String(args.old_string)
+          const count = text.split(oldString).length - 1
+          if (count === 0) return failedToolResult('no_match', `old_string 在 ${path} 中不存在`, startedAt)
+          if (count > 1 && !args.replace_all) {
+            return failedToolResult(
+              'ambiguous_match',
+              `old_string 在文件中出现 ${count} 次；请增加上下文或设置 replace_all=true`,
+              startedAt,
+            )
+          }
+          replacements = args.replace_all ? count : 1
+        }
+
+        const output = await runToolText(name, args, executionContext)
+        const after = fileSnapshot(path)
+        snapshots.set(path, after)
+        return {
+          ok: true,
+          output,
+          evidence: {
+            kind: name === 'write_file' ? 'file_write' : 'file_edit',
+            path,
+            bytes: after.size,
+            replacements,
+          },
+          durationMs: Date.now() - startedAt,
+        }
+      })
+    }
+
+    const output = await runToolText(name, args, executionContext)
+
+    if (name === 'run_agent') {
+      let agentResult: ManagedSubagentResult
+      try {
+        agentResult = JSON.parse(output) as ManagedSubagentResult
+      } catch {
+        return failedToolResult('agent_protocol_error', '子 agent 返回了无效状态数据', startedAt)
+      }
+      const ok = agentResult.status === 'completed'
+      return {
+        ok,
+        output,
+        error: ok ? undefined : {
+          code: `agent_${agentResult.status}`,
+          message: agentResult.message ?? `子 agent 状态：${agentResult.status}`,
+          userMessage: agentResult.status === 'max_steps'
+            ? '子 agent 达到轮次上限，可从原上下文续跑'
+            : `子 agent 未完成：${agentResult.status}`,
+        },
+        evidence: { kind: 'legacy' },
+        durationMs: Date.now() - startedAt,
+      }
+    }
+
+    if (name === 'run_bash') {
+      const command = String(args.command)
+      const checkKind = classifyVerificationCommand(command) ?? undefined
+      const ok = !meta.cancelled && !meta.timedOut && meta.commandIsError !== true
+      const code = meta.cancelled ? 'cancelled' : meta.timedOut ? 'timed_out' : 'non_zero_exit'
+      return {
+        ok,
+        output,
+        error: ok ? undefined : { code, message: output.split('\n')[0] || '命令执行失败' },
+        evidence: {
+          kind: checkKind ? 'test' : 'command',
+          command,
+          exitCode: meta.exitCode,
+          checkKind,
+        },
+        durationMs: Date.now() - startedAt,
+      }
+    }
+
+    if (name === 'web_fetch') {
+      if (meta.fetchCancelled) {
+        return {
+          ok: false,
+          output,
+          error: { code: 'cancelled', message: '网页抓取已取消', userMessage: '网页抓取已取消' },
+          evidence: { kind: 'http', attempts: meta.fetchAttempts },
+          durationMs: Date.now() - startedAt,
+        }
+      }
+      if (meta.fetchError) {
+        let hostname = ''
+        try { hostname = new URL(String(args.url)).hostname } catch { /* 已在输入校验处理 */ }
+        writeToolDebugEvent('web_fetch_failed', {
+          hostname,
+          attempts: meta.fetchAttempts,
+          errorCode: meta.fetchErrorCode,
+          error: meta.fetchError,
+        })
+        return {
+          ok: false,
+          output,
+          error: {
+            code: 'network_error',
+            message: meta.fetchError,
+            userMessage: '网页抓取失败，Agent 将尝试其他方式',
+          },
+          evidence: { kind: 'http', attempts: meta.fetchAttempts },
+          durationMs: Date.now() - startedAt,
+        }
+      }
+
+      const statusCode = meta.httpStatus
+      const ok = statusCode !== undefined && statusCode >= 200 && statusCode < 400
+      return {
+        ok,
+        output,
+        error: ok ? undefined : {
+          code: 'http_error',
+          message: statusCode === undefined ? '网页抓取未返回 HTTP 状态' : `HTTP ${statusCode}`,
+          userMessage: '网页抓取失败，Agent 将尝试其他方式',
+        },
+        evidence: { kind: 'http', statusCode, attempts: meta.fetchAttempts },
+        durationMs: Date.now() - startedAt,
+      }
+    }
+
+    // 尚未逐个结构化的外部/交互工具先统一包装；软失败只在这个兼容层识别。
+    const legacyFailure = summarizeToolFailure(name, output)
+    return {
+      ok: legacyFailure === null,
+      output,
+      error: legacyFailure ? { code: 'legacy_failure', message: legacyFailure } : undefined,
+      evidence: { kind: 'legacy' },
+      durationMs: Date.now() - startedAt,
+    }
+  } catch (error: any) {
+    return failedToolResult('exception', error?.message ?? String(error), startedAt)
   }
 }
 
@@ -1062,7 +1489,9 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
     case 'web_fetch':
       return `抓取 ${args.url}`
     case 'run_agent':
-      return `子 agent：${args.description ?? ''}`
+      return args.agent_id
+        ? `续跑子 agent ${args.agent_id}：${args.description ?? ''}`
+        : `启动子 agent：${args.description ?? ''}`
     case 'skill':
       return `技能 ${args.name ?? ''}`
     case 'term_open':

@@ -1,13 +1,10 @@
-// 验证模块：#1 最终核验 + #2 关键节点验证
+// 可选的 LLM 最终核验模块。
 //
 // 设计目标：
-//   - #1 最终核验：主循环结束后，对比「原始需求」与「最终交付」，判定是否真的解决了问题
-//   - #2 关键节点验证：每次工具调用结果回灌后，对高风险工具做轻量校验
-//   - 可开关、有上限、不阻塞流式体验、轻量实现
+// 默认关闭；工具参数、执行结果、文件快照与测试证据由本地确定性逻辑校验。
 //
 // 验证失败的处理：
-//   - #1 不通过 → 把核验意见作为 user 消息回灌历史，让主循环接着跑（最多重试 N 次）
-//   - #2 不通过 → 把核验提示作为 system 侧注注入历史，下一轮模型自己看到并修正
+// 不通过 → 把核验意见作为 user 消息回灌历史，让主循环接着跑（最多重试 N 次）。
 
 import { chatComplete, type ChatMessage } from '../llm.js'
 import type { CompactDeps } from './compact.js'
@@ -198,80 +195,4 @@ function normalizeVerifyResult(obj: any): VerifyResult {
   const issues = Array.isArray(obj?.issues) ? obj.issues.filter(Boolean).slice(0, 10) : []
   const suggestion = typeof obj?.suggestion === 'string' ? obj.suggestion : ''
   return { pass, score, issues, suggestion }
-}
-
-// ———————————————————————————————————————————————
-// #2 关键节点验证（工具结果校验）
-// ———————————————————————————————————————————————
-
-export type ToolVerifyResult = { pass: boolean; feedback: string }
-
-/**
- * #2 工具结果校验：对部分高风险工具的返回结果做轻量校验。
- * 注意：这里的校验是「快速体检」，不是完整的功能测试。
- *   - 不通过 ≠ 绝对错误，只是把疑点告诉模型，让模型自己判断要不要修正
- *   - 通过 ≠ 绝对正确，只是表面上看不出问题
- */
-export async function verifyToolResult(
-  toolName: string,
-  toolResult: string,
-  _deps: VerifyDeps,
-): Promise<ToolVerifyResult> {
-  // 以「错误:」开头的结果本身就是失败，不需要额外校验
-  if (toolResult.startsWith('错误:')) {
-    return { pass: false, feedback: `工具执行失败：${toolResult.slice(0, 200)}` }
-  }
-
-  switch (toolName) {
-    case 'write_file':
-      return verifyWriteFile(toolResult)
-    case 'edit_file':
-      return verifyEditFile(toolResult)
-    case 'run_bash':
-      return verifyRunBash(toolResult)
-    default:
-      return { pass: true, feedback: '' }
-  }
-}
-
-function verifyWriteFile(result: string): ToolVerifyResult {
-  // write_file 成功返回类似「已写入 /path/to/file」
-  if (!result.includes('写入') && !result.includes('已创建')) {
-    return { pass: false, feedback: '返回结果不像是成功写入的提示，请确认文件是否真的创建了' }
-  }
-  return { pass: true, feedback: '' }
-}
-
-function verifyEditFile(result: string): ToolVerifyResult {
-  // edit_file 成功返回类似「已替换 1 处」或「未找到匹配文本」
-  if (result.includes('未找到') || result.includes('no match') || result.includes('匹配失败')) {
-    return { pass: false, feedback: 'edit_file 未找到匹配的旧文本，替换未生效；请检查 old_string 是否与文件内容逐字一致（含缩进和换行）' }
-  }
-  if (result.includes('替换') || result.includes('已替换') || result.includes('replaced')) {
-    return { pass: true, feedback: '' }
-  }
-  // 无法识别的返回格式 → 放行
-  return { pass: true, feedback: '' }
-}
-
-function verifyRunBash(result: string): ToolVerifyResult {
-  // run_bash 的结果里如果包含常见的失败关键词，标记为可疑
-  const failurePatterns = [
-    /command not found/i,
-    /no such file or directory/i,
-    /permission denied/i,
-    /error\s*[:=]/i,
-    /fatal/i,
-    /failed/i,
-    /exited with code [1-9]/,
-    /exit code [1-9]/,
-  ]
-  const hits: string[] = []
-  for (const p of failurePatterns) {
-    if (p.test(result)) hits.push(p.source.replace(/\\./g, '').slice(0, 30))
-  }
-  if (hits.length) {
-    return { pass: false, feedback: `命令输出中包含疑似错误关键词（${hits.slice(0, 3).join(', ')}），请确认命令是否真的成功执行` }
-  }
-  return { pass: true, feedback: '' }
 }

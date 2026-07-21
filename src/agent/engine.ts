@@ -15,9 +15,24 @@
 //   3. 每轮开头按需做上下文压缩 compactInPlace。
 
 import { streamCompletion, type ChatMessage, type RawToolCall, type Completion } from '../llm.js'
-import { TOOL_SCHEMAS, runTool, describeToolCall, summarizeToolFailure, type ToolContext } from '../tools.js'
+import { writeToolDebugEvent } from '../crashlog.js'
+import {
+  TOOL_SCHEMAS,
+  runTool,
+  describeToolCall,
+  formatToolResult,
+  summarizeToolFailure,
+  type ToolContext,
+  type ToolResult,
+} from '../tools.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
-import { verifyFinalResult, verifyToolResult, type VerifyResult } from './verify.js'
+import { verifyFinalResult, type VerifyResult } from './verify.js'
+import {
+  evaluateVerificationEvidence,
+  verificationNudge,
+  verificationRequirementForFiles,
+  type VerificationCheckKind,
+} from './verification-policy.js'
 
 export type AgentEvent =
   // 流式文本增量：给终端做实时显示；channel（QQ/微信）按段发送，忽略它。
@@ -63,10 +78,10 @@ export type EngineDeps = CompactDeps & {
   noCompact?: boolean
   /**
    * 验证级别：
-   *   0 = 关闭所有验证
-   *   1 = 仅最终核验（#1）：主循环结束后对比原始需求与最终交付，不通过则打回修正
-   *   2 = 全开（#1 + #2）：最终核验 + 每次工具调用结果校验
-   * 默认 0（关闭）。
+   *   0 = 仅启用始终开启的本地确定性校验，不调用额外模型
+   *   1 = 本地校验 + LLM 最终核验
+   *   2 = 兼容旧配置，当前等同 1
+   * 默认 0；工具参数、执行状态、文件快照和验证证据检查不受此开关影响。
    */
   verifyLevel?: 0 | 1 | 2
   /** 最终核验最多重试次数，默认 2。 */
@@ -80,12 +95,12 @@ export type EngineDeps = CompactDeps & {
  */
 class DeferredToolExecutor {
   private queued: RawToolCall[] = []
-  private running: { call: RawToolCall; promise: Promise<string> }[] | null = null
+  private running: { call: RawToolCall; promise: Promise<ToolResult> }[] | null = null
   private readonly abortController = new AbortController()
   private detachParentAbort?: () => void
 
   constructor(
-    private exec: (call: RawToolCall, signal: AbortSignal) => Promise<string>,
+    private exec: (call: RawToolCall, signal: AbortSignal) => Promise<ToolResult>,
     private readonly parentSignal?: AbortSignal,
   ) {}
 
@@ -116,7 +131,7 @@ class DeferredToolExecutor {
   }
 
   /** 按提交顺序逐个等待并产出结果（此时它们多半早已并发跑完）。 */
-  async *drain(): AsyncGenerator<{ call: RawToolCall; result: string }> {
+  async *drain(): AsyncGenerator<{ call: RawToolCall; result: ToolResult }> {
     if (!this.running) throw new Error('工具执行尚未启动')
     for (const r of this.running) {
       yield { call: r.call, result: await r.promise }
@@ -150,22 +165,52 @@ export async function* runAgent(
     provider: deps.provider,
     signal: deps.signal,
     depth: deps.depth ?? 0,
+    readSnapshots: new Map(),
+    fileMutationLocks: new Map(),
   }
 
-  // 执行单个工具调用 → 纯文本结果（异常转成字符串回灌，绝不中断循环）。
-  const execTool = async (call: RawToolCall, signal: AbortSignal): Promise<string> => {
+  // 执行单个工具调用 → 结构化结果。异常转成失败结果回灌，绝不中断循环。
+  const execTool = async (call: RawToolCall, signal: AbortSignal): Promise<ToolResult> => {
+    const startedAt = Date.now()
     let args: Record<string, any> = {}
     try {
       args = JSON.parse(call.function.arguments || '{}')
-    } catch {
-      /* 参数解析失败时按空对象处理 */
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('参数必须是 JSON 对象')
+    } catch (error: any) {
+      const message = `工具参数不是有效 JSON：${error?.message ?? String(error)}`
+      writeToolDebugEvent('tool_input_json_parse_failed', {
+        toolName: call.function.name,
+        argumentsLength: call.function.arguments?.length ?? 0,
+        error: error?.message ?? String(error),
+      })
+      return {
+        ok: false,
+        output: `错误: ${message}`,
+        error: { code: 'invalid_json', message, userMessage: '工具参数无效' },
+        durationMs: Date.now() - startedAt,
+      }
     }
     try {
-      return extraNames.has(call.function.name)
-        ? await deps.extraTools!.run(call.function.name, args, signal)
-        : await runTool(call.function.name, args, { ...toolCtx, signal })
+      if (!extraNames.has(call.function.name)) {
+        return await runTool(call.function.name, args, { ...toolCtx, signal })
+      }
+      const output = await deps.extraTools!.run(call.function.name, args, signal)
+      const failure = summarizeToolFailure(call.function.name, output)
+      return {
+        ok: failure === null,
+        output,
+        error: failure ? { code: 'extra_tool_failed', message: failure } : undefined,
+        evidence: { kind: 'legacy' },
+        durationMs: Date.now() - startedAt,
+      }
     } catch (e: any) {
-      return '错误: ' + (e?.message ?? String(e))
+      const message = e?.message ?? String(e)
+      return {
+        ok: false,
+        output: `错误: ${message}`,
+        error: { code: 'exception', message },
+        durationMs: Date.now() - startedAt,
+      }
     }
   }
 
@@ -189,6 +234,19 @@ export async function* runAgent(
     provider: deps.provider,
     signal: deps.signal,
   }
+
+  // 确定性验证证据：按工具批次排序。同一批工具并发执行，因此同批测试不能证明同批编辑后的状态。
+  let toolBatch = 0
+  let lastMutationBatch = -1
+  let verificationNudged = false
+  const changedFiles = new Set<string>()
+  const verificationChecks: Array<{
+    batch: number
+    order: number
+    kind: VerificationCheckKind
+    ok: boolean
+  }> = []
+  let evidenceOrder = 0
 
   for (let step = 0; step < maxSteps; step++) {
     // ⓪ 用户已中断（Esc/Ctrl+C）：立刻收手，别再压缩历史或发起下一次模型调用。
@@ -286,24 +344,33 @@ export async function* runAgent(
       // assistant 响应已经完整收到并提交进历史，此时才允许工具产生副作用。
       // 若上面的流式请求中途失败，代码不会到达这里，队列会随本轮 executor 一起丢弃。
       executor.start()
+      const currentToolBatch = ++toolBatch
       try {
         // ③ 回收并发执行的工具结果（按调用顺序回灌，满足 OpenAI 的配对要求）。
         for await (const { call, result } of executor.drain()) {
-          history.push({ role: 'tool', tool_call_id: call.id, content: result })
+          const modelResult = formatToolResult(result)
+          history.push({ role: 'tool', tool_call_id: call.id, content: modelResult })
           // 工具结果只回灌给模型，用户看不到——失败时把原因冒泡成一条进度行，省得「报错没说为什么」。
-          const fail = summarizeToolFailure(call.function.name, result)
-          if (fail) yield { type: 'tool', name: call.function.name, summary: `✗ ${fail}` }
-
-          // #2 级验证：工具结果校验（仅 verifyLevel >= 2 时开启）
-          if (verifyLevel >= 2) {
-            const tv = await verifyToolResult(call.function.name, result, verifyDeps)
-            if (!tv.pass) {
-              history.push({
-                role: 'system',
-                content: `【核验提示】工具 ${call.function.name} 的结果可能有问题：${tv.feedback}。如果确实有问题请修正，没问题则忽略此提示继续。`,
-              })
-              yield { type: 'tool', name: 'verify', summary: `⚠ ${call.function.name}: ${tv.feedback}` }
+          if (!result.ok) {
+            yield {
+              type: 'tool',
+              name: call.function.name,
+              summary: `✗ ${result.error?.userMessage ?? result.error?.message ?? '工具执行失败'}`,
             }
+          }
+
+          const evidence = result.evidence
+          if (result.ok && evidence?.path && (evidence.kind === 'file_write' || evidence.kind === 'file_edit')) {
+            changedFiles.add(evidence.path)
+            lastMutationBatch = currentToolBatch
+          }
+          if (evidence?.checkKind) {
+            verificationChecks.push({
+              batch: currentToolBatch,
+              order: ++evidenceOrder,
+              kind: evidence.checkKind,
+              ok: result.ok,
+            })
           }
         }
       } finally {
@@ -369,6 +436,27 @@ export async function* runAgent(
         '模型连续返回空响应，未产生可交付结果',
         finishReason,
       )
+    }
+
+    // 本地证据闸：只对代码/高风险修改生效。没有证据时提醒主 Agent 自己选择相关测试，
+    // 不追加一次“裁判模型”请求；最多提醒一次，避免没有测试设施的项目陷入循环。
+    const requirement = verificationRequirementForFiles(changedFiles)
+    if (!verificationNudged && (requirement === 'standard' || requirement === 'strict')) {
+      const { hasSuccessfulEvidence, unresolvedFailures } = evaluateVerificationEvidence(
+        verificationChecks,
+        lastMutationBatch,
+      )
+      if (!hasSuccessfulEvidence || unresolvedFailures > 0) {
+        verificationNudged = true
+        const prompt = verificationNudge(requirement, unresolvedFailures)
+        history.push({ role: 'system', content: prompt })
+        yield {
+          type: 'tool',
+          name: 'verify',
+          summary: requirement === 'strict' ? '↻ 高风险修改缺少验证证据，继续核验' : '↻ 代码修改缺少验证证据，继续核验',
+        }
+        continue
+      }
     }
 
     // #1 级验证：最终核验 — 对比原始需求与最终交付，不通过则打回修正
