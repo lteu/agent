@@ -19,6 +19,7 @@ import { resolve, basename } from 'node:path'
 import { runAgent } from '../agent/engine.js'
 import { isStopCommand } from './stopwords.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
+import { createHistoryTraceContext, traceHistory } from '../agent/history-trace.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadQQConfig, loadDoubaoTtsConfig } from '../config.js'
 import { synthesizeWav } from '../tts.js'
@@ -365,6 +366,8 @@ export function startQQ(): void {
     console.log(`← [${target.kind}] ${voiceAtt ? '🎤语音' : '文字'} | 语音回复=${voiceReply} | "${text.slice(0, 40)}"`)
 
     const history = sessions.get(sessionId)
+    const historyTrace = createHistoryTraceContext('qq', sessionId)
+    traceHistory(historyTrace, 'before-user-push', history)
     // 语音回复模式：模型本是纯文本助手，被要求「语音回复」会老实答「我不能语音」，
     // 这句话再被合成成语音发出去就很荒诞。给它一句提示：文字会被自动转语音，
     // 它具备语音能力，直接回答问题本身即可，别声称不能语音。
@@ -372,6 +375,7 @@ export function startQQ(): void {
       ? `${text}\n\n[系统提示：请直接、简洁地回答上面的问题本身。你的文字回答会被系统自动合成为语音发送给用户，因此你具备语音回复能力，切勿回复“没有语音能力/不能语音”之类的话。]`
       : text
     history.push({ role: 'user', content: agentInput })
+    traceHistory(historyTrace, 'after-user-push', history)
     try {
       let said = false
       const answers: string[] = []
@@ -388,6 +392,7 @@ export function startQQ(): void {
               ? sendFile(target, msgId, String(args.path ?? ''))
               : sendImage(target, msgId, String(args.path ?? '')),
         },
+        historyTrace,
       })) {
         // 官方被动回复对单条 msg_id 的回复条数有限制，所以只回「文字结果」，跳过工具进度噪音。
         if (out.type === 'text' && out.content.trim()) {
@@ -403,6 +408,7 @@ export function startQQ(): void {
           said = true
         }
       }
+      traceHistory(historyTrace, 'after-run-agent', history)
       // 语音回复：把整段答案合成语音发出。配了豆包就优先用豆包音色，失败时退回本机 say；
       // 两个引擎都失败，或语音发送失败/被截断时，补发文字，保证用户总能拿到内容。
       if (voiceReply && answers.length) {
@@ -434,8 +440,10 @@ export function startQQ(): void {
     } catch (err: any) {
       // 用户主动叫停：已在叫停时反馈过「已停止」，这里只记日志，不再回报“出错”。
       if (controller.signal.aborted) {
+        traceHistory(historyTrace, 'run-agent-aborted', history)
         logChat({ channel: 'qq', sessionId, question: text, answer: '[已中断]' })
       } else {
+        traceHistory(historyTrace, 'run-agent-error', history, { note: err?.message ?? String(err) })
         await sendReply(target, msgId, '⚠ 出错了: ' + (err?.message ?? String(err)))
         logChat({ channel: 'qq', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
       }

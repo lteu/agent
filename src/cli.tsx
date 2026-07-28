@@ -33,6 +33,7 @@ import {
 import { sendMail } from './smtp.js'
 import { getQuotes, formatQuote } from './stocks.js'
 import { runAgent } from './agent/engine.js'
+import { createHistoryTraceContext, traceHistory } from './agent/history-trace.js'
 import { formatWorkedFor } from './duration.js'
 import { buildSystemPrompt } from './agent/session.js'
 import { loadSkills, readSkill, scaffoldSkill } from './skills.js'
@@ -110,6 +111,10 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   （兼容旧名 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL）
   配置文件 ${CONFIG_PATH}
   代码默认值
+
+上下文追踪:
+  TRACE=1 ai              同时写入 log/history-trace-full.jsonl 和
+                          log/history-trace-summary.jsonl（完整日志可能含敏感内容）
 
 验证级别（AI_VERIFY_LEVEL）:
   0 = 默认：本地确定性校验，不追加模型请求
@@ -471,6 +476,8 @@ if (argv[0] === 'ask') {
     { role: 'system', content: buildSystemPrompt(process.cwd(), 'terminal') },
     { role: 'user', content: question },
   ]
+  const historyTrace = createHistoryTraceContext('ask', 'ask')
+  traceHistory(historyTrace, 'before-run-agent', history)
 
   const answers: string[] = []
   const startedAt = Date.now()
@@ -481,16 +488,19 @@ if (argv[0] === 'ask') {
       baseURL: cfg.baseURL,
       provider: cfg.provider,
       verifyLevel: parseVerifyLevel(process.env.AI_VERIFY_LEVEL),
+      historyTrace,
     })) {
       if (ev.type === 'text') {
         answers.push(ev.content)
       } else if (ev.type === 'tool') {
-        console.error(`⚙ ${ev.summary}`)
+        // 非交互输出没有可安全重绘的动态区，只写最终态和系统状态，避免 start/result 成对重复。
+        if (ev.phase !== 'start') console.error(ev.summary)
       } else if (ev.type === 'limit') {
         console.error(`⏸ 已连续执行 ${ev.steps} 步仍未结束。`)
       }
     }
     const answer = answers.join('\n')
+    traceHistory(historyTrace, 'after-run-agent', history)
     console.log(answer)
     console.error(formatWorkedFor(Date.now() - startedAt))
     logChat({ channel: 'terminal', sessionId: 'ask', question, answer })
@@ -614,6 +624,63 @@ type UIMessage = {
   gap?: boolean
 }
 
+type ActiveTool = {
+  callId: string
+  name: string
+  summary: string
+}
+
+type ToolBatch = {
+  expected: number
+  tools: Map<string, { title: string; result?: string; failed?: boolean }>
+}
+
+type ToolTranscriptEntry = {
+  id: number
+  phase: 'start' | 'success' | 'failure' | 'info'
+  summary: string
+  detail?: string
+}
+
+function transcriptDetail(detail: string): string {
+  const lines = detail.replace(/\0/g, '').split('\n')
+  const shown = lines.slice(-6).join('\n')
+  const clipped = shown.length > 800 ? `${shown.slice(0, 797)}…` : shown
+  return lines.length > 6 ? `…\n${clipped}` : clipped
+}
+
+function tailTranscript(entries: ToolTranscriptEntry[], maxRows: number): ToolTranscriptEntry[] {
+  const visible: ToolTranscriptEntry[] = []
+  let used = 0
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const detailRows = entries[i].detail ? transcriptDetail(entries[i].detail!).split('\n').length + 1 : 0
+    const rows = 1 + detailRows
+    if (visible.length && used + rows > maxRows) break
+    visible.unshift(entries[i])
+    used += rows
+  }
+  return visible
+}
+
+function compactToolBatch(batch: ToolBatch): string {
+  const tools = [...batch.tools.values()]
+  if (tools.length === 1) return tools[0].result ?? tools[0].title
+
+  const failed = tools.filter(tool => tool.failed)
+  if (failed.length) {
+    const details = failed
+      .slice(0, 2)
+      .map(tool => (tool.result ?? tool.title).replace(/^✗\s*/, ''))
+      .join('；')
+    const more = failed.length > 2 ? `；另 ${failed.length - 2} 项失败` : ''
+    return `⚠ ${tools.length} 项操作 · ${tools.length - failed.length} 成功，${failed.length} 失败：${details}${more}`
+  }
+
+  const titles = tools.slice(0, 2).map(tool => tool.title).join('、')
+  const more = tools.length > 2 ? `等 ${tools.length} 项` : ''
+  return `✓ 完成 ${tools.length} 项：${titles}${more}`
+}
+
 // 单条消息行：memo 化，props 不变就不重绘。
 const MessageRow = memo(({ role, content, gap }: { role: string; content: string; gap?: boolean }) => {
   if (role === 'user') {
@@ -626,12 +693,13 @@ const MessageRow = memo(({ role, content, gap }: { role: string; content: string
     )
   }
   if (role === 'tool') {
-    // 失败行（✗ 开头）使用较柔和的 warning 黄，普通进度行维持暗黄。
+    // 工具行已经带有状态图标；这里不再叠加“⚙”，避免出现“⚙ ✓”双状态。
     const failed = content.startsWith('✗')
+    const succeeded = content.startsWith('✓')
     return (
       <Box marginBottom={0}>
-        <Text color="yellow" dimColor={!failed}>
-          {failed ? '' : '⚙ '}{content}
+        <Text color={failed || succeeded ? 'yellow' : undefined} dimColor={!failed}>
+          {content}
         </Text>
       </Box>
     )
@@ -711,10 +779,15 @@ function App() {
   const [messages, setMessages] = useState<UIMessage[]>([])
   // 正在流式输出的助手草稿：实时打字机效果，定稿后并入 messages（Static）并清空。
   const [streaming, setStreaming] = useState('')
+  // 工具调用在动态区只占一个活动项；收到 result 后移除，并把最终态沉淀到 Static 历史。
+  const [activeTools, setActiveTools] = useState<ActiveTool[]>([])
+  const [toolTranscript, setToolTranscript] = useState<ToolTranscriptEntry[]>([])
+  const [showTranscript, setShowTranscript] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastCtrlC = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
+  const toolBatchesRef = useRef(new Map<string, ToolBatch>())
   const historyRef = useRef<ChatMessage[]>([{ role: 'system', content: SYSTEM_PROMPT }])
   // 自增 id：给每条消息一个稳定 key，避免数组索引漂移引发不必要的重绘。
   const idRef = useRef(0)
@@ -742,6 +815,19 @@ function App() {
   // Esc：生成中按一下即中断当前任务（不退出程序）。
   // Ctrl+C：忙时一次中断生成，空闲时连按两次退出。
   useInput((_input, key) => {
+    if (showTranscript) {
+      if ((key.ctrl && _input === 'o') || (key.ctrl && _input === 'c') || key.escape || _input === 'q') {
+        process.stdout.write('\x1b[2J\x1b[H')
+        setShowTranscript(false)
+        setStaticEpoch(e => e + 1)
+      }
+      return
+    }
+    if (key.ctrl && _input === 'o') {
+      process.stdout.write('\x1b[2J\x1b[H')
+      setShowTranscript(true)
+      return
+    }
     if (key.escape) {
       if (busy && abortRef.current) {
         abortRef.current.abort()
@@ -807,7 +893,10 @@ function App() {
       const startedAt = Date.now()
 
       const history = historyRef.current
+      const historyTrace = createHistoryTraceContext('terminal', 'terminal')
+      traceHistory(historyTrace, 'before-user-push', history)
       history.push({ role: 'user', content: text })
+      traceHistory(historyTrace, 'after-user-push', history)
 
       const controller = new AbortController()
       abortRef.current = controller
@@ -833,6 +922,7 @@ function App() {
           provider: modelConfig.provider,
           signal: controller.signal,
           verifyLevel: parseVerifyLevel(process.env.AI_VERIFY_LEVEL),
+          historyTrace,
         })) {
           if (ev.type === 'delta') {
             // 流式增量：拼到尾巴上，每凑满一整行（遇 \n）就立刻沉淀进 Static 历史，
@@ -855,20 +945,63 @@ function App() {
             // 撞到步数上限：提示而非硬停，回复「继续」即可再跑一轮。
             commitTail(true)
             pushRow('tool', `⏸ 已连续执行 ${ev.steps} 步仍未结束。回复「继续」可再跑一轮。`)
-          } else {
-            // 工具进度：先把已说的话收口，再追加进度行。
+          } else if (ev.phase === 'start' && ev.callId) {
+            // 工具开始：只进入可变动态区，不能写进 Static，否则结束时只能再追加一条重复记录。
             commitTail(true)
-            pushRow('tool', ev.summary)
+            setToolTranscript(prev => [
+              ...prev,
+              { id: ++idRef.current, phase: ev.phase, summary: ev.summary, detail: ev.detail },
+            ])
+            const batchId = ev.batchId ?? ev.callId
+            const batch = toolBatchesRef.current.get(batchId) ?? {
+              expected: ev.batchSize ?? 1,
+              tools: new Map(),
+            }
+            batch.tools.set(ev.callId, { title: ev.summary })
+            toolBatchesRef.current.set(batchId, batch)
+            setActiveTools(prev => [
+              ...prev.filter(tool => tool.callId !== ev.callId),
+              { callId: ev.callId!, name: ev.name, summary: ev.summary },
+            ])
+          } else {
+            commitTail(true)
+            setToolTranscript(prev => [
+              ...prev,
+              { id: ++idRef.current, phase: ev.phase, summary: ev.summary, detail: ev.detail },
+            ])
+            if (ev.callId) setActiveTools(prev => prev.filter(tool => tool.callId !== ev.callId))
+            if (ev.callId && ev.batchId) {
+              const batch = toolBatchesRef.current.get(ev.batchId)
+              const tool = batch?.tools.get(ev.callId)
+              if (batch && tool) {
+                tool.result = ev.summary
+                tool.failed = ev.phase === 'failure'
+                const finished = [...batch.tools.values()].filter(item => item.result).length
+                if (batch.tools.size === batch.expected && finished === batch.expected) {
+                  pushRow('tool', compactToolBatch(batch))
+                  toolBatchesRef.current.delete(ev.batchId)
+                }
+              } else {
+                pushRow('tool', ev.summary)
+              }
+            } else {
+              pushRow('tool', ev.summary)
+            }
           }
         }
+        traceHistory(historyTrace, 'after-run-agent', history)
         pushRow('tool', formatWorkedFor(Date.now() - startedAt), true)
         logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: answers.join('\n') })
       } catch (e: any) {
         if (controller.signal.aborted) {
+          traceHistory(historyTrace, 'run-agent-aborted', history)
           commitTail(true) // 中断前先把已生成的尾巴留住
+          setActiveTools([])
+          toolBatchesRef.current.clear()
           pushRow('assistant', '[已中断]')
           logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: '[已中断]' })
         } else {
+          traceHistory(historyTrace, 'run-agent-error', history, { note: e?.message ?? String(e) })
           commitTail(true)
           setError(e?.message ?? String(e))
           logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: `[错误] ${e?.message ?? String(e)}` })
@@ -878,6 +1011,8 @@ function App() {
         setBusy(false)
         streamTailRef.current = ''
         setStreaming('')
+        setActiveTools([])
+        toolBatchesRef.current.clear()
         abortRef.current = null
       }
     },
@@ -919,6 +1054,32 @@ function App() {
     )
   }
 
+  if (showTranscript) {
+    const visible = tailTranscript(toolTranscript, Math.max(5, termRows - 4))
+    return (
+      <Box flexDirection="column" paddingX={1} height={termRows}>
+        <Box marginBottom={1}>
+          <Text color="cyan" bold>详细转录</Text>
+          <Text dimColor> · 最近 {visible.length}/{toolTranscript.length} 条工具事件</Text>
+        </Box>
+        <Box flexDirection="column" flexGrow={1}>
+          {visible.length ? visible.map(entry => (
+            <Box key={entry.id} flexDirection="column" marginBottom={entry.detail ? 1 : 0}>
+              <Text
+                color={entry.phase === 'failure' || entry.phase === 'success' ? 'yellow' : undefined}
+                dimColor={entry.phase !== 'failure'}
+              >
+                {entry.phase === 'start' ? '○ ' : ''}{entry.summary}
+              </Text>
+              {entry.detail && <Text dimColor>{transcriptDetail(entry.detail)}</Text>}
+            </Box>
+          )) : <Text dimColor>还没有工具调用。</Text>}
+        </Box>
+        <Text dimColor>Ctrl+O / Esc / q 返回默认视图</Text>
+      </Box>
+    )
+  }
+
   return (
     <Box flexDirection="column" paddingX={1}>
       {/* 头部 + 历史消息 — 用 Static 渲染：每条只往终端写一次，永不重绘。
@@ -944,7 +1105,15 @@ function App() {
       )}
 
       {/* 正在工作 — 细长一行，紧贴输入框上方 */}
-      {busy && (
+      {activeTools.map(tool => (
+        <Box key={tool.callId}>
+          <Text dimColor>
+            <Spinner /> {tool.summary}
+          </Text>
+        </Box>
+      ))}
+
+      {busy && activeTools.length === 0 && (
         <Box marginBottom={streaming ? 0 : 1}>
           <Text dimColor>
             <Spinner /> 思考中…（Esc 中断）
@@ -965,7 +1134,7 @@ function App() {
       {/* 常驻页脚提示 */}
       <Box paddingX={1}>
         <Text dimColor>
-          {modelConfig.model} · Enter 发送 · 行尾 \ 换行 · Esc 中断 · Ctrl+C×2 退出
+          {modelConfig.model} · Enter 发送 · Ctrl+O 详细转录 · Esc 中断 · Ctrl+C×2 退出
         </Text>
       </Box>
     </Box>

@@ -5,7 +5,7 @@
 //   for await (const ev of runAgent(history, deps)) {
 //     if (ev.type === 'delta') ...  // 流式文本增量（终端实时打字机；channel 可忽略）
 //     if (ev.type === 'text')  ...  // 一整段助手文本（channel/日志按段消费）
-//     if (ev.type === 'tool')  ...  // 正在调用某个本地工具（用于显示进度）
+//     if (ev.type === 'tool')  ...  // 工具 start/success/failure/info 生命周期事件
 //   }
 // history 会被原地追加（assistant / tool 消息），方便跨轮累积上下文。
 //
@@ -20,12 +20,15 @@ import {
   TOOL_SCHEMAS,
   runTool,
   describeToolCall,
+  describeToolSuccess,
+  describeToolFailure,
   formatToolResult,
   summarizeToolFailure,
   type ToolContext,
   type ToolResult,
 } from '../tools.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
+import { createHistoryTraceContext, traceHistory, traceLlmRequest, type HistoryTraceContext } from './history-trace.js'
 import { verifyFinalResult, type VerifyResult } from './verify.js'
 import {
   evaluateVerificationEvidence,
@@ -39,7 +42,19 @@ export type AgentEvent =
   | { type: 'delta'; content: string }
   // 一整段助手文本（一轮里 content 的最终态）：channel/日志按段消费。
   | { type: 'text'; content: string }
-  | { type: 'tool'; name: string; summary: string }
+  | {
+      type: 'tool'
+      name: string
+      summary: string
+      /** verbose transcript 使用；默认视图不渲染，避免工具输出淹没对话。 */
+      detail?: string
+      /** 普通工具有稳定 callId，供 UI 把运行态原地更新为最终态。系统状态没有 callId。 */
+      callId?: string
+      /** 同一轮并行工具共享 batchId；batchSize 让默认 UI 在整批结束后折叠为一行。 */
+      batchId?: string
+      batchSize?: number
+      phase: 'start' | 'success' | 'failure' | 'info'
+    }
   // 撞到最大步数：不直接结束，而是问一句「要不要继续」，由消费方提示用户回复「继续」接着跑。
   | { type: 'limit'; steps: number }
 
@@ -86,6 +101,8 @@ export type EngineDeps = CompactDeps & {
   verifyLevel?: 0 | 1 | 2
   /** 最终核验最多重试次数，默认 2。 */
   maxVerifyRetries?: number
+  /** 关联 full/summary history trace；未提供时由引擎创建 unknown 上下文。 */
+  historyTrace?: HistoryTraceContext
 }
 
 /**
@@ -112,6 +129,10 @@ class DeferredToolExecutor {
 
   get size(): number {
     return this.queued.length
+  }
+
+  get calls(): readonly RawToolCall[] {
+    return this.queued
   }
 
   /** assistant 响应已成功提交后，统一启动本批工具。 */
@@ -155,6 +176,11 @@ export async function* runAgent(
   deps: EngineDeps,
 ): AsyncGenerator<AgentEvent, void, unknown> {
   const maxSteps = deps.maxSteps ?? 200
+  const historyTrace = deps.historyTrace ?? createHistoryTraceContext('unknown', 'unknown')
+  const requestTracer = (requestKind: 'agent' | 'compact' | 'verify') =>
+    (request: Parameters<typeof traceLlmRequest>[1]) =>
+      traceLlmRequest(historyTrace, request, requestKind)
+  traceHistory(historyTrace, 'run-agent-start', history)
   const extraNames = new Set((deps.extraTools?.schemas ?? []).map(s => s.function.name))
   const tools = [...TOOL_SCHEMAS, ...(deps.extraTools?.schemas ?? [])]
 
@@ -233,6 +259,7 @@ export async function* runAgent(
     baseURL: deps.baseURL,
     provider: deps.provider,
     signal: deps.signal,
+    onRequest: requestTracer('verify'),
   }
 
   // 确定性验证证据：按工具批次排序。同一批工具并发执行，因此同批测试不能证明同批编辑后的状态。
@@ -254,14 +281,22 @@ export async function* runAgent(
 
     // ① 每轮开头按需压缩历史（就地 splice，保持调用方持有的引用有效）。
     if (!deps.noCompact) {
+      const historyLengthBeforeCompact = history.length
       try {
-        await compactInPlace(history, deps)
+        const compacted = await compactInPlace(history, { ...deps, onRequest: requestTracer('compact') })
+        if (compacted) {
+          traceHistory(historyTrace, 'after-compact', history, {
+            step,
+            note: `historyLengthBefore=${historyLengthBeforeCompact}`,
+          })
+        }
       } catch {
         /* 压缩失败不影响主流程 */
       }
     }
 
     // ② 流式调用模型。工具调用在此阶段只排队，不能提前产生副作用。
+    traceHistory(historyTrace, 'before-llm-request', history, { step })
     const executor = new DeferredToolExecutor(execTool, deps.signal)
     const stream = streamCompletion(history, {
       apiKey: deps.apiKey,
@@ -270,6 +305,7 @@ export async function* runAgent(
       provider: deps.provider,
       signal: deps.signal,
       tools,
+      onRequest: requestTracer('agent'),
     })
 
     // channel 不消费 delta，只消费 text，所以这里按「工具调用分隔出的文本段」缓存。
@@ -293,8 +329,6 @@ export async function* runAgent(
         } else {
           // 工具调用先于其后内容到达时，先把已说的文本作为一段 text 收口（保证 channel 端顺序正确）。
           yield* flushText()
-          const args = safeArgs(part.call.function.arguments)
-          yield { type: 'tool', name: part.call.function.name, summary: describeToolCall(part.call.function.name, args) }
           executor.add(part.call)
         }
         res = await stream.next()
@@ -305,9 +339,14 @@ export async function* runAgent(
       // 只试一次（reactiveCompactAttempted 守门），压完还超就放行报错，避免死循环。
       if (!deps.noCompact && !reactiveCompactAttempted && isContextOverflow(e)) {
         reactiveCompactAttempted = true
-        const did = await compactInPlace(history, deps, { force: true }).catch(() => false)
+        const did = await compactInPlace(
+          history,
+          { ...deps, onRequest: requestTracer('compact') },
+          { force: true },
+        ).catch(() => false)
         if (did) {
-          yield { type: 'tool', name: 'system', summary: '⚠ 上下文超长，已自动压缩后重试' }
+          traceHistory(historyTrace, 'after-reactive-compact', history, { step })
+          yield { type: 'tool', name: 'system', phase: 'info', summary: '⚠ 上下文超长，已自动压缩后重试' }
           continue
         }
       }
@@ -319,6 +358,7 @@ export async function* runAgent(
         yield {
           type: 'tool',
           name: 'system',
+          phase: 'info',
           summary: `⚠ 网络连接中断，重试中（${networkRetry}/${MAX_NETWORK_RETRY}）…`,
         }
         await sleep(500 * networkRetry)
@@ -339,23 +379,58 @@ export async function* runAgent(
       content: content || '',
       tool_calls: toolCalls.length ? toolCalls : undefined,
     })
+    traceHistory(historyTrace, 'after-assistant-push', history, { step })
 
     if (executor.size) {
       // assistant 响应已经完整收到并提交进历史，此时才允许工具产生副作用。
       // 若上面的流式请求中途失败，代码不会到达这里，队列会随本轮 executor 一起丢弃。
       executor.start()
       const currentToolBatch = ++toolBatch
+      const batchId = `tool-batch-${currentToolBatch}`
+      for (const call of executor.calls) {
+        yield {
+          type: 'tool',
+          name: call.function.name,
+          callId: call.id,
+          batchId,
+          batchSize: executor.size,
+          phase: 'start',
+          summary: describeToolCall(call.function.name, safeArgs(call.function.arguments)),
+          detail: describeToolDetail(call.function.name, safeArgs(call.function.arguments)),
+        }
+      }
       try {
         // ③ 回收并发执行的工具结果（按调用顺序回灌，满足 OpenAI 的配对要求）。
         for await (const { call, result } of executor.drain()) {
           const modelResult = formatToolResult(result)
           history.push({ role: 'tool', tool_call_id: call.id, content: modelResult })
-          // 工具结果只回灌给模型，用户看不到——失败时把原因冒泡成一条进度行，省得「报错没说为什么」。
-          if (!result.ok) {
+          traceHistory(historyTrace, 'after-tool-result-push', history, {
+            step,
+            toolName: call.function.name,
+            toolCallId: call.id,
+          })
+          // 工具结果只回灌给模型，用户看不到；把成功和失败都冒泡，形成完整的开始→结果闭环。
+          if (result.ok) {
             yield {
               type: 'tool',
               name: call.function.name,
-              summary: `✗ ${result.error?.userMessage ?? result.error?.message ?? '工具执行失败'}`,
+              callId: call.id,
+              batchId,
+              batchSize: executor.size,
+              phase: 'success',
+              summary: describeToolSuccess(call.function.name, safeArgs(call.function.arguments), result),
+              detail: result.output,
+            }
+          } else {
+            yield {
+              type: 'tool',
+              name: call.function.name,
+              callId: call.id,
+              batchId,
+              batchSize: executor.size,
+              phase: 'failure',
+              summary: describeToolFailure(call.function.name, safeArgs(call.function.arguments), result),
+              detail: result.output,
             }
           }
 
@@ -391,7 +466,7 @@ export async function* runAgent(
             '（系统提示）你上一条回复因达到输出长度上限被截断。请直接从断点继续，' +
             '不要重复已经输出的内容，也不要道歉或重述；剩余内容较多时可分小段输出。',
         })
-        yield { type: 'tool', name: 'system', summary: `↻ 输出被截断，自动续写（第 ${outputRecovery} 次）` }
+        yield { type: 'tool', name: 'system', phase: 'info', summary: `↻ 输出被截断，自动续写（第 ${outputRecovery} 次）` }
         continue
       }
       throw new AgentTerminationError(
@@ -428,7 +503,7 @@ export async function* runAgent(
             '（系统提示）你上一条响应没有正文也没有工具调用。请重新完成当前任务；' +
             '如果无法完成，请明确说明原因，不要返回空响应。',
         })
-        yield { type: 'tool', name: 'system', summary: '↻ 模型返回空响应，自动重试（1/1）' }
+        yield { type: 'tool', name: 'system', phase: 'info', summary: '↻ 模型返回空响应，自动重试（1/1）' }
         continue
       }
       throw new AgentTerminationError(
@@ -453,6 +528,7 @@ export async function* runAgent(
         yield {
           type: 'tool',
           name: 'verify',
+          phase: 'info',
           summary: requirement === 'strict' ? '↻ 高风险修改缺少验证证据，继续核验' : '↻ 代码修改缺少验证证据，继续核验',
         }
         continue
@@ -461,7 +537,7 @@ export async function* runAgent(
 
     // #1 级验证：最终核验 — 对比原始需求与最终交付，不通过则打回修正
     if (verifyLevel >= 1 && verifyRetries < maxVerifyRetries) {
-      yield { type: 'tool', name: 'verify', summary: '🔍 正在核验最终结果…' }
+      yield { type: 'tool', name: 'verify', phase: 'info', summary: '🔍 正在核验最终结果…' }
       const v: VerifyResult = await verifyFinalResult(history, verifyDeps)
       if (!v.pass) {
         verifyRetries++
@@ -477,19 +553,32 @@ export async function* runAgent(
         yield {
           type: 'tool',
           name: 'verify',
+          phase: 'info',
           summary: `↻ 核验不通过（${v.score}/100），第 ${verifyRetries} 次修正`,
         }
         continue
       }
-      yield { type: 'tool', name: 'verify', summary: `✓ 核验通过（${v.score}/100）` }
+      yield { type: 'tool', name: 'verify', phase: 'info', summary: `✓ 核验通过（${v.score}/100）` }
     }
 
+    traceHistory(historyTrace, 'run-agent-complete', history, { step })
     return // 正常完成
   }
 
   // 没有 return 而是走到这里 = 连跑 maxSteps 步仍未收尾。不硬停，问一句让用户决定。
   // 历史此刻停在「工具结果已回灌」的干净状态，用户回复「继续」即作为新一轮自然接着跑。
+  traceHistory(historyTrace, 'run-agent-limit', history, { note: `maxSteps=${maxSteps}` })
   yield { type: 'limit', steps: maxSteps }
+}
+
+function describeToolDetail(name: string, args: Record<string, any>): string {
+  if (name === 'run_bash') return String(args.command ?? '')
+  if (name === 'write_file') return String(args.path ?? '')
+  try {
+    return JSON.stringify(args, null, 2)
+  } catch {
+    return String(args)
+  }
 }
 
 /**

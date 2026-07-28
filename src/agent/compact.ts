@@ -6,7 +6,7 @@
 // 与 SessionStore.trim() 的区别：trim 是「直接丢弃」最旧的消息（无损但会丢上下文），
 // 压缩是「有损总结」——省 token 的同时尽量保住关键事实/决定/未完成事项。
 
-import { chatComplete, type ChatMessage } from '../llm.js'
+import { chatComplete, type ChatMessage, type StreamOptions } from '../llm.js'
 
 export type CompactDeps = {
   apiKey: string
@@ -14,6 +14,8 @@ export type CompactDeps = {
   baseURL: string
   provider?: string
   signal?: AbortSignal
+  /** fetch 前的完整请求观察钩子。 */
+  onRequest?: StreamOptions['onRequest']
   /** 触发压缩的估算 token 阈值，默认 40000。 */
   compactThreshold?: number
   /** 压缩时保留的最近消息条数（不含 system），默认 12。 */
@@ -92,6 +94,7 @@ export async function compactInPlace(
         baseURL: deps.baseURL,
         provider: deps.provider,
         signal: deps.signal,
+        onRequest: deps.onRequest,
       },
     )
     summary = content.trim()

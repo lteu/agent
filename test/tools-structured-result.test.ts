@@ -3,7 +3,14 @@ import test from 'node:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runTool, TOOL_SCHEMAS, type ToolContext } from '../src/tools.js'
+import {
+  describeToolSuccess,
+  describeToolFailure,
+  runTool,
+  TOOL_SCHEMAS,
+  type ToolContext,
+  type ToolResult,
+} from '../src/tools.js'
 
 process.env.AI_DISABLE_TOOL_DEBUG_LOG = '1'
 
@@ -56,6 +63,34 @@ test('web_fetch 会重试瞬时网络错误，并在恢复后返回成功', asyn
   assert.equal(attempts, 3)
   assert.equal(result.evidence?.attempts, 3)
   assert.match(result.output, /recovered/)
+})
+
+test('工具成功摘要明确报告成功，并保留抓取证据', () => {
+  const result: ToolResult = {
+    ok: true,
+    output: 'ok',
+    evidence: { kind: 'http', statusCode: 200, attempts: 3 },
+    durationMs: 12,
+  }
+
+  assert.equal(
+    describeToolSuccess('web_fetch', { url: 'https://example.com/data' }, result),
+    '✓ 抓取 https://example.com/data（HTTP 200，3 次尝试）',
+  )
+})
+
+test('工具失败摘要保留原调用标题，避免并行结果失去上下文', () => {
+  const result: ToolResult = {
+    ok: false,
+    output: 'Command failed',
+    error: { code: 'exit_nonzero', message: '命令退出码 1' },
+    durationMs: 8,
+  }
+
+  assert.equal(
+    describeToolFailure('run_bash', { intent: '查看日志', command: 'cat build.log' }, result),
+    '✗ 查看日志 · `cat build.log` · 命令退出码 1',
+  )
 })
 
 test('web_fetch 耗尽重试后向 UI 隐藏底层错误，但给模型保留详情', async t => {

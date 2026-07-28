@@ -1528,3 +1528,31 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return name
   }
 }
+
+/** 工具结束后的 UI 摘要。默认界面只沉淀这一行，运行中的同一调用由 UI 原地更新。 */
+export function describeToolSuccess(
+  name: string,
+  args: Record<string, any>,
+  result: ToolResult,
+): string {
+  const evidence = result.evidence
+  const details: string[] = []
+  if (evidence?.kind === 'http' && evidence.statusCode !== undefined) {
+    details.push(`HTTP ${evidence.statusCode}`)
+  }
+  if ((evidence?.attempts ?? 0) > 1) {
+    details.push(`${evidence!.attempts} 次尝试`)
+  }
+  const suffix = details.length ? `（${details.join('，')}）` : ''
+  return `✓ ${describeToolCall(name, args)}${suffix}`
+}
+
+/** 失败摘要必须保留调用标题，否则并行调用时“退出码 1”无法对应到原命令。 */
+export function describeToolFailure(
+  name: string,
+  args: Record<string, any>,
+  result: ToolResult,
+): string {
+  const reason = result.error?.userMessage ?? result.error?.message ?? '工具执行失败'
+  return `✗ ${describeToolCall(name, args)} · ${reason}`
+}

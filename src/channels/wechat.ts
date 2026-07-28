@@ -23,6 +23,7 @@ import { runAgent } from '../agent/engine.js'
 import { isStopCommand } from './stopwords.js'
 import { formatWorkedFor } from '../duration.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
+import { createHistoryTraceContext, traceHistory } from '../agent/history-trace.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadWechatConfig } from '../config.js'
 
@@ -159,11 +160,14 @@ export function startWechat(): void {
     const controller = new AbortController()
     controllers.set(sessionId, controller)
     const history = sessions.get(sessionId)
+    const historyTrace = createHistoryTraceContext('wechat', sessionId)
+    traceHistory(historyTrace, 'before-user-push', history)
     history.push({ role: 'user', content: text })
+    traceHistory(historyTrace, 'after-user-push', history)
     try {
       let said = false
       const answers: string[] = []
-      for await (const out of runAgent(history, { apiKey: cfg.apiKey!, model: cfg.model, baseURL: cfg.baseURL, provider: cfg.provider, signal: controller.signal })) {
+      for await (const out of runAgent(history, { apiKey: cfg.apiKey!, model: cfg.model, baseURL: cfg.baseURL, provider: cfg.provider, signal: controller.signal, historyTrace })) {
         if (out.type === 'text' && out.content.trim()) {
           await sendText(fromUser, out.content)
           answers.push(out.content)
@@ -173,6 +177,7 @@ export function startWechat(): void {
           said = true
         }
       }
+      traceHistory(historyTrace, 'after-run-agent', history)
       if (!said) await sendText(fromUser, '(已完成，无文字输出)')
       await sendText(fromUser, formatWorkedFor(Date.now() - startedAt))
       logChat({ channel: 'wechat', sessionId, question: text, answer: answers.join('\n') })
@@ -180,8 +185,10 @@ export function startWechat(): void {
     } catch (err: any) {
       // 用户主动叫停：已在叫停时反馈过「已停止」，这里只记日志，不再回报“出错”。
       if (controller.signal.aborted) {
+        traceHistory(historyTrace, 'run-agent-aborted', history)
         logChat({ channel: 'wechat', sessionId, question: text, answer: '[已中断]' })
       } else {
+        traceHistory(historyTrace, 'run-agent-error', history, { note: err?.message ?? String(err) })
         await sendText(fromUser, '⚠ 出错了: ' + (err?.message ?? String(err)))
         logChat({ channel: 'wechat', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
       }

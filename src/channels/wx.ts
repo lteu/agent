@@ -34,6 +34,7 @@ import { runAgent } from '../agent/engine.js'
 import { isStopCommand } from './stopwords.js'
 import { formatWorkedFor } from '../duration.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
+import { createHistoryTraceContext, traceHistory } from '../agent/history-trace.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
 import { loadConfig, loadWxConfig, saveWxConfig } from '../config.js'
 import { keepAwake } from '../keepawake.js'
@@ -450,7 +451,10 @@ export function startWx(): void {
     controllers.set(sessionId, controller)
     const stopTyping = startTyping(fromUserId, contextToken)
     const history = sessions.get(sessionId)
+    const historyTrace = createHistoryTraceContext('wx', sessionId)
+    traceHistory(historyTrace, 'before-user-push', history)
     history.push({ role: 'user', content: text })
+    traceHistory(historyTrace, 'after-user-push', history)
     try {
       let said = false
       const answers: string[] = []
@@ -464,6 +468,7 @@ export function startWx(): void {
           schemas: [SEND_IMAGE_SCHEMA, SEND_FILE_SCHEMA],
           run: (_name, args) => sendMedia(fromUserId, contextToken, String(args.path ?? '')),
         },
+        historyTrace,
       })) {
         if (out.type === 'text' && out.content.trim()) {
           await sendText(fromUserId, contextToken, out.content)
@@ -474,14 +479,17 @@ export function startWx(): void {
           said = true
         }
       }
+      traceHistory(historyTrace, 'after-run-agent', history)
       if (!said) await sendText(fromUserId, contextToken, '(已完成，无文字输出)')
       await sendText(fromUserId, contextToken, formatWorkedFor(Date.now() - startedAt))
       logChat({ channel: 'wx', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {
       if (controller.signal.aborted) {
+        traceHistory(historyTrace, 'run-agent-aborted', history)
         logChat({ channel: 'wx', sessionId, question: text, answer: '[已中断]' })
       } else {
+        traceHistory(historyTrace, 'run-agent-error', history, { note: err?.message ?? String(err) })
         await sendText(fromUserId, contextToken, '⚠ 出错了: ' + (err?.message ?? String(err)))
         logChat({ channel: 'wx', sessionId, question: text, answer: `[错误] ${err?.message ?? String(err)}` })
       }

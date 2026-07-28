@@ -26,6 +26,17 @@ export type StreamOptions = {
   /** 服务商显示名，仅用于报错信息（如 "OpenAI"、"通义千问"）；也用于判断是否走 Anthropic 协议。 */
   provider?: string
   signal?: AbortSignal
+  /** 在真正 fetch 前暴露实际 URL 和请求体；调用方负责脱敏与落盘。 */
+  onRequest?: (request: LlmRequestSnapshot) => void
+}
+
+export type LlmRequestSnapshot = {
+  protocol: 'openai-compatible' | 'anthropic'
+  url: string
+  method: 'POST'
+  headers: Record<string, string>
+  /** 与 fetch 实际使用的字符串完全一致。 */
+  body: string
 }
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com'
@@ -145,6 +156,16 @@ function anthropicURL(baseURL: string): string {
   return `${baseURL}/v1/messages`
 }
 
+function emitRequest(
+  opts: StreamOptions,
+  protocol: LlmRequestSnapshot['protocol'],
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+): void {
+  opts.onRequest?.({ protocol, url, method: 'POST', headers, body })
+}
+
 /** 把 Anthropic 非流式 /v1/messages 响应体的 content 块解析成 Completion。 */
 function parseAnthropicMessage(json: any): Completion {
   let content = ''
@@ -169,17 +190,22 @@ async function anthropicChatComplete(
 ): Promise<Completion> {
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const { system, messages: anthropicMessages } = toAnthropicPayload(messages)
-  const res = await fetch(anthropicURL(baseURL), {
+  const url = anthropicURL(baseURL)
+  const body = {
+    model: opts.model,
+    max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+    stream: false,
+    ...(system ? { system } : {}),
+    messages: anthropicMessages,
+    ...(opts.tools && opts.tools.length ? { tools: toAnthropicTools(opts.tools) } : {}),
+  }
+  const headers = anthropicHeaders(opts.apiKey)
+  const serializedBody = JSON.stringify(body)
+  emitRequest(opts, 'anthropic', url, headers, serializedBody)
+  const res = await fetch(url, {
     method: 'POST',
-    headers: anthropicHeaders(opts.apiKey),
-    body: JSON.stringify({
-      model: opts.model,
-      max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
-      stream: false,
-      ...(system ? { system } : {}),
-      messages: anthropicMessages,
-      ...(opts.tools && opts.tools.length ? { tools: toAnthropicTools(opts.tools) } : {}),
-    }),
+    headers,
+    body: serializedBody,
     signal: opts.signal,
   })
 
@@ -197,17 +223,22 @@ async function* anthropicStreamCompletion(
 ): AsyncGenerator<StreamPart, Completion, unknown> {
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const { system, messages: anthropicMessages } = toAnthropicPayload(messages)
-  const res = await fetch(anthropicURL(baseURL), {
+  const url = anthropicURL(baseURL)
+  const body = {
+    model: opts.model,
+    max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+    stream: true,
+    ...(system ? { system } : {}),
+    messages: anthropicMessages,
+    ...(opts.tools && opts.tools.length ? { tools: toAnthropicTools(opts.tools) } : {}),
+  }
+  const headers = anthropicHeaders(opts.apiKey)
+  const serializedBody = JSON.stringify(body)
+  emitRequest(opts, 'anthropic', url, headers, serializedBody)
+  const res = await fetch(url, {
     method: 'POST',
-    headers: anthropicHeaders(opts.apiKey),
-    body: JSON.stringify({
-      model: opts.model,
-      max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
-      stream: true,
-      ...(system ? { system } : {}),
-      messages: anthropicMessages,
-      ...(opts.tools && opts.tools.length ? { tools: toAnthropicTools(opts.tools) } : {}),
-    }),
+    headers,
+    body: serializedBody,
     signal: opts.signal,
   })
 
@@ -328,18 +359,23 @@ export async function chatComplete(
   if (isAnthropic(opts)) return anthropicChatComplete(messages, opts)
 
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
-  const res = await fetch(`${baseURL}/chat/completions`, {
+  const url = `${baseURL}/chat/completions`
+  const body = {
+    model: opts.model,
+    messages,
+    stream: false,
+    ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
+  }
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${opts.apiKey}`,
+  }
+  const serializedBody = JSON.stringify(body)
+  emitRequest(opts, 'openai-compatible', url, headers, serializedBody)
+  const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${opts.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: opts.model,
-      messages,
-      stream: false,
-      ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
-    }),
+    headers,
+    body: serializedBody,
     signal: opts.signal,
   })
 
@@ -377,18 +413,23 @@ export async function* streamCompletion(
   if (isAnthropic(opts)) return yield* anthropicStreamCompletion(messages, opts)
 
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
-  const res = await fetch(`${baseURL}/chat/completions`, {
+  const url = `${baseURL}/chat/completions`
+  const body = {
+    model: opts.model,
+    messages,
+    stream: true,
+    ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
+  }
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${opts.apiKey}`,
+  }
+  const serializedBody = JSON.stringify(body)
+  emitRequest(opts, 'openai-compatible', url, headers, serializedBody)
+  const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${opts.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: opts.model,
-      messages,
-      stream: true,
-      ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
-    }),
+    headers,
+    body: serializedBody,
     signal: opts.signal,
   })
 
@@ -491,17 +532,21 @@ export async function* streamChat(
   if (isAnthropic(opts)) return yield* anthropicStreamChat(messages, opts)
 
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
-  const res = await fetch(`${baseURL}/chat/completions`, {
+  const url = `${baseURL}/chat/completions`
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${opts.apiKey}`,
+  }
+  const body = JSON.stringify({
+    model: opts.model,
+    messages,
+    stream: true,
+  })
+  emitRequest(opts, 'openai-compatible', url, headers, body)
+  const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${opts.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: opts.model,
-      messages,
-      stream: true,
-    }),
+    headers,
+    body,
     signal: opts.signal,
   })
 

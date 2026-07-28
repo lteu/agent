@@ -88,6 +88,51 @@ ai --rm-model doubao      # 删除一个预设
 ai
 ```
 
+### 启动完整 LLM 请求追踪
+
+需要查看 Agent 调用 LLM 时实际发送的完整请求，可在启动时设置 `TRACE=1`：
+
+```bash
+TRACE=1 ai
+```
+
+如果希望当前终端后续每次直接执行 `ai` 都启用追踪：
+
+```bash
+export TRACE=1
+ai
+```
+
+必须在**启动 Agent 之前**设置该环境变量；已经运行的 Agent 不会读取后来设置的环境变量。启动后至少发送一个问题，真正发生 LLM 调用时才会创建日志文件。
+
+日志固定写入本项目的 `log/` 目录，与启动 `ai` 时所在的工作目录无关：
+
+```text
+/Users/lteu/progetto/agent/log/history-trace-full.jsonl
+/Users/lteu/progetto/agent/log/history-trace-summary.jsonl
+```
+
+- `history-trace-full.jsonl`：完整请求及上下文，包括 URL、method、全部 headers、Authorization/API Key、实际发送的原始 body、解析后的 messages 和 tools。
+- `history-trace-summary.jsonl`：同一事件的摘要，便于搜索、统计以及通过 `runId` 定位完整记录。
+
+查看完整 LLM 请求：
+
+```bash
+jq 'select(.stage == "llm-http-request")' \
+  /Users/lteu/progetto/agent/log/history-trace-full.jsonl
+```
+
+只查看实际出站请求：
+
+```bash
+jq 'select(.stage == "llm-http-request") | .request' \
+  /Users/lteu/progetto/agent/log/history-trace-full.jsonl
+```
+
+`requestKind` 用来区分调用来源：`agent` 是主 Agent，`compact` 是历史压缩，`verify` 是最终核验。
+
+> **安全警告：**完整日志包含真实 API Key、模型上下文、工具参数、工具结果和可能读取到的文件内容，应按密钥文件保护，禁止提交、分享或上传。整个 `log/` 目录已被 `.gitignore` 忽略。
+
 对话框内快捷键：
 
 | 按键 | 作用 |
