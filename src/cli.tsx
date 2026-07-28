@@ -737,13 +737,29 @@ const Header = memo(({ model, baseURL }: { model: string; baseURL: string }) => 
 // 仅通过直接调度自身重渲染来更新画面。
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
+// Ink 的动画依赖「上移光标 + 擦除旧行」。部分 SSH/网页终端虽然能显示颜色，
+// 却不能稳定处理高频光标移动，结果是每一帧都被追加到屏幕（见 bug.png）。
+// 远程会话默认使用静态状态点，避免无内容变化时仍每 150ms 重画整块底栏。
+// 如确认远程终端兼容，可用 AI_SPINNER=1 强制开启动画；AI_SPINNER=0 可在本地关闭。
+const spinnerOverride = process.env.AI_SPINNER
+const REMOTE_SAFE_UI =
+  Boolean(process.env.SSH_TTY || process.env.SSH_CONNECTION) &&
+  process.env.AI_LIVE_STREAM !== '1'
+const ANIMATE_SPINNER =
+  spinnerOverride === '1' ||
+  (spinnerOverride !== '0' &&
+    process.stdout.isTTY === true &&
+    process.env.TERM !== 'dumb' &&
+    !REMOTE_SAFE_UI)
+
 const Spinner = memo(() => {
   const [i, setI] = useState(0)
   useEffect(() => {
+    if (!ANIMATE_SPINNER) return
     const id = setInterval(() => setI(x => (x + 1) % SPINNER_FRAMES.length), 150)
     return () => clearInterval(id)
   }, [])
-  return <Text color="cyan">{SPINNER_FRAMES[i]}</Text>
+  return <Text color="cyan">{ANIMATE_SPINNER ? SPINNER_FRAMES[i] : '●'}</Text>
 })
 
 // 取文本「末尾若干行」，按终端列宽把自动换行也算进占用行数。
@@ -935,7 +951,9 @@ function App() {
               nl = tail.indexOf('\n')
             }
             streamTailRef.current = tail
-            setStreaming(tail)
+            // SSH 下逐 token 重画仍可能压垮兼容性较差的远程终端。完整行照常实时沉淀，
+            // 只把未换行的尾巴留到下一行或本段结束时一次性显示。
+            if (!REMOTE_SAFE_UI) setStreaming(tail)
           } else if (ev.type === 'text') {
             // 一段文本收口：把剩余尾巴沉淀，段尾留一行间距。完整内容已逐行进历史，
             // 这里不再重复 push 整段，只取 ev.content 做日志。
@@ -978,13 +996,17 @@ function App() {
                 tool.failed = ev.phase === 'failure'
                 const finished = [...batch.tools.values()].filter(item => item.result).length
                 if (batch.tools.size === batch.expected && finished === batch.expected) {
-                  pushRow('tool', compactToolBatch(batch))
+                  // 工具失败属于 agent 的内部恢复过程。默认聊天区不展示退出码、shell
+                  // 报错等噪声；完整 summary/detail 已写入 toolTranscript，可用 Ctrl+O 查看。
+                  // 整批全部成功时才沉淀简洁摘要，避免把部分失败包装成误导性的成功。
+                  const hasFailure = [...batch.tools.values()].some(item => item.failed)
+                  if (!hasFailure) pushRow('tool', compactToolBatch(batch))
                   toolBatchesRef.current.delete(ev.batchId)
                 }
-              } else {
+              } else if (ev.phase !== 'failure') {
                 pushRow('tool', ev.summary)
               }
-            } else {
+            } else if (ev.phase !== 'failure') {
               pushRow('tool', ev.summary)
             }
           }
