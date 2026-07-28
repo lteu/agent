@@ -4,16 +4,19 @@
   "description": "在终端输入 ai 弹出可编辑对话框，接入 DeepSeek",
   "type": "module",
   "bin": {
-    "ai": "dist/cli.js"
+    "ai": "dist/cli.js",
+    "ai-remote": "dist/remote.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "esbuild src/cli.tsx --bundle --platform=node --target=node20 --format=esm --packages=external --jsx=automatic --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli.js",
+    "build:remote": "esbuild src/remote.ts --bundle --platform=node --target=node20 --format=esm --packages=external --banner:js=\"#!/usr/bin/env node\" --outfile=dist/remote.js && esbuild src/remote-cli.ts --bundle --platform=node --target=node20 --format=esm --packages=external --jsx=automatic --banner:js=\"#!/usr/bin/env node\" --outfile=dist/remote-cli.js && esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/server.js",
     "test": "tsx --test test/*.test.ts",
     "dev": "tsx src/cli.tsx",
     "start": "node dist/cli.js",
+    "start:server": "node dist/server.js",
     "dmg": "bash scripts/make-dmg.sh",
     "pkg": "bash scripts/make-pkg.sh"
   },

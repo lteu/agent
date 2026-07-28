@@ -1,0 +1,22 @@
+[Unit]
+Description=AI Remote key custody and usage metering service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ai-remote
+EnvironmentFile=/etc/ai-remote.env
+ExecStart=/usr/bin/node /opt/ai-remote/dist/server.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ai-remote
+
+[Install]
+WantedBy=multi-user.target

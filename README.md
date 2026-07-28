@@ -88,6 +88,144 @@ ai --rm-model doubao      # 删除一个预设
 ai
 ```
 
+## 托管密钥版本（`ai-remote`）
+
+`ai-remote` 使用与 `ai` 相同的 Agent 和终端界面，但真实模型密钥只保存在远端
+`ai-remote-server`。首次启动会采集本机设备指纹、换取设备访问凭证并保存到
+`~/.ai-remote/config.json`（权限 `0600`）；之后经 SSH 隧道访问远端，不占用公网
+HTTP 端口，也不会把模型密钥下发到客户端。
+
+### 安装 `ai-remote`
+
+本机需要 Node.js 20 或更高版本，并且能够通过 SSH 登录已经部署
+`ai-remote-server` 的服务器。
+
+#### 一键安装（推荐）
+
+macOS / Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lteu/agent/main/install.sh | sh
+```
+
+Windows PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/lteu/agent/main/install.ps1 | iex
+```
+
+安装器从 GitHub 下载源码并构建，只在当前用户目录安装：
+
+- macOS / Linux：程序位于 `~/.local/share/ai-remote`，命令位于
+  `~/.local/bin/ai-remote`
+- Windows：程序和命令位于 `%LOCALAPPDATA%\ai-remote`
+- 不使用 `sudo`，不安装或覆盖原来的 `ai` 命令
+- 重复运行同一条命令即可升级
+
+macOS / Linux 如果提示命令不在 `PATH`，按照安装器输出把
+`~/.local/bin` 加入 `PATH`，然后重新打开终端。
+
+注意：一键安装解决的是客户端安装。当前服务器仍只监听
+`127.0.0.1:8789`，客户端默认通过 SSH 隧道访问；新电脑仍需拥有服务器 SSH
+权限并配置下面的 SSH 目标。尚未配置公网 HTTPS 时，仅知道服务器 IP 并不能免密
+使用服务。
+
+#### 从项目目录安装
+
+1. 安装依赖并单独构建托管版：
+
+```bash
+cd ~/progetto/agent
+npm install
+npm run build:remote
+```
+
+该命令生成三个独立文件：
+
+- `dist/remote.js`：`ai-remote` 启动器，负责 SSH 隧道和设备绑定
+- `dist/remote-cli.js`：托管版 Agent，不修改原来的 `dist/cli.js`
+- `dist/server.js`：部署在远程服务器上的密钥托管与用量计量服务
+
+2. 注册全局命令：
+
+```bash
+npm link
+command -v ai-remote
+```
+
+正常情况下最后一条命令会输出 `ai-remote` 的可执行路径。`npm link` 同时保留
+原有 `ai` 命令；托管版不会覆盖原 Agent 的配置或模型密钥。
+
+3. 配置 SSH 目标。
+
+默认连接 SSH 别名 `remote`。如果本机尚未配置，可以在 `~/.ssh/config` 添加：
+
+```sshconfig
+Host remote
+  HostName <服务器公网 IP 或域名>
+  User root
+  Port 443
+  IdentityFile ~/.ssh/<私钥文件>
+```
+
+先确认 SSH 可以直连：
+
+```bash
+ssh remote
+```
+
+也可以不使用 `remote` 这个名字，在启动时指定其他 SSH 主机或别名：
+
+```bash
+AI_REMOTE_SSH_HOST=my-server ai-remote
+```
+
+4. 首次启动并验证：
+
+```bash
+ai-remote
+```
+
+首次运行会自动完成以下操作：
+
+1. 建立 `本机 127.0.0.1:8790 → SSH → 远端 127.0.0.1:8789` 隧道；
+2. 生成稳定的本机设备指纹；
+3. 向服务端申请设备访问凭证；
+4. 将凭证保存到 `~/.ai-remote/config.json`，然后启动独立 Agent。
+
+如果同一台硬件删除系统或 Agent 后重新安装，客户端会重新计算相同 HWID；服务端
+保留原 `device_id`、余额和用量历史，仅吊销旧 Access Key 并签发新 Key。
+
+可先用非交互命令检查安装：
+
+```bash
+ai-remote ask "只回复 OK"  # 发起一次真实模型调用
+ai-remote usage           # 查询累计用量与剩余额度
+```
+
+服务器侧无需对公网开放 `8789`。该端口只监听远端 `127.0.0.1`，客户端经现有
+SSH 端口访问；当前部署使用 SSH TCP `443`。如果服务器限制出站访问，还需允许
+出站 TCP `443`，供服务端连接模型厂商 API。
+
+### 配置项
+
+可选环境变量：
+
+- `AI_REMOTE_SSH_HOST`：SSH 主机或别名，默认 `remote`
+- `AI_REMOTE_PORT`：远端服务端口，默认 `8789`
+- `AI_REMOTE_LOCAL_PORT`：本机隧道端口，默认 `8790`
+- `AI_REMOTE_URL`：直接使用指定 HTTPS 地址；设置后不建立 SSH 隧道
+- `AI_REMOTE_INVITE_CODE`：服务端开启邀请码时用于首次绑定
+
+服务端运行 `dist/server.js`，默认仅监听 `127.0.0.1:8789`，SQLite 数据保存到
+`/var/lib/ai-remote/ai-remote.sqlite`。模型密钥通过
+`AI_REMOTE_UPSTREAM_API_KEY` 环境变量注入；服务端会强制模型名、按设备限流、
+在同一事务内写用量明细并扣减余额。部署示例见
+[`deploy/ai-remote.service`](deploy/ai-remote.service)。
+
+托管版使用独立的 `dist/remote-cli.js`；原来的 `npm run build`、`dist/cli.js`
+和 `ai` 命令保持不变。
+
 ### 启动完整 LLM 请求追踪
 
 需要查看 Agent 调用 LLM 时实际发送的完整请求，可在启动时设置 `TRACE=1`：
