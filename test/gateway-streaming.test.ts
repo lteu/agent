@@ -27,7 +27,7 @@ test('流式网关立即发送响应头，不等待 Claude 完整回答', async 
 const lines = readline.createInterface({ input: process.stdin })
 let turn = 0
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
-lines.on('line', () => {
+lines.on('line', line => {
   turn += 1
   const emitText = text => {
     send({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
@@ -44,15 +44,90 @@ lines.on('line', () => {
     emitText('READY')
     return
   }
+  if (turn === 2) {
+    if (line.includes('unprefixed-local-tool')) {
+      send({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'local_mode_search_1',
+            name: 'WebSearch',
+            input: { query: 'preserve this research' },
+          }],
+        },
+      })
+      send({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use' },
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      })
+      setTimeout(() => {
+        send({
+          type: 'user',
+          message: {
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'local_mode_search_1',
+              content: 'preserved remote evidence',
+            }],
+          },
+          tool_use_result: { searchCount: 1, durationSeconds: 0.1 },
+        })
+        send({
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: 'local_bash_1',
+              name: 'run_bash',
+              input: { command: 'pwd', intent: 'test' },
+            }],
+          },
+        })
+        send({
+          type: 'stream_event',
+          event: {
+            type: 'message_delta',
+            delta: { stop_reason: 'tool_use' },
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        })
+      }, 10)
+      return
+    }
+    if (line.includes('unsupported-remote-tool')) {
+      send({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'dangerous_1',
+            name: 'DangerousRemoteTool',
+            input: {},
+          }],
+        },
+      })
+      return
+    }
+    emitText("I'll search for the exact source first.")
+    return
+  }
   send({
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'remote_search_1',
-        name: 'WebSearch',
-        input: { query: 'test' },
-      }],
+      content: [
+        { type: 'text', text: 'Let me verify the source.' },
+        {
+          type: 'tool_use',
+          id: 'remote_search_1',
+          name: 'WebSearch',
+          input: { query: 'test' },
+        },
+      ],
     },
   })
   send({
@@ -63,7 +138,20 @@ lines.on('line', () => {
       usage: { input_tokens: 1, output_tokens: 1 },
     },
   })
-  setTimeout(() => emitText('<LOCAL_AGENT_FINAL>STREAM_OK'), 1200)
+  setTimeout(() => {
+    send({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'remote_search_1',
+          content: 'Web search results for query: "test"',
+        }],
+      },
+      tool_use_result: { searchCount: 1, durationSeconds: 1.2 },
+    })
+    emitText('<LOCAL_AGENT_FINAL>STREAM_OK')
+  }, 1200)
 })
 `,
   )
@@ -116,10 +204,53 @@ lines.on('line', () => {
     throw new Error(`stream terminated: ${String(error)}\ngateway stderr: ${gatewayStderr}`)
   })
   assert.match(payload, /STREAM_OK/)
+  assert.match(payload, /ai_remote_progress/)
+  assert.match(payload, /I'll search for the exact source first/)
+  assert.match(payload, /Let me verify the source/)
+  assert.match(payload, /Web Search/)
+  assert.match(payload, /Did 1 search in 1s/)
   assert.match(payload, /data: \[DONE\]/)
   const completedHealth: any = await fetch(`${origin}/health`).then(res => res.json())
   assert.equal(completedHealth.remote_web_searches, 1)
   assert.equal(completedHealth.remote_web_fetches, 0)
+
+  const localToolResponse = await fetch(`${origin}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'test',
+      stream: true,
+      messages: [{ role: 'user', content: 'unprefixed-local-tool' }],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'run_bash',
+            description: 'test',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      ],
+    }),
+  })
+  const localToolPayload = await localToolResponse.text()
+  assert.match(localToolPayload, /"name":"run_bash"/)
+  assert.match(localToolPayload, /"finish_reason":"tool_calls"/)
+  assert.match(localToolPayload, /ai_remote_context/)
+
+  const unsupportedResponse = await fetch(`${origin}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'test',
+      stream: true,
+      messages: [{ role: 'user', content: 'unsupported-remote-tool' }],
+    }),
+  })
+  const unsupportedPayload = await unsupportedResponse.text()
+  assert.match(unsupportedPayload, /ai_remote_error/)
+  assert.match(unsupportedPayload, /DangerousRemoteTool/)
+  assert.match(unsupportedPayload, /data: \[DONE\]/)
 
   const disconnected = await fetch(`${origin}/v1/chat/completions`, {
     method: 'POST',

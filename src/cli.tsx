@@ -46,6 +46,17 @@ import {
   formatTokenUsage,
   type TokenUsage,
 } from './token-usage.js'
+import {
+  EMPTY_ACTIVITY_COUNTS,
+  activityCategory,
+  addActivity,
+  formatActivity,
+  formatUserPrompt,
+  hasActivity,
+  parseAgentCardItem,
+  type ActivityCounts,
+  type AgentCardItem,
+} from './ui-activity.js'
 
 /** 把环境变量字符串转成验证级别（0|1|2），无效值返回 undefined（走 engine 默认值）。 */
 function parseVerifyLevel(raw: string | undefined): 0 | 1 | 2 | undefined {
@@ -633,9 +644,15 @@ const config = loadConfig()
 // gap：该行底部是否留一行间距（段落收尾用）。
 type UIMessage = {
   id: number
-  role: 'user' | 'assistant' | 'assistant-line' | 'tool'
+  role: 'user' | 'assistant' | 'assistant-line' | 'tool' | 'remote-tool' | 'activity' | 'agent-batch'
   content: string
   gap?: boolean
+  toolCard?: {
+    title: string
+    result: string
+    failed: boolean
+  }
+  agentCard?: AgentCardItem[]
 }
 
 type ActiveTool = {
@@ -646,7 +663,7 @@ type ActiveTool = {
 
 type ToolBatch = {
   expected: number
-  tools: Map<string, { title: string; result?: string; failed?: boolean }>
+  tools: Map<string, { name: string; title: string; result?: string; detail?: string; failed?: boolean }>
 }
 
 type ToolTranscriptEntry = {
@@ -676,33 +693,81 @@ function tailTranscript(entries: ToolTranscriptEntry[], maxRows: number): ToolTr
   return visible
 }
 
-function compactToolBatch(batch: ToolBatch): string {
-  const tools = [...batch.tools.values()]
-  if (tools.length === 1) return tools[0].result ?? tools[0].title
-
-  const failed = tools.filter(tool => tool.failed)
-  if (failed.length) {
-    const details = failed
-      .slice(0, 2)
-      .map(tool => (tool.result ?? tool.title).replace(/^✗\s*/, ''))
-      .join('；')
-    const more = failed.length > 2 ? `；另 ${failed.length - 2} 项失败` : ''
-    return `⚠ ${tools.length} 项操作 · ${tools.length - failed.length} 成功，${failed.length} 失败：${details}${more}`
-  }
-
-  const titles = tools.slice(0, 2).map(tool => tool.title).join('、')
-  const more = tools.length > 2 ? `等 ${tools.length} 项` : ''
-  return `✓ 完成 ${tools.length} 项：${titles}${more}`
-}
-
 // 单条消息行：memo 化，props 不变就不重绘。
-const MessageRow = memo(({ role, content, gap }: { role: string; content: string; gap?: boolean }) => {
+const MessageRow = memo(
+  ({
+    role,
+    content,
+    gap,
+    toolCard,
+    agentCard,
+  }: {
+    role: string
+    content: string
+    gap?: boolean
+    toolCard?: UIMessage['toolCard']
+    agentCard?: UIMessage['agentCard']
+  }) => {
   if (role === 'user') {
     return (
       <Box marginBottom={1}>
-        <Text color="cyan" bold>
-          ❯ {content}
+        <Text backgroundColor="#3a3a3a" color="white">
+          {formatUserPrompt(content, process.stdout.columns || 80)}
         </Text>
+      </Box>
+    )
+  }
+  if (role === 'activity') {
+    return (
+      <Box marginBottom={gap ? 1 : 0}>
+        <Text dimColor>{content}</Text>
+      </Box>
+    )
+  }
+  if (role === 'agent-batch' && agentCard) {
+    const finished = agentCard.filter(item => item.status === 'Done').length
+    const failed = agentCard.length - finished
+    return (
+      <Box marginBottom={1} flexDirection="column">
+        <Text>
+          <Text color={failed ? 'yellow' : 'green'}>●</Text>{' '}
+          <Text bold>
+            {agentCard.length} {agentCard.length === 1 ? 'agent' : 'agents'} finished
+          </Text>
+          {failed > 0 && <Text dimColor> · {failed} need attention</Text>}
+        </Text>
+        {agentCard.map((item, index) => {
+          const last = index === agentCard.length - 1
+          return (
+            <Box key={`${item.title}-${index}`} flexDirection="column">
+              <Text>
+                {'  '}{last ? '└' : '├'} {item.title}
+                <Text dimColor> · {item.toolUses} tool {item.toolUses === 1 ? 'use' : 'uses'}</Text>
+              </Text>
+              <Text color={item.failed ? 'yellow' : undefined} dimColor={!item.failed}>
+                {'  '}{last ? ' ' : '│'}  └ {item.status}
+              </Text>
+            </Box>
+          )
+        })}
+      </Box>
+    )
+  }
+  if (role === 'remote-tool' && toolCard) {
+    return (
+      <Box marginBottom={1} flexDirection="column">
+        <Text>
+          <Text color={toolCard.failed ? 'magenta' : 'green'}>●</Text>{' '}
+          <Text bold>{toolCard.title}</Text>
+        </Text>
+        <Text color={toolCard.failed ? 'magenta' : undefined} dimColor={!toolCard.failed}>
+          {'  '}{toolCard.failed ? '└' : '├'} {toolCard.result}
+        </Text>
+        {!toolCard.failed && (
+          <Text dimColor>
+            {'  '}└ Allowed by Remote Web allowlist
+          </Text>
+        )}
       </Box>
     )
   }
@@ -731,19 +796,56 @@ const MessageRow = memo(({ role, content, gap }: { role: string; content: string
       <Text>{content}</Text>
     </Box>
   )
-})
+  },
+)
 
 // 消息列表：整体 memo，只要 messages 引用不变就完全不重渲染。
 // 这样 Spinner tick 不会触发消息区的 reconciliation。
 // 头部信息：memo，只有 model/baseURL 变化才重绘（基本不会）。
-const Header = memo(({ model, baseURL }: { model: string; baseURL: string }) => (
-  <Box marginBottom={1} flexDirection="column">
-    <Text color="cyan" bold>
-      ✦ ai
-    </Text>
-    <Text dimColor>
-      {model} · {baseURL}
-    </Text>
+const TornadoIcon = memo(() => (
+  <Box flexDirection="column" marginRight={2}>
+    <Text color="#9A7418" bold>{'████████▄'}</Text>
+    <Text color="#9A7418" bold>{'  ▀█████'}</Text>
+    <Text color="#9A7418" bold>{'   ███▀'}</Text>
+    <Text color="#9A7418" bold>{'    ██'}</Text>
+    <Text color="#9A7418" bold>{'   ▀'}</Text>
+  </Box>
+))
+
+const Header = memo(({
+  model,
+  baseURL,
+  columns,
+}: {
+  model: string
+  baseURL: string
+  columns: number
+}) => (
+  <Box
+    marginBottom={1}
+    width={Math.max(20, columns - 4)}
+    borderStyle="round"
+    borderColor="#9A7418"
+    paddingX={2}
+    paddingY={1}
+  >
+    <Box flexDirection="column" width="50%">
+      <Box>
+        <TornadoIcon />
+        <Box flexDirection="column">
+          <Text bold>Welcome back!</Text>
+          <Text color="#9A7418" bold>ai</Text>
+        </Box>
+      </Box>
+      <Text dimColor>{model}</Text>
+      <Text dimColor wrap="truncate-middle">Endpoint: {baseURL}</Text>
+      <Text dimColor wrap="truncate-middle">{process.cwd()}</Text>
+    </Box>
+    <Box flexDirection="column" width="50%" paddingLeft={2}>
+      <Text bold>Tips for getting started</Text>
+      <Text dimColor>Ask a question or describe a task.</Text>
+      <Text dimColor>Ctrl+O opens the complete tool transcript.</Text>
+    </Box>
   </Box>
 ))
 
@@ -773,7 +875,7 @@ const Spinner = memo(() => {
     const id = setInterval(() => setI(x => (x + 1) % SPINNER_FRAMES.length), 150)
     return () => clearInterval(id)
   }, [])
-  return <Text color="cyan">{ANIMATE_SPINNER ? SPINNER_FRAMES[i] : '●'}</Text>
+  return <Text color="yellow">{ANIMATE_SPINNER ? SPINNER_FRAMES[i] : '●'}</Text>
 })
 
 // 取文本「末尾若干行」，按终端列宽把自动换行也算进占用行数。
@@ -814,6 +916,14 @@ function App() {
   const [toolTranscript, setToolTranscript] = useState<ToolTranscriptEntry[]>([])
   const [showTranscript, setShowTranscript] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [activity, setActivity] = useState<ActivityCounts>({ ...EMPTY_ACTIVITY_COUNTS })
+  const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null)
+  const [elapsedMs, setElapsedMs] = useState(0)
+  const [terminalSize, setTerminalSize] = useState({
+    columns: process.stdout.columns || 80,
+    rows: process.stdout.rows || 24,
+  })
+  const [staticEpoch, setStaticEpoch] = useState(0)
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKEN_USAGE })
   const [error, setError] = useState<string | null>(null)
   const lastCtrlC = useRef(0)
@@ -821,26 +931,44 @@ function App() {
   const toolBatchesRef = useRef(new Map<string, ToolBatch>())
   const historyRef = useRef<ChatMessage[]>([{ role: 'system', content: SYSTEM_PROMPT }])
   const tokenUsageRef = useRef<TokenUsage>({ ...EMPTY_TOKEN_USAGE })
+  const activityRef = useRef<ActivityCounts>({ ...EMPTY_ACTIVITY_COUNTS })
+  const turnOutputStartRef = useRef(0)
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 自增 id：给每条消息一个稳定 key，避免数组索引漂移引发不必要的重绘。
   const idRef = useRef(0)
   // 流式「未完成的最后一行」。完整行随到随沉淀进上方 Static 历史，动态区只留这截尾巴，
   // 让底部输入框高度恒定、使用过程中不跳顶（对标 Claude Code）。ref 同步、避免批处理丢字。
   const streamTailRef = useRef('')
 
-  // Ink 用「光标上移 N 行再重画」做增量刷新：N 取自上一帧渲染时算出的行数。
-  // 一旦终端尺寸变化，之前按旧宽度换行算出的 N 就和新宽度下的实际占用行数对不上，
-  // 多出来的行擦不掉，会在屏幕上越叠越多、越叠越乱（这是 ink 的已知问题，
-  // 见 vadimdemedes/ink#907）。这里 resize 时清屏，并给 <Static> 换一个 key
-  // 强制它整体重新按当前宽度打印一遍历史，重新对齐画面。
-  const [staticEpoch, setStaticEpoch] = useState(0)
+  useEffect(() => {
+    if (busyStartedAt === null) return
+    const tick = () => setElapsedMs(Date.now() - busyStartedAt)
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [busyStartedAt])
+
+  // <Static> 历史不会自行按新列宽重排。resize 高频触发时不逐帧清屏；
+  // 等拖动停下 120ms 后做一次完整重绘。messages/activity/streaming 均保留在
+  // React 状态中，重绘只改变排版，不会删除任何中间结果。
   useEffect(() => {
     const onResize = () => {
-      process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
-      setStaticEpoch(e => e + 1)
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
+      resizeTimerRef.current = setTimeout(() => {
+        const next = {
+          columns: process.stdout.columns || 80,
+          rows: process.stdout.rows || 24,
+        }
+        process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
+        setTerminalSize(next)
+        setStaticEpoch(epoch => epoch + 1)
+        resizeTimerRef.current = null
+      }, 120)
     }
     process.stdout.on('resize', onResize)
     return () => {
       process.stdout.off('resize', onResize)
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
     }
   }, [])
 
@@ -849,14 +977,11 @@ function App() {
   useInput((_input, key) => {
     if (showTranscript) {
       if ((key.ctrl && _input === 'o') || (key.ctrl && _input === 'c') || key.escape || _input === 'q') {
-        process.stdout.write('\x1b[2J\x1b[H')
         setShowTranscript(false)
-        setStaticEpoch(e => e + 1)
       }
       return
     }
     if (key.ctrl && _input === 'o') {
-      process.stdout.write('\x1b[2J\x1b[H')
       setShowTranscript(true)
       return
     }
@@ -936,6 +1061,11 @@ function App() {
 
       setBusy(true)
       const startedAt = Date.now()
+      setBusyStartedAt(startedAt)
+      setElapsedMs(0)
+      turnOutputStartRef.current = tokenUsageRef.current.outputTokens
+      activityRef.current = { ...EMPTY_ACTIVITY_COUNTS }
+      setActivity({ ...EMPTY_ACTIVITY_COUNTS })
 
       const history = historyRef.current
       const historyTrace = createHistoryTraceContext('terminal', 'terminal')
@@ -946,16 +1076,24 @@ function App() {
       const controller = new AbortController()
       abortRef.current = controller
       const answers: string[] = []
+      let activityPersisted = false
 
       // 往 Static 历史追加一行（统一分配稳定 key）。
       const pushRow = (role: UIMessage['role'], content: string, gap = false) =>
         setMessages(prev => [...prev, { id: ++idRef.current, role, content, gap }])
       // 把「未完成的尾巴」收口：作为一行沉淀进历史，清空动态区。gap=true 段尾留白。
-      const commitTail = (gap: boolean) => {
+      const preserveTail = (gap: boolean) => {
         const t = streamTailRef.current
         streamTailRef.current = ''
         setStreaming('')
         if (t.length) pushRow('assistant-line', t, gap)
+      }
+      // 活动摘要在整轮执行期间持续显示，不在正文或下一项工具出现时清空。
+      // 结束时只复制一次到 Static 历史；旧摘要不会被删除，下一轮使用新的计数器。
+      const persistActivity = () => {
+        if (activityPersisted || !hasActivity(activityRef.current)) return
+        activityPersisted = true
+        pushRow('activity', formatActivity(activityRef.current, false))
       }
 
       streamTailRef.current = ''
@@ -991,15 +1129,15 @@ function App() {
           } else if (ev.type === 'text') {
             // 一段文本收口：把剩余尾巴沉淀，段尾留一行间距。完整内容已逐行进历史，
             // 这里不再重复 push 整段，只取 ev.content 做日志。
-            commitTail(true)
+            preserveTail(true)
             answers.push(ev.content)
           } else if (ev.type === 'limit') {
             // 撞到步数上限：提示而非硬停，回复「继续」即可再跑一轮。
-            commitTail(true)
+            preserveTail(true)
             pushRow('tool', `⏸ 已连续执行 ${ev.steps} 步仍未结束。回复「继续」可再跑一轮。`)
           } else if (ev.phase === 'start' && ev.callId) {
             // 工具开始：只进入可变动态区，不能写进 Static，否则结束时只能再追加一条重复记录。
-            commitTail(true)
+            preserveTail(true)
             setToolTranscript(prev => [
               ...prev,
               { id: ++idRef.current, phase: ev.phase, summary: ev.summary, detail: ev.detail },
@@ -1009,14 +1147,21 @@ function App() {
               expected: ev.batchSize ?? 1,
               tools: new Map(),
             }
-            batch.tools.set(ev.callId, { title: ev.summary })
+            batch.tools.set(ev.callId, { name: ev.name, title: ev.summary })
             toolBatchesRef.current.set(batchId, batch)
-            setActiveTools(prev => [
-              ...prev.filter(tool => tool.callId !== ev.callId),
-              { callId: ev.callId!, name: ev.name, summary: ev.summary },
-            ])
+            const category = activityCategory(ev.name)
+            if (category === 'remote-web' || category === 'subagent') {
+              setActiveTools(prev => [
+                ...prev.filter(tool => tool.callId !== ev.callId),
+                { callId: ev.callId!, name: ev.name, summary: ev.summary },
+              ])
+            } else {
+              const next = addActivity(activityRef.current, ev.name)
+              activityRef.current = next
+              setActivity(next)
+            }
           } else {
-            commitTail(true)
+            preserveTail(true)
             setToolTranscript(prev => [
               ...prev,
               { id: ++idRef.current, phase: ev.phase, summary: ev.summary, detail: ev.detail },
@@ -1027,44 +1172,85 @@ function App() {
               const tool = batch?.tools.get(ev.callId)
               if (batch && tool) {
                 tool.result = ev.summary
+                tool.detail = ev.detail
                 tool.failed = ev.phase === 'failure'
                 const finished = [...batch.tools.values()].filter(item => item.result).length
                 if (batch.tools.size === batch.expected && finished === batch.expected) {
+                  const tools = [...batch.tools.values()]
+                  const isRemoteWebBatch = tools.every(
+                    item => item.name === 'WebSearch' || item.name === 'WebFetch',
+                  )
+                  if (isRemoteWebBatch) {
+                    // 对标 Claude Code：永久保留“工具名(完整参数)”和下一行结果，
+                    // 不把 start 行替换成一条失去查询词/URL 的完成摘要。
+                    setMessages(prev => [
+                      ...prev,
+                      ...tools.map(item => ({
+                        id: ++idRef.current,
+                        role: 'remote-tool' as const,
+                        content: '',
+                        toolCard: {
+                          title: item.title,
+                          result: item.result ?? (item.failed ? 'Error' : 'Completed'),
+                          failed: Boolean(item.failed),
+                        },
+                      })),
+                    ])
+                    toolBatchesRef.current.delete(ev.batchId)
+                    continue
+                  }
+                  const isAgentBatch = tools.every(item => item.name === 'run_agent')
+                  if (isAgentBatch) {
+                    setMessages(prev => [
+                      ...prev,
+                      {
+                        id: ++idRef.current,
+                        role: 'agent-batch',
+                        content: '',
+                        agentCard: tools.map(item =>
+                          parseAgentCardItem(item.title, item.detail, Boolean(item.failed))),
+                      },
+                    ])
+                    toolBatchesRef.current.delete(ev.batchId)
+                    continue
+                  }
                   // 工具失败属于 agent 的内部恢复过程。默认聊天区不展示退出码、shell
                   // 报错等噪声；完整 summary/detail 已写入 toolTranscript，可用 Ctrl+O 查看。
                   // 整批全部成功时才沉淀简洁摘要，避免把部分失败包装成误导性的成功。
-                  const hasFailure = [...batch.tools.values()].some(item => item.failed)
-                  if (!hasFailure) pushRow('tool', compactToolBatch(batch))
                   toolBatchesRef.current.delete(ev.batchId)
                 }
-              } else if (ev.phase !== 'failure') {
+              } else if (ev.phase !== 'failure' && activityCategory(ev.name) !== 'subagent') {
                 pushRow('tool', ev.summary)
               }
-            } else if (ev.phase !== 'failure') {
+            } else if (ev.phase !== 'failure' && activityCategory(ev.name) !== 'subagent') {
               pushRow('tool', ev.summary)
             }
           }
         }
         traceHistory(historyTrace, 'after-run-agent', history)
+        persistActivity()
         pushRow('tool', formatWorkedFor(Date.now() - startedAt), true)
         logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: answers.join('\n') })
       } catch (e: any) {
         if (controller.signal.aborted) {
           traceHistory(historyTrace, 'run-agent-aborted', history)
-          commitTail(true) // 中断前先把已生成的尾巴留住
+          preserveTail(true) // 中断前先把已生成的尾巴留住
+          persistActivity()
           setActiveTools([])
           toolBatchesRef.current.clear()
           pushRow('assistant', '[已中断]')
           logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: '[已中断]' })
         } else {
           traceHistory(historyTrace, 'run-agent-error', history, { note: e?.message ?? String(e) })
-          commitTail(true)
+          preserveTail(true)
+          persistActivity()
           setError(e?.message ?? String(e))
           logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: `[错误] ${e?.message ?? String(e)}` })
         }
       } finally {
-        commitTail(true) // 兜底：任何残留尾巴都不丢
+        preserveTail(true) // 兜底：任何残留尾巴都不丢
         setBusy(false)
+        setBusyStartedAt(null)
         streamTailRef.current = ''
         setStreaming('')
         setActiveTools([])
@@ -1077,8 +1263,12 @@ function App() {
 
   // header props 用 useMemo 稳定引用，避免传给 memo(Header) 时每帧都是新对象
   const headerProps = useMemo(
-    () => ({ model: modelConfig.model, baseURL: modelConfig.baseURL }),
-    [modelConfig.model, modelConfig.baseURL],
+    () => ({
+      model: modelConfig.model,
+      baseURL: modelConfig.baseURL,
+      columns: terminalSize.columns,
+    }),
+    [modelConfig.model, modelConfig.baseURL, terminalSize.columns],
   )
 
   // Static 的数据源：头部固定为第一行，其后是所有历史消息。
@@ -1092,8 +1282,8 @@ function App() {
   // 流式尾巴正常只有一行；但模型若长时间不吐换行，这一「逻辑行」也可能很长，
   // 自动换行后撑高动态区。按终端高度兜底截断，保证动态区永不超出屏幕、输入框不跳顶。
   // 预留 ~9 行给 spinner、错误行、带边框输入框、页脚提示和各处 margin。
-  const termRows = process.stdout.rows || 24
-  const termCols = (process.stdout.columns || 80) - 2 // 容器 paddingX=1，左右各 1
+  const termRows = terminalSize.rows
+  const termCols = terminalSize.columns - 2 // 容器 paddingX=1，左右各 1
   const stream = streaming
     ? tailByRows(streaming, Math.max(3, termRows - 9), termCols)
     : { shown: '', truncated: false }
@@ -1146,7 +1336,14 @@ function App() {
           row.kind === 'header' ? (
             <Header key="header" {...headerProps} />
           ) : (
-            <MessageRow key={row.msg.id} role={row.msg.role} content={row.msg.content} gap={row.msg.gap} />
+            <MessageRow
+              key={row.msg.id}
+              role={row.msg.role}
+              content={row.msg.content}
+              gap={row.msg.gap}
+              toolCard={row.msg.toolCard}
+              agentCard={row.msg.agentCard}
+            />
           )
         }
       </Static>
@@ -1160,7 +1357,13 @@ function App() {
         </Box>
       )}
 
-      {/* 正在工作 — 细长一行，紧贴输入框上方 */}
+      {busy && hasActivity(activity) && (
+        <Box>
+          <Text dimColor>{formatActivity(activity, true)}</Text>
+        </Box>
+      )}
+
+      {/* 远端 Web 与子 agent 保留独立活动行；普通本地工具已聚合在上方。 */}
       {activeTools.map(tool => (
         <Box key={tool.callId}>
           <Text dimColor>
@@ -1169,10 +1372,16 @@ function App() {
         </Box>
       ))}
 
-      {busy && activeTools.length === 0 && (
+      {busy && (
         <Box marginBottom={streaming ? 0 : 1}>
-          <Text dimColor>
-            <Spinner /> 思考中…（Esc 中断）
+          <Text>
+            <Text color="yellow"><Spinner /></Text>{' '}
+            <Text>Contemplating…</Text>
+            <Text dimColor>
+              {' '}({Math.max(1, Math.floor(elapsedMs / 1000))}s
+              {' · '}↓ {formatTokenCount(Math.max(0, tokenUsage.outputTokens - turnOutputStartRef.current))} tokens
+              {' · '}Esc to interrupt)
+            </Text>
           </Text>
         </Box>
       )}
@@ -1185,17 +1394,23 @@ function App() {
       )}
 
       {/* 输入框 */}
-      <MultilineInput onSubmit={send} disabled={busy} placeholder="问点什么…" />
+      {!busy && (
+        <MultilineInput
+          onSubmit={send}
+          topRightLabel={`${formatTokenCount(tokenUsage.totalTokens)} tokens`}
+          width={Math.max(20, terminalSize.columns - 4)}
+        />
+      )}
 
       {/* 常驻页脚提示 */}
-      <Box paddingX={1}>
+      {!busy && <Box paddingX={1}>
         <Text dimColor>
-          {modelConfig.model} · {formatTokenCount(tokenUsage.totalTokens)} tokens
+          {modelConfig.model}
           {' · '}↑{formatTokenCount(tokenUsage.inputTokens)}
           {' · '}↓{formatTokenCount(tokenUsage.outputTokens)}
-          {' · '}Enter 发送 · Ctrl+O 详情 · Esc 中断
+          {' · '}Ctrl+O details · Esc interrupt
         </Text>
-      </Box>
+      </Box>}
     </Box>
   )
 }

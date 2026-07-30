@@ -10,6 +10,8 @@ WorkingDirectory=/root
 ExecStart=/usr/bin/node /usr/local/lib/ai-claude-gateway/gateway.mjs
 Environment=AI_CLAUDE_GATEWAY_HOST=127.0.0.1
 Environment=AI_CLAUDE_GATEWAY_PORT=8791
+Environment=AI_CLAUDE_GATEWAY_EVENT_LOG=/var/log/ai-claude-gateway/events.jsonl
+LogsDirectory=ai-claude-gateway
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true

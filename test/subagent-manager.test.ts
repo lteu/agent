@@ -41,7 +41,23 @@ test('子 agent 返回稳定 agent_id 和结构化完成状态', async () => {
   assert.match(result.agent_id, /^agent_/)
   assert.equal(result.status, 'completed')
   assert.equal(result.turns_used, 1)
+  assert.equal(result.tool_uses, 0)
   assert.equal(result.result, '答案是 2')
+})
+
+test('子 agent 统计其内部工具调用供主界面展示', async () => {
+  const store = new ManagedSubagentStore()
+  const result = await store.run({
+    description: '检查文件',
+    prompt: '读取并检查',
+    cwd: '/tmp',
+  }, async function* (): AsyncGenerator<ManagedSubagentEvent> {
+    yield { type: 'tool', phase: 'start', name: 'read_file' }
+    yield { type: 'tool', phase: 'success', name: 'read_file' }
+    yield { type: 'text', content: '完成' }
+  })
+
+  assert.equal(result.tool_uses, 1)
 })
 
 test('达到步数上限后可用同一 agent_id 和原历史续跑', async () => {

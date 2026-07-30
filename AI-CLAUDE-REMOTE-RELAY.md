@@ -49,8 +49,8 @@ remote:127.0.0.1:8791
 当前远端文件与本地仓库中的部署源文件哈希完全一致：
 
 ```text
-8552e4f900fdf4e7cd3c00202413ba362361296f8d63c7882ffbe7e764fb54d5  gateway.mjs
-e76d2dd9812cd2eade6760bdf0cf222de201f97451a441a9c705f4f518f58e0c  ai-claude-gateway.service
+8d75d8341ca3bce65fef835d4a9c8f77645fbf0ee2de8523dbbe38f1d3a30f39  gateway.mjs
+c530df51cd4bb38027d393bcbcaa7a1784c50832606e12e2a3709f18991022ba  ai-claude-gateway.service
 ```
 
 仓库对应源文件：
@@ -371,6 +371,23 @@ server；网关这时才把真正的完整对话 JSON 发进去。
 直到生成正文答案。`GET /health` 的 `remote_web_searches` 和
 `remote_web_fetches` 计数器可用于确认实际采用了哪一种远端工具。
 
+网关还把 Claude 的阶段说明以及 Remote Web 工具的结构化生命周期写入流式响应的
+`ai_remote_progress` 字段。本地 LLM 客户端将它转换为 Agent 工具事件：搜索时显示
+查询词和耗时，抓取时显示 URL、HTTP 状态、响应大小和耗时；这些进度事件只用于
+界面和详情记录，不会混入 assistant 正文或对话历史。
+
+交互终端会像 Claude Code 一样永久保留工具调用和结果，而不是用完成摘要覆盖参数：
+
+```text
+● Web Search("完整查询词")
+  ├ Did 1 search in 8s
+  └ Allowed by Remote Web allowlist
+
+● Fetch(完整 URL)
+  ├ Received 59.6 KB (200 OK) in 6s
+  └ Allowed by Remote Web allowlist
+```
+
 ### 第 10 步：本地执行工具并继续循环
 
 本地 Agent 收到 function call 后：
@@ -656,6 +673,7 @@ systemctl status ai-claude-gateway.service
 
 # 日志
 journalctl -u ai-claude-gateway.service -n 100 --no-pager
+tail -f /var/log/ai-claude-gateway/events.jsonl
 
 # 重启
 systemctl restart ai-claude-gateway.service
@@ -689,6 +707,12 @@ systemctl is-active ai-claude-gateway.service
 ```bash
 ai-claude --probe
 ```
+
+本地 Agent 会始终把轻量级生命周期写入 `log/agent-events.jsonl`，包括 run ID、
+工具开始/结束、远端进度、正文长度与异常堆栈；完整对话和工具结果默认不写，设置
+`TRACE=1` 后才额外生成 `history-trace-full.jsonl`。Remote 网关把每个请求的
+request ID、Web 工具进度、结束原因、Token 用量及错误写入
+`/var/log/ai-claude-gateway/events.jsonl`。该文件达到 25 MB 时轮转为 `.1`。
 
 ## 12. 卸载本次 Remote 中转
 

@@ -13,6 +13,7 @@ export type ManagedSubagentResult = {
   status: ManagedSubagentStatus
   turns_used: number
   max_steps: number
+  tool_uses: number
   result: string
   message?: string
 }
@@ -94,6 +95,7 @@ export class ManagedSubagentStore {
           status: 'failed',
           turns_used: 0,
           max_steps: maxSteps,
+          tool_uses: 0,
           result: '',
           message: `未找到可恢复的子 agent：${input.agentId}`,
         }
@@ -105,6 +107,7 @@ export class ManagedSubagentStore {
           status: 'busy',
           turns_used: 0,
           max_steps: maxSteps,
+          tool_uses: 0,
           result: '',
           message: '该子 agent 正在运行，不能并发续跑同一个 agent_id',
         }
@@ -136,10 +139,12 @@ export class ManagedSubagentStore {
     const texts: string[] = []
     let status: ManagedSubagentStatus = 'completed'
     let turnsUsed = 0
+    let toolUses = 0
     let message: string | undefined
 
     try {
       for await (const event of runner(session.history, maxSteps)) {
+        if (event.type === 'tool' && event.phase === 'start') toolUses++
         if (event.type === 'text' && typeof event.content === 'string' && event.content) {
           texts.push(event.content)
         } else if (event.type === 'limit') {
@@ -173,6 +178,7 @@ export class ManagedSubagentStore {
       status,
       turns_used: turnsUsed,
       max_steps: maxSteps,
+      tool_uses: toolUses,
       result,
       ...(message ? { message } : {}),
     }

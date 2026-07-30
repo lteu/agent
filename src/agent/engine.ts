@@ -28,7 +28,13 @@ import {
   type ToolResult,
 } from '../tools.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
-import { createHistoryTraceContext, traceHistory, traceLlmRequest, type HistoryTraceContext } from './history-trace.js'
+import {
+  createHistoryTraceContext,
+  traceAgentEvent,
+  traceHistory,
+  traceLlmRequest,
+  type HistoryTraceContext,
+} from './history-trace.js'
 import { verifyFinalResult, type VerifyResult } from './verify.js'
 import {
   evaluateVerificationEvidence,
@@ -172,6 +178,22 @@ class DeferredToolExecutor {
 }
 
 export async function* runAgent(
+  history: ChatMessage[],
+  deps: EngineDeps,
+): AsyncGenerator<AgentEvent, void, unknown> {
+  const historyTrace = deps.historyTrace ?? createHistoryTraceContext('unknown', 'unknown')
+  try {
+    for await (const event of runAgentCore(history, { ...deps, historyTrace })) {
+      traceAgentEvent(historyTrace, event)
+      yield event
+    }
+  } catch (error) {
+    traceAgentEvent(historyTrace, null, error)
+    throw error
+  }
+}
+
+async function* runAgentCore(
   history: ChatMessage[],
   deps: EngineDeps,
 ): AsyncGenerator<AgentEvent, void, unknown> {
@@ -328,10 +350,25 @@ export async function* runAgent(
         if (part.type === 'text') {
           textSegment += part.delta
           yield { type: 'delta', content: part.delta }
-        } else {
+        } else if (part.type === 'tool') {
           // 工具调用先于其后内容到达时，先把已说的文本作为一段 text 收口（保证 channel 端顺序正确）。
           yield* flushText()
           executor.add(part.call)
+        } else {
+          // Remote Claude Code 内部执行的 WebSearch/WebFetch 不进入本地工具队列，
+          // 但其结构化生命周期仍实时透传给 UI，避免复杂任务长期只显示“思考中”。
+          yield* flushText()
+          yield {
+            type: 'tool',
+            name: part.progress.name,
+            phase: part.progress.phase,
+            summary: part.progress.summary,
+            detail: part.progress.detail,
+            callId: part.progress.callId,
+            ...(part.progress.callId
+              ? { batchId: part.progress.callId, batchSize: 1 }
+              : {}),
+          }
         }
         res = await stream.next()
       }
@@ -369,19 +406,29 @@ export async function* runAgent(
       throw e // 不可恢复（含用户 abort）→ 抛给上层显示/反馈
     }
 
-    const { content, toolCalls, finishReason } = completion
+    const { content, toolCalls, finishReason, remoteContext } = completion
     reactiveCompactAttempted = false // 本轮模型成功应答 → 重置被动压缩闸
     networkRetry = 0 // 本轮模型成功应答 → 重置网络重试闸
 
     // 收口最后一个文本段；前面遇到工具时已产出的段不会重复。
     yield* flushText()
 
-    history.push({
-      role: 'assistant',
-      content: content || '',
-      tool_calls: toolCalls.length ? toolCalls : undefined,
-    })
-    traceHistory(historyTrace, 'after-assistant-push', history, { step })
+    const assistantContent = remoteContext
+      ? `${content || ''}\n\n<remote_web_research>\n${remoteContext}\n</remote_web_research>`.trim()
+      : content || ''
+    // 纯空响应不能进入历史。否则恢复请求会携带 role=assistant/content=""
+    // 的非法消息，GLM 等严格兼容接口会直接返回 HTTP 400，导致自动重试反而必然失败。
+    // 带 tool_calls 的空正文则是 OpenAI function-calling 的合法格式，必须保留。
+    if (assistantContent.trim() || toolCalls.length) {
+      history.push({
+        role: 'assistant',
+        content: assistantContent,
+        tool_calls: toolCalls.length ? toolCalls : undefined,
+      })
+      traceHistory(historyTrace, 'after-assistant-push', history, { step })
+    } else {
+      traceHistory(historyTrace, 'skip-empty-assistant', history, { step })
+    }
 
     if (executor.size) {
       // assistant 响应已经完整收到并提交进历史，此时才允许工具产生副作用。

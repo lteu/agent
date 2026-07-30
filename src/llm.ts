@@ -25,6 +25,18 @@ export type ChatMessage = {
   tool_call_id?: string
 }
 
+/**
+ * Some OpenAI-compatible providers reject an assistant message whose content is empty.
+ * An empty assistant with tool_calls is valid and must be kept for tool-result pairing.
+ */
+export function messagesForRequest(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter(message => {
+    if (message.role !== 'assistant') return true
+    if (message.tool_calls?.length) return true
+    return Boolean(message.content?.trim())
+  })
+}
+
 export type StreamOptions = {
   apiKey: string
   model: string
@@ -71,6 +83,8 @@ export type Completion = {
   toolCalls: RawToolCall[]
   finishReason?: string
   usage?: TokenUsage
+  /** Remote 内置 Web 工具的结果，只进入后续模型历史，不作为正文显示。 */
+  remoteContext?: string
 }
 
 // ———————————————————————————————————————————————
@@ -97,7 +111,7 @@ function toAnthropicPayload(messages: ChatMessage[]): { system?: string; message
   const systemParts: string[] = []
   const out: any[] = []
 
-  for (const m of messages) {
+  for (const m of messagesForRequest(messages)) {
     if (m.role === 'system') {
       if (m.content) systemParts.push(m.content)
       continue
@@ -399,7 +413,7 @@ export async function chatComplete(
   const url = `${baseURL}/chat/completions`
   const body = {
     model: opts.model,
-    messages,
+    messages: messagesForRequest(messages),
     stream: false,
     ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
   }
@@ -438,6 +452,16 @@ export async function chatComplete(
 export type StreamPart =
   | { type: 'text'; delta: string }
   | { type: 'tool'; call: RawToolCall }
+  | {
+      type: 'progress'
+      progress: {
+        phase: 'start' | 'success' | 'failure' | 'info'
+        name: string
+        summary: string
+        detail?: string
+        callId?: string
+      }
+    }
 
 /**
  * 流式补全，支持 function calling。
@@ -456,7 +480,7 @@ export async function* streamCompletion(
   const url = `${baseURL}/chat/completions`
   const body = {
     model: opts.model,
-    messages,
+    messages: messagesForRequest(messages),
     stream: true,
     stream_options: { include_usage: true },
     ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
@@ -486,6 +510,7 @@ export async function* streamCompletion(
   let content = ''
   let finishReason: string | undefined
   let usage = tokenUsageFromOpenAI(undefined)
+  let remoteContext = ''
 
   // 产出所有 index < upto（'all' 表示全部）且尚未产出的、已完整的工具调用。
   function* flush(upto: number | 'all'): Generator<StreamPart> {
@@ -522,6 +547,37 @@ export async function* streamCompletion(
         json = JSON.parse(payload)
       } catch {
         continue // 不完整片段，忽略
+      }
+      if (json?.ai_remote_error?.message) {
+        const requestId = json.ai_remote_error.requestId
+        throw new Error(
+          `Remote Claude 网关错误${requestId ? `（${requestId}）` : ''}: ${
+            json.ai_remote_error.message
+          }`,
+        )
+      }
+      if (typeof json?.ai_remote_context?.content === 'string') {
+        remoteContext = json.ai_remote_context.content
+        continue
+      }
+      const progress = json?.ai_remote_progress
+      if (
+        progress &&
+        ['start', 'success', 'failure', 'info'].includes(progress.phase) &&
+        typeof progress.name === 'string' &&
+        typeof progress.summary === 'string'
+      ) {
+        yield {
+          type: 'progress',
+          progress: {
+            phase: progress.phase,
+            name: progress.name,
+            summary: progress.summary,
+            ...(typeof progress.detail === 'string' ? { detail: progress.detail } : {}),
+            ...(typeof progress.callId === 'string' ? { callId: progress.callId } : {}),
+          },
+        }
+        continue
       }
       if (json?.usage) usage = tokenUsageFromOpenAI(json.usage)
       const choice = json?.choices?.[0]
@@ -562,7 +618,7 @@ export async function* streamCompletion(
       function: { name: t.name, arguments: t.args },
     }))
   opts.onUsage?.(usage)
-  return { content, toolCalls, finishReason, usage }
+  return { content, toolCalls, finishReason, usage, remoteContext: remoteContext || undefined }
 }
 
 /**
@@ -583,7 +639,7 @@ export async function* streamChat(
   }
   const body = JSON.stringify({
     model: opts.model,
-    messages,
+    messages: messagesForRequest(messages),
     stream: true,
   })
   emitRequest(opts, 'openai-compatible', url, headers, body)

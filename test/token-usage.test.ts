@@ -71,6 +71,12 @@ test('OpenAI 流请求开启 include_usage 并回传一次 usage', async t => {
     for await (const chunk of req) chunks.push(Buffer.from(chunk))
     requestBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write(
+      'data: {"choices":[],"ai_remote_progress":{"phase":"start","name":"WebSearch","callId":"remote-1","summary":"Web Search(\\"test\\")"}}\n\n',
+    )
+    res.write(
+      'data: {"choices":[],"ai_remote_context":{"content":"preserved search evidence"}}\n\n',
+    )
     res.write('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n')
     res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
     res.write(
@@ -92,10 +98,23 @@ test('OpenAI 流请求开启 include_usage 并回传一次 usage', async t => {
     onUsage: usage => observed.push(usage),
   })
   let result = await stream.next()
-  while (!result.done) result = await stream.next()
+  const progress: any[] = []
+  while (!result.done) {
+    if (result.value.type === 'progress') progress.push(result.value.progress)
+    result = await stream.next()
+  }
 
   assert.equal(requestBody.stream_options.include_usage, true)
   assert.equal(result.value.content, 'ok')
+  assert.equal(result.value.remoteContext, 'preserved search evidence')
+  assert.deepEqual(progress, [
+    {
+      phase: 'start',
+      name: 'WebSearch',
+      callId: 'remote-1',
+      summary: 'Web Search("test")',
+    },
+  ])
   assert.deepEqual(observed, [
     {
       inputTokens: 11,
@@ -105,4 +124,32 @@ test('OpenAI 流请求开启 include_usage 并回传一次 usage', async t => {
       totalTokens: 13,
     },
   ])
+})
+
+test('Remote 网关结构化流错误保留 request ID 和真实原因', async t => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write(
+      'data: {"choices":[],"ai_remote_error":{"requestId":"req_debug_1","message":"unsupported remote tool: run_bash"}}\n\n',
+    )
+    res.end('data: [DONE]\n\n')
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const address = server.address()
+  assert(address && typeof address === 'object')
+
+  await assert.rejects(
+    async () => {
+      const stream = streamCompletion([{ role: 'user', content: 'hi' }], {
+        apiKey: 'test',
+        model: 'test',
+        baseURL: `http://127.0.0.1:${address.port}`,
+      })
+      for await (const _part of stream) {
+        // consume
+      }
+    },
+    /req_debug_1.*unsupported remote tool: run_bash/,
+  )
 })

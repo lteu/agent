@@ -1,3 +1,131 @@
+## Remote Claude 快速排障索引
+
+当出现“长时间只显示思考中”“Remote 已完成但本地没有结果”“网络连接中断重试”
+时，先按本节检查，不要只看终端 spinner。
+
+### 日志位置
+
+本地 Agent 轻量级生命周期日志（默认始终开启）：
+
+```text
+/Users/lteu/progetto/agent/log/agent-events.jsonl
+```
+
+它记录 run ID、事件时间、远端搜索/抓取进度、本地工具开始与结果、正文长度及异常
+堆栈，但默认不记录完整工具输出。
+
+其他本地日志：
+
+```text
+/Users/lteu/progetto/agent/log/tool-errors.jsonl
+/Users/lteu/progetto/agent/log/chat-history.jsonl
+/Users/lteu/progetto/agent/log/chat-history.md
+/Users/lteu/progetto/agent/log/crash.log
+```
+
+设置 `TRACE=1` 后还会生成：
+
+```text
+/Users/lteu/progetto/agent/log/history-trace-summary.jsonl
+/Users/lteu/progetto/agent/log/history-trace-full.jsonl
+```
+
+`history-trace-full.jsonl` 可能包含完整对话、文件内容、工具结果和认证请求头，只在
+确实需要深度诊断时开启，不要随意分享。
+
+Remote 网关结构化日志：
+
+```text
+/var/log/ai-claude-gateway/events.jsonl
+/var/log/ai-claude-gateway/events.jsonl.1
+```
+
+Remote 日志记录 request ID、请求开始/结束、WebSearch/WebFetch 参数和结果摘要、
+本地工具路由、Token 用量、断开原因及真实错误。达到 25 MB 时轮转为 `.1`。
+
+Remote systemd 日志：
+
+```bash
+ssh remote 'journalctl -u ai-claude-gateway.service'
+```
+
+### 最快定位命令
+
+```bash
+# 本地最近事件
+tail -50 /Users/lteu/progetto/agent/log/agent-events.jsonl
+
+# Remote 最近请求
+ssh remote 'tail -50 /var/log/ai-claude-gateway/events.jsonl'
+
+# Remote 服务错误
+ssh remote 'journalctl -u ai-claude-gateway.service -n 100 --no-pager'
+
+# 服务、活跃请求和 Web 工具计数
+ai-claude --probe
+
+# 检查部署文件是否与本地一致
+shasum -a 256 deploy/ai-claude-gateway.mjs deploy/ai-claude-gateway.service
+ssh remote 'sha256sum /usr/local/lib/ai-claude-gateway/gateway.mjs /etc/systemd/system/ai-claude-gateway.service'
+```
+
+实时观察：
+
+```bash
+tail -f /Users/lteu/progetto/agent/log/agent-events.jsonl
+ssh remote 'tail -f /var/log/ai-claude-gateway/events.jsonl'
+ssh remote 'journalctl -fu ai-claude-gateway.service'
+```
+
+### 定位顺序
+
+1. 在本地 `agent-events.jsonl` 找最后一个 `runId`，确认最后事件是远端进度、本地
+   工具、正文还是 `agent-error`。
+2. 用事件时间和 Remote 的 `requestId` 对照 `events.jsonl`，检查是否出现
+   `request_complete`、`request_error` 或 `request_aborted`。
+3. Remote 已有 `request_complete`、本地没有正文：重点检查 SSE 转换、SSH 隧道、
+   `src/llm.ts` 和 UI 消费链路。
+4. Remote 出现 `request_error`：查看真实工具名、结束原因，再检查
+   `deploy/ai-claude-gateway.mjs` 的工具分类和白名单。
+5. 只有本地 `web_fetch` 失败：查看 `tool-errors.jsonl`，区分 DNS、TLS、
+   `ECONNRESET`、HTTP 403 和 sandbox 网络问题。
+6. `active` 长时间不归零：检查 Remote Claude 子进程和最近 progress；有持续
+   WebSearch/WebFetch 就是在工作，没有任何事件超过 idle timeout 才按卡死处理。
+7. 修改并部署前先确认 `active=0`，避免重启中断用户正在执行的任务。
+
+### 2026-07-30 已修复的典型故障
+
+症状：Remote 已完成搜索，本地连续显示三次“网络连接中断”，随后一直“思考中”。
+
+根因：Claude 在远端搜索后返回了无 MCP 前缀的 `run_bash`。旧网关只接受
+`mcp__local_agent__run_bash`，将它当成不允许的 Remote 工具，并在 SSE 已发送
+响应头后直接断开连接。本地因此只能看到笼统的网络错误。
+
+现有保护：
+
+- 本地 schema 中存在的工具名，无论是否带 `mcp__local_agent__` 前缀，都只转发给
+  本地 Agent 执行，绝不在 Remote 执行。
+- 真正未知的 Remote 工具仍会被拒绝。
+- 流式错误通过 `ai_remote_error` 返回 request ID 和真实原因，不再粗暴断流。
+- Remote 阶段说明和 Web 工具生命周期通过 `ai_remote_progress` 实时显示。
+- 交互 UI 永久保留 `Web Search("完整查询词")` / `Fetch(完整 URL)` 及其缩进结果
+  和 allowlist 行，不再用一条完成摘要覆盖调用参数。
+- Remote Web 研究结果通过隐藏的 `ai_remote_context` 跨本地工具轮次保存，避免
+  新 Claude 子进程重复相同搜索。
+- 本地和 Remote 均有持久化 JSONL，可复盘“Remote 做了什么、结果在哪里丢失”。
+
+关键实现：
+
+```text
+deploy/ai-claude-gateway.mjs
+deploy/ai-claude-gateway.service
+src/llm.ts
+src/agent/engine.ts
+src/agent/history-trace.ts
+test/gateway-streaming.test.ts
+test/token-usage.test.ts
+```
+
 ## process to make Agent intelligent
 
 1. 要让它能干活，得加一层 工具调用循环（agent loop）：给模型声明若干本地工具 → 模型返回 tool_calls → 你在本地执行 →

@@ -24,6 +24,18 @@ export type HistoryTraceDetails = {
   note?: string
 }
 
+type AgentEventForLog = {
+  type?: string
+  content?: string
+  name?: string
+  summary?: string
+  detail?: string
+  callId?: string
+  batchId?: string
+  phase?: string
+  steps?: number
+}
+
 function getLogDir(): string {
   const configured = process.env.AI_LOG_DIR?.trim()
   if (configured) return resolve(configured)
@@ -42,6 +54,49 @@ export function createHistoryTraceContext(
   sessionId: string,
 ): HistoryTraceContext {
   return { runId: randomUUID(), channel, sessionId }
+}
+
+/**
+ * 始终记录轻量级 Agent 生命周期，供卡住、断流和“远端完成但本地无结果”排障。
+ * 不记录完整工具输出；需要完整上下文时再显式设置 TRACE=1。
+ */
+export function traceAgentEvent(
+  context: HistoryTraceContext,
+  event: AgentEventForLog | null,
+  error?: unknown,
+): void {
+  const logDir = getLogDir()
+  const content = event?.content ?? ''
+  const detail = event?.detail ?? ''
+  const payload = {
+    schemaVersion: 1,
+    time: new Date().toISOString(),
+    pid: process.pid,
+    ...context,
+    stage: error ? 'agent-error' : 'agent-event',
+    eventType: event?.type,
+    phase: event?.phase,
+    name: event?.name,
+    callId: event?.callId,
+    batchId: event?.batchId,
+    steps: event?.steps,
+    summary: event?.summary?.slice(0, 1_000),
+    contentLength: content.length || undefined,
+    contentPreview: content ? content.slice(0, 1_000) : undefined,
+    detailLength: detail.length || undefined,
+    error:
+      error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack?.slice(0, 4_000) }
+        : error
+          ? { message: String(error) }
+          : undefined,
+  }
+  try {
+    mkdirSync(logDir, { recursive: true })
+    appendFileSync(join(logDir, 'agent-events.jsonl'), JSON.stringify(payload) + '\n')
+  } catch {
+    /* Diagnostics must never interrupt the agent. */
+  }
 }
 
 function summarizeMessage(message: ChatMessage, index: number) {

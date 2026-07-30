@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { appendFileSync, existsSync, renameSync, rmSync, statSync } from 'node:fs'
 import http from 'node:http'
 import readline from 'node:readline'
 
@@ -8,6 +9,40 @@ const FINAL_MARKER = '<LOCAL_AGENT_FINAL>'
 const MAX_PROTOCOL_CONTINUES = 2
 const REMOTE_BUILTIN_TOOLS = new Set(['WebSearch', 'WebFetch'])
 const REMOTE_BUILTIN_TOOL_LIST = [...REMOTE_BUILTIN_TOOLS].join(',')
+
+function looksLikeProgressUpdate(text) {
+  return /\b(?:i(?:'ll| will| am going to)|let me|next,|now i(?:'ll| will)|searching|researching|fetching|checking|found .{0,120} let me)\b|(?:我会|我将|让我|接下来|下一步|正在|先(?:查|搜|看|读取)|现在.{0,20}(?:查询|搜索|检查|读取))/i.test(
+    text,
+  )
+}
+
+const GATEWAY_EVENT_LOG =
+  process.env.AI_CLAUDE_GATEWAY_EVENT_LOG ?? '/var/log/ai-claude-gateway/events.jsonl'
+const GATEWAY_EVENT_LOG_MAX_BYTES = 25 * 1024 * 1024
+
+function logGatewayEvent(requestId, event, details = {}) {
+  try {
+    if (
+      existsSync(GATEWAY_EVENT_LOG) &&
+      statSync(GATEWAY_EVENT_LOG).size >= GATEWAY_EVENT_LOG_MAX_BYTES
+    ) {
+      rmSync(`${GATEWAY_EVENT_LOG}.1`, { force: true })
+      renameSync(GATEWAY_EVENT_LOG, `${GATEWAY_EVENT_LOG}.1`)
+    }
+    appendFileSync(
+      GATEWAY_EVENT_LOG,
+      `${JSON.stringify({
+        time: new Date().toISOString(),
+        pid: process.pid,
+        requestId,
+        event,
+        ...details,
+      })}\n`,
+    )
+  } catch {
+    // Diagnostics must never break the relay.
+  }
+}
 
 function runMcpServer() {
   const tools = JSON.parse(
@@ -98,6 +133,9 @@ For public online research, prefer the built-in WebSearch and WebFetch tools. Th
 remote Claude Code session and do not expose the user's local HOME, SSH credentials, or sandbox
 network address. Use the proxied local web_fetch or run_bash internet access only when the remote
 built-in tools cannot complete the request. No other remote built-in tools are allowed.
+Conversation text enclosed in <remote_web_research> is a preserved result from a previous remote
+WebSearch/WebFetch round. Reuse that evidence instead of repeating the same research after a local
+tool call.
 
 A text-only response ends the LOCAL agent turn immediately. Therefore never return a progress-only
 message that merely says you will start, inspect, search, calculate, write, or continue later. In
@@ -141,9 +179,10 @@ remains.`
     }))
   }
 
-  function callClaude(body, signal) {
+  function callClaude(body, signal, onProgress = () => {}) {
     return new Promise((resolve, reject) => {
       const tools = mcpTools(Array.isArray(body.tools) ? body.tools : [])
+      const localToolNames = new Set(tools.map(tool => tool.name))
       const args = [
         '--print',
         '--verbose',
@@ -208,6 +247,8 @@ remains.`
       let pendingText = null
       let pendingToolCompletion = null
       let protocolContinues = 0
+      const pendingRemoteTools = new Map()
+      const remoteResearch = []
       const usage = {
         input_tokens: 0,
         output_tokens: 0,
@@ -316,6 +357,77 @@ remains.`
         } catch {
           return
         }
+        if (event.type === 'user' && Array.isArray(event.message?.content)) {
+          for (const block of event.message.content) {
+            if (block.type !== 'tool_result' || !block.tool_use_id) continue
+            const pending = pendingRemoteTools.get(block.tool_use_id)
+            if (!pending) continue
+            pendingRemoteTools.delete(block.tool_use_id)
+            const result = event.tool_use_result
+            if (typeof block.content === 'string' && block.content.trim()) {
+              remoteResearch.push(
+                `[${pending.name} ${JSON.stringify(pending.input)}]\n${block.content.slice(0, 6_000)}`,
+              )
+              while (remoteResearch.join('\n\n').length > 24_000) remoteResearch.shift()
+            }
+            const duration = Number(result?.durationSeconds)
+            const durationText = Number.isFinite(duration)
+              ? duration >= 1
+                ? `${Math.round(duration)}s`
+                : `${Math.round(duration * 1000)}ms`
+              : ''
+            const failed =
+              block.is_error === true ||
+              result?.is_error === true ||
+              (typeof block.content === 'string' &&
+                /^(error|tool use error|web search failed|web fetch failed)\b/i.test(
+                  block.content.trim(),
+                ))
+            let summary
+            if (pending.name === 'WebSearch') {
+              const searches = Number(result?.searchCount)
+              const count = Number.isFinite(searches) ? searches : 1
+              const failureText =
+                typeof block.content === 'string'
+                  ? block.content.trim().split('\n')[0].slice(0, 500)
+                  : 'Web search failed'
+              summary = failed
+                ? `Error: ${failureText}`
+                : `Did ${count} search${count === 1 ? '' : 'es'}${
+                    durationText ? ` in ${durationText}` : ''
+                  }`
+            } else {
+              const bytes = Number(result?.bytes)
+              const sizeText = Number.isFinite(bytes)
+                ? bytes >= 1024
+                  ? `${(bytes / 1024).toFixed(1)} KB`
+                  : `${bytes} bytes`
+                : ''
+              const code = Number(result?.code)
+              const codeText = String(result?.codeText ?? '').trim()
+              const statusText = Number.isFinite(code)
+                ? `${code}${codeText ? ` ${codeText}` : ''}`
+                : ''
+              const failureText =
+                typeof block.content === 'string'
+                  ? block.content.trim().split('\n')[0].slice(0, 500)
+                  : 'Web fetch failed'
+              summary = failed
+                ? `Error: ${failureText}`
+                : `Received ${sizeText || 'response'}${statusText ? ` (${statusText})` : ''}${
+                    durationText ? ` in ${durationText}` : ''
+                  }`
+            }
+            onProgress({
+              phase: failed ? 'failure' : 'success',
+              name: pending.name,
+              callId: block.tool_use_id,
+              summary,
+              detail: typeof block.content === 'string' ? block.content.slice(0, 2_000) : undefined,
+            })
+          }
+          return
+        }
         if (event.type !== 'assistant' || !Array.isArray(event.message?.content)) return
         if (!handshakeDone) {
           handshakeDone = true
@@ -325,7 +437,9 @@ remains.`
         }
         const content = event.message.content
         const toolBlocks = content.filter(
-          block => block.type === 'tool_use' && block.name?.startsWith(MCP_PREFIX),
+          block =>
+            block.type === 'tool_use' &&
+            (block.name?.startsWith(MCP_PREFIX) || localToolNames.has(block.name)),
         )
         const remoteToolBlocks = content.filter(
           block => block.type === 'tool_use' && REMOTE_BUILTIN_TOOLS.has(block.name),
@@ -334,6 +448,7 @@ remains.`
           block =>
             block.type === 'tool_use' &&
             !block.name?.startsWith(MCP_PREFIX) &&
+            !localToolNames.has(block.name) &&
             !REMOTE_BUILTIN_TOOLS.has(block.name),
         )
         if (unsupportedToolBlocks.length) {
@@ -353,11 +468,14 @@ remains.`
               .filter(block => block.type === 'text')
               .map(block => block.text)
               .join(''),
+            remoteContext: remoteResearch.join('\n\n'),
             toolCalls: toolBlocks.map(block => ({
               id: block.id ?? `call_${randomUUID().replaceAll('-', '')}`,
               type: 'function',
               function: {
-                name: block.name.slice(MCP_PREFIX.length),
+                name: block.name.startsWith(MCP_PREFIX)
+                  ? block.name.slice(MCP_PREFIX.length)
+                  : block.name,
                 arguments: JSON.stringify(block.input ?? {}),
               },
             })),
@@ -365,9 +483,38 @@ remains.`
           return
         }
         if (remoteToolBlocks.length) {
+          const stageText = content
+            .filter(block => block.type === 'text')
+            .map(block => block.text)
+            .join('')
+            .trim()
+          if (stageText && looksLikeProgressUpdate(stageText)) {
+            onProgress({
+              phase: 'info',
+              name: 'remote-status',
+              summary: `● ${stageText.slice(0, 1_000)}`,
+            })
+          }
           for (const block of remoteToolBlocks) {
             if (block.name === 'WebSearch') remoteWebSearches += 1
             if (block.name === 'WebFetch') remoteWebFetches += 1
+            const callId = block.id ?? `remote_${randomUUID().replaceAll('-', '')}`
+            const input = block.input ?? {}
+            pendingRemoteTools.set(callId, { name: block.name, input })
+            const target =
+              block.name === 'WebSearch'
+                ? String(input.query ?? '')
+                : String(input.url ?? input.uri ?? '')
+            onProgress({
+              phase: 'start',
+              name: block.name,
+              callId,
+              summary:
+                block.name === 'WebSearch'
+                  ? `Web Search(${target ? JSON.stringify(target) : ''})`
+                  : `Fetch(${target})`,
+              detail: JSON.stringify(input, null, 2),
+            })
           }
           remoteToolTurnFinishing = true
           pendingText = null
@@ -449,6 +596,13 @@ remains.`
           return
         }
         if (protocolContinues < MAX_PROTOCOL_CONTINUES) {
+          if (looksLikeProgressUpdate(completionText)) {
+            onProgress({
+              phase: 'info',
+              name: 'remote-status',
+              summary: `● ${completionText.trim().slice(0, 1_000)}`,
+            })
+          }
           continueIncompleteResponse()
           return
         }
@@ -521,7 +675,15 @@ remains.`
     res.write(': connected\n\n')
   }
 
-  function writeStream(res, choice, usage) {
+  function writeStream(res, choice, usage, remoteContext) {
+    if (remoteContext) {
+      res.write(
+        `data: ${JSON.stringify({
+          choices: [],
+          ai_remote_context: { content: remoteContext },
+        })}\n\n`,
+      )
+    }
     const delta = {
       role: 'assistant',
       ...(choice.message.content ? { content: choice.message.content } : {}),
@@ -541,6 +703,26 @@ remains.`
       `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason }] })}\n\n`,
     )
     res.write(`data: ${JSON.stringify({ choices: [], usage })}\n\n`)
+    res.end('data: [DONE]\n\n')
+  }
+
+  function writeProgress(res, progress) {
+    if (res.writableEnded || res.destroyed) return
+    res.write(`data: ${JSON.stringify({ choices: [], ai_remote_progress: progress })}\n\n`)
+  }
+
+  function writeStreamError(res, error, requestId) {
+    if (res.writableEnded || res.destroyed) return
+    res.write(
+      `data: ${JSON.stringify({
+        choices: [],
+        ai_remote_error: {
+          requestId,
+          message: error?.message ?? String(error),
+          code: error?.code ?? 'REMOTE_GATEWAY_ERROR',
+        },
+      })}\n\n`,
+    )
     res.end('data: [DONE]\n\n')
   }
 
@@ -570,10 +752,18 @@ remains.`
     }
 
     active += 1
+    const requestId = `req_${randomUUID().replaceAll('-', '')}`
     let heartbeat
     let clientAbort
+    let body
     try {
-      const body = await readBody(req)
+      body = await readBody(req)
+      logGatewayEvent(requestId, 'request_start', {
+        model: body.model ?? 'sonnet',
+        stream: Boolean(body.stream),
+        messageCount: Array.isArray(body.messages) ? body.messages.length : 0,
+        localToolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+      })
       if (body.stream) {
         clientAbort = new AbortController()
         const abortOnDisconnect = () => {
@@ -590,11 +780,26 @@ remains.`
         heartbeat.unref()
       }
 
-      const completion = await callClaude(body, clientAbort?.signal)
+      const completion = await callClaude(
+        body,
+        clientAbort?.signal,
+        body.stream
+          ? progress => {
+              logGatewayEvent(requestId, 'progress', progress)
+              writeProgress(res, progress)
+            }
+          : undefined,
+      )
       const choice = choiceFor(completion)
       const usage = openAIUsage(completion.usage)
       completed += 1
-      if (body.stream) writeStream(res, choice, usage)
+      logGatewayEvent(requestId, 'request_complete', {
+        finishReason: choice.finish_reason,
+        contentLength: completion.content.length,
+        localToolCalls: completion.toolCalls.map(call => call.function.name),
+        usage: completion.usage,
+      })
+      if (body.stream) writeStream(res, choice, usage, completion.remoteContext)
       else {
         json(res, 200, {
           id: `chatcmpl_${randomUUID().replaceAll('-', '')}`,
@@ -602,14 +807,23 @@ remains.`
           model: body.model ?? 'sonnet',
           choices: [{ index: 0, ...choice }],
           usage,
+          ...(completion.remoteContext
+            ? { ai_remote_context: { content: completion.remoteContext } }
+            : {}),
         })
       }
     } catch (error) {
+      logGatewayEvent(requestId, error?.name === 'AbortError' ? 'request_aborted' : 'request_error', {
+        errorName: error?.name,
+        errorCode: error?.code,
+        message: error?.message ?? String(error),
+      })
       if (error?.name !== 'AbortError') {
         console.error(`gateway request failed: ${error?.stack ?? error?.message ?? String(error)}`)
       }
       if (res.headersSent) {
-        if (!res.destroyed) res.destroy(error)
+        if (body?.stream) writeStreamError(res, error, requestId)
+        else if (!res.destroyed) res.destroy(error)
       } else {
         json(res, error?.code === 'GATEWAY_TIMEOUT' ? 504 : 502, {
           error: { message: error?.message ?? String(error) },

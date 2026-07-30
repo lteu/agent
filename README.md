@@ -104,6 +104,14 @@ Claude Code 的 MCP/stream-json 通道捕获 Read/Edit/Bash 等本地 `tool_use`
 交给本地 Agent 执行并回灌结果。Remote Claude 的内置工具采用精确白名单，
 除 `WebSearch` 和 `WebFetch` 外均不开放。
 
+Remote Claude 的阶段说明以及 WebSearch/WebFetch 的开始、完成、失败事件会通过
+流式网关实时显示；复杂研究任务不再只停留在“思考中”。按 `Ctrl+O` 可查看工具
+参数和结果详情。
+
+排障日志默认保存在本地 `log/agent-events.jsonl`；Remote 请求生命周期保存在
+`/var/log/ai-claude-gateway/events.jsonl`，两端可通过 run/request ID 对照。
+如需记录完整模型请求与对话上下文，可在启动前设置 `TRACE=1`（可能包含敏感内容）。
+
 ```bash
 npm run build
 npm link
