@@ -644,7 +644,15 @@ const config = loadConfig()
 // gap：该行底部是否留一行间距（段落收尾用）。
 type UIMessage = {
   id: number
-  role: 'user' | 'assistant' | 'assistant-line' | 'tool' | 'remote-tool' | 'activity' | 'agent-batch'
+  role:
+    | 'user'
+    | 'assistant'
+    | 'assistant-line'
+    | 'assistant-status'
+    | 'tool'
+    | 'remote-tool'
+    | 'activity'
+    | 'agent-batch'
   content: string
   gap?: boolean
   toolCard?: {
@@ -721,6 +729,16 @@ const MessageRow = memo(
     return (
       <Box marginBottom={gap ? 1 : 0}>
         <Text dimColor>{content}</Text>
+      </Box>
+    )
+  }
+  if (role === 'assistant-status') {
+    return (
+      <Box marginBottom={1}>
+        <Text>
+          <Text color="white">●</Text>{' '}
+          {content}
+        </Text>
       </Box>
     )
   }
@@ -1135,6 +1153,15 @@ function App() {
             // 撞到步数上限：提示而非硬停，回复「继续」即可再跑一轮。
             preserveTail(true)
             pushRow('tool', `⏸ 已连续执行 ${ev.steps} 步仍未结束。回复「继续」可再跑一轮。`)
+          } else if (ev.name === 'remote-status' && ev.phase === 'info') {
+            // Claude Code 会把多步研究中的阶段结论作为独立白点消息保留，例如
+            // “Found exact snapshots…”。它不是工具摘要，也不是最终回答。
+            preserveTail(true)
+            setToolTranscript(prev => [
+              ...prev,
+              { id: ++idRef.current, phase: ev.phase, summary: ev.summary, detail: ev.detail },
+            ])
+            pushRow('assistant-status', ev.summary.replace(/^●\s*/, ''))
           } else if (ev.phase === 'start' && ev.callId) {
             // 工具开始：只进入可变动态区，不能写进 Static，否则结束时只能再追加一条重复记录。
             preserveTail(true)

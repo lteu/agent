@@ -10,12 +10,6 @@ const MAX_PROTOCOL_CONTINUES = 2
 const REMOTE_BUILTIN_TOOLS = new Set(['WebSearch', 'WebFetch'])
 const REMOTE_BUILTIN_TOOL_LIST = [...REMOTE_BUILTIN_TOOLS].join(',')
 
-function looksLikeProgressUpdate(text) {
-  return /\b(?:i(?:'ll| will| am going to)|let me|next,|now i(?:'ll| will)|searching|researching|fetching|checking|found .{0,120} let me)\b|(?:我会|我将|让我|接下来|下一步|正在|先(?:查|搜|看|读取)|现在.{0,20}(?:查询|搜索|检查|读取))/i.test(
-    text,
-  )
-}
-
 const GATEWAY_EVENT_LOG =
   process.env.AI_CLAUDE_GATEWAY_EVENT_LOG ?? '/var/log/ai-claude-gateway/events.jsonl'
 const GATEWAY_EVENT_LOG_MAX_BYTES = 25 * 1024 * 1024
@@ -136,6 +130,12 @@ built-in tools cannot complete the request. No other remote built-in tools are a
 Conversation text enclosed in <remote_web_research> is a preserved result from a previous remote
 WebSearch/WebFetch round. Reuse that evidence instead of repeating the same research after a local
 tool call.
+
+During multi-step work, keep the user informed when a meaningful finding changes or confirms the
+next step. Put one concise, factual progress sentence in the same assistant response as the next
+tool call, for example: "Found exact snapshots for both dates. Let me pull the menu content from
+each." Do not narrate every routine action, repeat tool parameters, or emit filler such as "I am
+working on it." A progress sentence is not a final answer and must not use ${FINAL_MARKER}.
 
 A text-only response ends the LOCAL agent turn immediately. Therefore never return a progress-only
 message that merely says you will start, inspect, search, calculate, write, or continue later. In
@@ -488,11 +488,16 @@ remains.`
             .map(block => block.text)
             .join('')
             .trim()
-          if (stageText && looksLikeProgressUpdate(stageText)) {
+          // Claude often explains an important finding immediately before its
+          // next WebSearch/WebFetch call. Do not classify that text with a
+          // narrow "I'll/let me/next" heuristic: factual research notes do not
+          // necessarily contain progress verbs, and silently dropping them
+          // leaves the local UI showing only raw tool cards.
+          if (stageText) {
             onProgress({
               phase: 'info',
               name: 'remote-status',
-              summary: `● ${stageText.slice(0, 1_000)}`,
+              summary: `● ${stageText}`,
             })
           }
           for (const block of remoteToolBlocks) {
@@ -596,13 +601,14 @@ remains.`
           return
         }
         if (protocolContinues < MAX_PROTOCOL_CONTINUES) {
-          if (looksLikeProgressUpdate(completionText)) {
-            onProgress({
-              phase: 'info',
-              name: 'remote-status',
-              summary: `● ${completionText.trim().slice(0, 1_000)}`,
-            })
-          }
+          // An unmarked end_turn is not the final answer: the protocol will ask
+          // Claude to continue. Preserve its text before doing so, since it can
+          // contain evidence or conclusions gathered so far.
+          onProgress({
+            phase: 'info',
+            name: 'remote-status',
+            summary: `● ${completionText.trim()}`,
+          })
           continueIncompleteResponse()
           return
         }

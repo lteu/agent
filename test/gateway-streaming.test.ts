@@ -120,7 +120,14 @@ lines.on('line', line => {
     type: 'assistant',
     message: {
       content: [
-        { type: 'text', text: 'Let me verify the source.' },
+        {
+          type: 'text',
+          text:
+            'Found exact snapshots for both dates. Let me pull the menu content from each. ' +
+            'The source contains evidence that must remain visible before the next fetch. ' +
+            'x'.repeat(1_100) +
+            ' TAIL_FACT_MUST_REMAIN_VISIBLE',
+        },
         {
           type: 'tool_use',
           id: 'remote_search_1',
@@ -206,7 +213,15 @@ lines.on('line', line => {
   assert.match(payload, /STREAM_OK/)
   assert.match(payload, /ai_remote_progress/)
   assert.match(payload, /I'll search for the exact source first/)
-  assert.match(payload, /Let me verify the source/)
+  assert.match(
+    payload,
+    /Found exact snapshots for both dates\. Let me pull the menu content from each\./,
+  )
+  assert.match(
+    payload,
+    /The source contains evidence that must remain visible before the next fetch\./,
+  )
+  assert.match(payload, /TAIL_FACT_MUST_REMAIN_VISIBLE/)
   assert.match(payload, /Web Search/)
   assert.match(payload, /Did 1 search in 1s/)
   assert.match(payload, /data: \[DONE\]/)
