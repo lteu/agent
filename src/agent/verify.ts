@@ -148,6 +148,7 @@ ${historyText}
         provider: deps.provider,
         signal: deps.signal,
         onRequest: deps.onRequest,
+        onUsage: deps.onUsage,
       },
     )
     return parseVerifyJSON(content)

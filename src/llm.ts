@@ -5,6 +5,12 @@
 // compact.ts）完全透明：一样的 ChatMessage[] 入参，一样的 Completion/StreamPart 出参。
 // 仅依赖 Node 内置的全局 fetch（Node 18+）。
 
+import {
+  tokenUsageFromAnthropic,
+  tokenUsageFromOpenAI,
+  type TokenUsage,
+} from './token-usage.js'
+
 export type RawToolCall = {
   id: string
   type: 'function'
@@ -28,6 +34,8 @@ export type StreamOptions = {
   signal?: AbortSignal
   /** 在真正 fetch 前暴露实际 URL 和请求体；调用方负责脱敏与落盘。 */
   onRequest?: (request: LlmRequestSnapshot) => void
+  /** 每次成功模型请求只调用一次；用于按 Claude Code 口径累计 token。 */
+  onUsage?: (usage: TokenUsage) => void
 }
 
 export type LlmRequestSnapshot = {
@@ -62,6 +70,7 @@ export type Completion = {
   content: string
   toolCalls: RawToolCall[]
   finishReason?: string
+  usage?: TokenUsage
 }
 
 // ———————————————————————————————————————————————
@@ -181,7 +190,12 @@ function parseAnthropicMessage(json: any): Completion {
       })
     }
   }
-  return { content, toolCalls, finishReason: mapAnthropicStop(json?.stop_reason) }
+  return {
+    content,
+    toolCalls,
+    finishReason: mapAnthropicStop(json?.stop_reason),
+    usage: tokenUsageFromAnthropic(json?.usage),
+  }
 }
 
 async function anthropicChatComplete(
@@ -214,7 +228,9 @@ async function anthropicChatComplete(
     throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
   }
 
-  return parseAnthropicMessage(await res.json())
+  const completion = parseAnthropicMessage(await res.json())
+  if (completion.usage) opts.onUsage?.(completion.usage)
+  return completion
 }
 
 async function* anthropicStreamCompletion(
@@ -253,6 +269,7 @@ async function* anthropicStreamCompletion(
   const blocks = new Map<number, { type: 'text' | 'tool_use'; id?: string; name?: string; args: string }>()
   let content = ''
   let stopReason: string | undefined
+  let usage = tokenUsageFromAnthropic(undefined)
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -278,6 +295,10 @@ async function* anthropicStreamCompletion(
       }
 
       switch (evt.type) {
+        case 'message_start': {
+          usage = tokenUsageFromAnthropic(evt.message?.usage)
+          break
+        }
         case 'content_block_start': {
           const cb = evt.content_block
           if (cb?.type === 'text') blocks.set(evt.index, { type: 'text', args: '' })
@@ -311,6 +332,21 @@ async function* anthropicStreamCompletion(
         }
         case 'message_delta': {
           if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason
+          const deltaUsage = tokenUsageFromAnthropic(evt.usage)
+          usage = {
+            inputTokens: usage.inputTokens || deltaUsage.inputTokens,
+            outputTokens: deltaUsage.outputTokens || usage.outputTokens,
+            cacheReadInputTokens:
+              usage.cacheReadInputTokens || deltaUsage.cacheReadInputTokens,
+            cacheCreationInputTokens:
+              usage.cacheCreationInputTokens || deltaUsage.cacheCreationInputTokens,
+            totalTokens: 0,
+          }
+          usage.totalTokens =
+            usage.inputTokens +
+            usage.outputTokens +
+            usage.cacheReadInputTokens +
+            usage.cacheCreationInputTokens
           break
         }
         case 'error':
@@ -329,7 +365,8 @@ async function* anthropicStreamCompletion(
       function: { name: b.name || '', arguments: b.args || '{}' },
     }))
 
-  return { content, toolCalls, finishReason: mapAnthropicStop(stopReason) }
+  opts.onUsage?.(usage)
+  return { content, toolCalls, finishReason: mapAnthropicStop(stopReason), usage }
 }
 
 async function* anthropicStreamChat(
@@ -386,9 +423,12 @@ export async function chatComplete(
 
   const json = await res.json()
   const msg = json?.choices?.[0]?.message ?? {}
+  const usage = tokenUsageFromOpenAI(json?.usage)
+  opts.onUsage?.(usage)
   return {
     content: typeof msg.content === 'string' ? msg.content : '',
     toolCalls: Array.isArray(msg.tool_calls) ? msg.tool_calls : [],
+    usage,
   }
 }
 
@@ -418,6 +458,7 @@ export async function* streamCompletion(
     model: opts.model,
     messages,
     stream: true,
+    stream_options: { include_usage: true },
     ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
   }
   const headers = {
@@ -444,6 +485,7 @@ export async function* streamCompletion(
   let maxIndex = -1
   let content = ''
   let finishReason: string | undefined
+  let usage = tokenUsageFromOpenAI(undefined)
 
   // 产出所有 index < upto（'all' 表示全部）且尚未产出的、已完整的工具调用。
   function* flush(upto: number | 'all'): Generator<StreamPart> {
@@ -481,6 +523,7 @@ export async function* streamCompletion(
       } catch {
         continue // 不完整片段，忽略
       }
+      if (json?.usage) usage = tokenUsageFromOpenAI(json.usage)
       const choice = json?.choices?.[0]
       if (choice?.finish_reason) finishReason = choice.finish_reason
       const delta = choice?.delta
@@ -518,7 +561,8 @@ export async function* streamCompletion(
       type: 'function',
       function: { name: t.name, arguments: t.args },
     }))
-  return { content, toolCalls, finishReason }
+  opts.onUsage?.(usage)
+  return { content, toolCalls, finishReason, usage }
 }
 
 /**

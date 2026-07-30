@@ -2,7 +2,7 @@
 // 方便事后复现究竟是哪种输入触发的。日志追加写到项目 log/crash.log。
 
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { appendFileSync, mkdirSync } from 'node:fs'
 
 /**
@@ -10,6 +10,9 @@ import { appendFileSync, mkdirSync } from 'node:fs'
  * 用函数防止 esbuild --bundle 在构建时常量折叠路径。
  */
 function getLogDir(): string {
+  const configured = process.env.AI_LOG_DIR?.trim()
+  if (configured) return resolve(configured)
+
   const selfPath = fileURLToPath(import.meta.url)
   const selfDir = dirname(selfPath)
   const projectRoot =

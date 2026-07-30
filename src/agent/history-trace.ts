@@ -5,7 +5,7 @@
 // 默认关闭；设置 TRACE=1 后启用。完整日志可能包含文件内容、工具结果等敏感信息。
 
 import { appendFileSync, mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import type { ChatMessage } from '../llm.js'
@@ -25,6 +25,9 @@ export type HistoryTraceDetails = {
 }
 
 function getLogDir(): string {
+  const configured = process.env.AI_LOG_DIR?.trim()
+  if (configured) return resolve(configured)
+
   const selfPath = fileURLToPath(import.meta.url)
   const selfDir = dirname(selfPath)
   const projectRoot =

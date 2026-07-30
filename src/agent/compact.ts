@@ -16,6 +16,8 @@ export type CompactDeps = {
   signal?: AbortSignal
   /** fetch 前的完整请求观察钩子。 */
   onRequest?: StreamOptions['onRequest']
+  /** 成功请求的 token 用量观察钩子。 */
+  onUsage?: StreamOptions['onUsage']
   /** 触发压缩的估算 token 阈值，默认 40000。 */
   compactThreshold?: number
   /** 压缩时保留的最近消息条数（不含 system），默认 12。 */
@@ -95,6 +97,7 @@ export async function compactInPlace(
         provider: deps.provider,
         signal: deps.signal,
         onRequest: deps.onRequest,
+        onUsage: deps.onUsage,
       },
     )
     summary = content.trim()

@@ -1,0 +1,9 @@
+.git
+.agents
+.codex
+dist/*
+!dist/cli.js
+node_modules
+studio
+test
+*.log

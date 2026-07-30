@@ -6,6 +6,15 @@ import {
   normalizeSubagentMaxSteps,
   type ManagedSubagentEvent,
 } from '../src/agent/subagent-manager.js'
+import { buildSystemPrompt } from '../src/agent/session.js'
+
+test('主 agent 恢复批量任务时优先复用检查点并尽快派发', () => {
+  const prompt = buildSystemPrompt('/workspace', 'terminal')
+  assert.match(prompt, /不得先做全量工作区盘点/)
+  assert.match(prompt, /checkpoint\/index/)
+  assert.match(prompt, /不要重复 list 同一目录/)
+  assert.match(prompt, /回收后统一做一次/)
+})
 
 test('子 agent 默认获得 200 步，并限制异常预算', () => {
   assert.equal(normalizeSubagentMaxSteps(undefined), 200)
@@ -22,6 +31,8 @@ test('子 agent 返回稳定 agent_id 和结构化完成状态', async () => {
     cwd: '/tmp',
   }, async function* (history: ChatMessage[], maxSteps: number): AsyncGenerator<ManagedSubagentEvent> {
     assert.equal(maxSteps, 200)
+    assert.match(String(history[0]?.content), /不要重新扫描整个工作区/)
+    assert.match(String(history[0]?.content), /主 agent 提供的 task_id/)
     assert.match(String(history[1]?.content), /计算 1\+1/)
     history.push({ role: 'assistant', content: '答案是 2' })
     yield { type: 'text', content: '答案是 2' }

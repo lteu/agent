@@ -191,6 +191,7 @@ export async function* runAgent(
     provider: deps.provider,
     signal: deps.signal,
     depth: deps.depth ?? 0,
+    onUsage: deps.onUsage,
     readSnapshots: new Map(),
     fileMutationLocks: new Map(),
   }
@@ -306,6 +307,7 @@ export async function* runAgent(
       signal: deps.signal,
       tools,
       onRequest: requestTracer('agent'),
+      onUsage: deps.onUsage,
     })
 
     // channel 不消费 delta，只消费 text，所以这里按「工具调用分隔出的文本段」缓存。
@@ -616,7 +618,7 @@ function isTransientNetworkError(e: any): boolean {
     return true
   }
   const msg = String(e?.message ?? e).toLowerCase() + ' ' + String(e?.cause?.message ?? '').toLowerCase()
-  return /terminated|fetch failed|socket hang up|other side closed|premature close|network error|econnreset|etimedout/.test(
+  return /terminated|fetch failed|socket hang up|other side closed|premature close|network error|econnreset|etimedout|timed out|gateway timeout|http 50[24]/.test(
     msg,
   )
 }

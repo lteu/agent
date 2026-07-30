@@ -39,6 +39,13 @@ import { buildSystemPrompt } from './agent/session.js'
 import { loadSkills, readSkill, scaffoldSkill } from './skills.js'
 import { logChat, writeLogBanner } from './agent/chatlog.js'
 import { writeCrash } from './crashlog.js'
+import {
+  addTokenUsage,
+  EMPTY_TOKEN_USAGE,
+  formatTokenCount,
+  formatTokenUsage,
+  type TokenUsage,
+} from './token-usage.js'
 
 /** 把环境变量字符串转成验证级别（0|1|2），无效值返回 undefined（走 engine 默认值）。 */
 function parseVerifyLevel(raw: string | undefined): 0 | 1 | 2 | undefined {
@@ -124,6 +131,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
 对话框内命令:
   /models           列出已保存的模型预设
   /models <序号|名字>  切换到某个预设（当场生效，无需重启）
+  /usage            查看本次会话 input/output/cache/total token
+  /usage reset      清零本次会话 token 计数
 
 对话框内快捷键:
   Enter           发送
@@ -480,6 +489,7 @@ if (argv[0] === 'ask') {
   traceHistory(historyTrace, 'before-run-agent', history)
 
   const answers: string[] = []
+  let tokenUsage: TokenUsage = { ...EMPTY_TOKEN_USAGE }
   const startedAt = Date.now()
   try {
     for await (const ev of runAgent(history, {
@@ -489,6 +499,9 @@ if (argv[0] === 'ask') {
       provider: cfg.provider,
       verifyLevel: parseVerifyLevel(process.env.AI_VERIFY_LEVEL),
       historyTrace,
+      onUsage: usage => {
+        tokenUsage = addTokenUsage(tokenUsage, usage)
+      },
     })) {
       if (ev.type === 'text') {
         answers.push(ev.content)
@@ -503,6 +516,7 @@ if (argv[0] === 'ask') {
     traceHistory(historyTrace, 'after-run-agent', history)
     console.log(answer)
     console.error(formatWorkedFor(Date.now() - startedAt))
+    console.error(`Tokens: ${formatTokenUsage(tokenUsage)}`)
     logChat({ channel: 'terminal', sessionId: 'ask', question, answer })
     process.exit(0)
   } catch (e: any) {
@@ -800,11 +814,13 @@ function App() {
   const [toolTranscript, setToolTranscript] = useState<ToolTranscriptEntry[]>([])
   const [showTranscript, setShowTranscript] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKEN_USAGE })
   const [error, setError] = useState<string | null>(null)
   const lastCtrlC = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
   const toolBatchesRef = useRef(new Map<string, ToolBatch>())
   const historyRef = useRef<ChatMessage[]>([{ role: 'system', content: SYSTEM_PROMPT }])
+  const tokenUsageRef = useRef<TokenUsage>({ ...EMPTY_TOKEN_USAGE })
   // 自增 id：给每条消息一个稳定 key，避免数组索引漂移引发不必要的重绘。
   const idRef = useRef(0)
   // 流式「未完成的最后一行」。完整行随到随沉淀进上方 Static 历史，动态区只留这截尾巴，
@@ -872,8 +888,21 @@ function App() {
       const uid = ++idRef.current
       setMessages(prev => [...prev, { id: uid, role: 'user', content: text }])
 
-      // /models 本地命令：列出或切换模型预设。不进 LLM 对话历史、不占对话轮次。
+      // /usage、/models 都是本地命令：不进 LLM 历史、不消耗 token。
       const trimmed = text.trim()
+      if (trimmed === '/usage' || trimmed === '/usage reset') {
+        const pushLocal = (content: string) =>
+          setMessages(prev => [...prev, { id: ++idRef.current, role: 'tool', content, gap: true }])
+        if (trimmed.endsWith('reset')) {
+          const empty = { ...EMPTY_TOKEN_USAGE }
+          tokenUsageRef.current = empty
+          setTokenUsage(empty)
+          pushLocal('Token 用量已清零。')
+        } else {
+          pushLocal(`本次会话 Token：${formatTokenUsage(tokenUsageRef.current)}`)
+        }
+        return
+      }
       if (trimmed === '/models' || trimmed.startsWith('/models ')) {
         const pushLocal = (content: string) =>
           setMessages(prev => [...prev, { id: ++idRef.current, role: 'tool', content, gap: true }])
@@ -939,6 +968,11 @@ function App() {
           signal: controller.signal,
           verifyLevel: parseVerifyLevel(process.env.AI_VERIFY_LEVEL),
           historyTrace,
+          onUsage: usage => {
+            const next = addTokenUsage(tokenUsageRef.current, usage)
+            tokenUsageRef.current = next
+            setTokenUsage(next)
+          },
         })) {
           if (ev.type === 'delta') {
             // 流式增量：拼到尾巴上，每凑满一整行（遇 \n）就立刻沉淀进 Static 历史，
@@ -1156,7 +1190,10 @@ function App() {
       {/* 常驻页脚提示 */}
       <Box paddingX={1}>
         <Text dimColor>
-          {modelConfig.model} · Enter 发送 · Ctrl+O 详细转录 · Esc 中断 · Ctrl+C×2 退出
+          {modelConfig.model} · {formatTokenCount(tokenUsage.totalTokens)} tokens
+          {' · '}↑{formatTokenCount(tokenUsage.inputTokens)}
+          {' · '}↓{formatTokenCount(tokenUsage.outputTokens)}
+          {' · '}Enter 发送 · Ctrl+O 详情 · Esc 中断
         </Text>
       </Box>
     </Box>

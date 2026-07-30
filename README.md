@@ -88,6 +88,56 @@ ai --rm-model doubao      # 删除一个预设
 ai
 ```
 
+终端会话会按 Claude Code 的口径累计模型实际返回的 token，用状态栏持续显示
+会话总量、input 和 output。输入 `/usage` 可查看 input、output、cache read、
+cache write 和 total 明细；`/usage reset` 只清零本次会话计数，不会调用模型。
+`ai ask ...` 会在 stderr 的耗时信息后打印同样的 Tokens 明细。主 Agent、
+子 Agent、自动压缩和最终核验的模型请求都会计入。
+
+## 通过远端调用 Claude（`ai-claude`）
+
+`ai-claude` 启动本项目自己的 AI Agent，因此读取、编辑、Bash 和工作目录全部
+是本地的。启动器临时建立 SSH 隧道，把模型请求交给 `remote` 上的 Claude
+网关；网关使用远端 `~/.claude` 的认证调用 Claude，并把文本或工具调用返回。
+公开网络查询使用 Remote Claude 内置的 `WebSearch`/`WebFetch`；网关通过
+Claude Code 的 MCP/stream-json 通道捕获 Read/Edit/Bash 等本地 `tool_use`，
+交给本地 Agent 执行并回灌结果。Remote Claude 的内置工具采用精确白名单，
+除 `WebSearch` 和 `WebFetch` 外均不开放。
+
+```bash
+npm run build
+npm link
+ai-claude --probe
+ai-claude ask "只回复 OK"
+ai-claude
+```
+
+如需让本地工具与宿主机身份信息隔离，可使用 Docker sandbox：
+
+```bash
+ai-claude --sandbox --probe
+ai-claude --sandbox ask "读取 package.json，只回复 name"
+ai-claude --sandbox
+```
+
+sandbox 使用两个相互隔离的容器。Agent 容器只把当前目录挂载为
+`/workspace`，使用中性用户 `agent`，看不到宿主机 HOME、`~/.ssh`、
+`SSH_AUTH_SOCK` 或原始绝对路径。SSH 配置和认证只提供给独立的隧道容器；
+该容器不挂载项目。Agent 默认具有公网出站能力，以便 `web_fetch`、`curl`、
+Wikipedia、USGS 等研究任务正常工作；镜像内置 curl、Python 3、jq、rg、DNS
+工具和 unzip。egress 默认使用 `1.1.1.1`，避免宿主网络错误解析 Wikipedia；
+可用 `AI_CLAUDE_SANDBOX_DNS` 覆盖，设为 `system` 则跟随 Docker DNS。设置
+`AI_CLAUDE_SANDBOX_NETWORK=isolated` 可恢复为只允许访问 Claude 隧道的无外网
+模式。允许公网意味着 Agent 也能把 `/workspace` 中读取到的内容发送给第三方
+网站，因此不要在不可信任务中挂载含密钥的目录。首次运行会构建
+`ai-claude-sandbox:local` 镜像，后续复用 Docker 构建缓存。需要 Docker Desktop、
+OrbStack 或 Docker Engine 正在运行。
+
+可用 `AI_CLAUDE_SSH_HOST` 修改 SSH 目标，默认是 `remote`。远端需将
+[`deploy/ai-claude-gateway.mjs`](deploy/ai-claude-gateway.mjs) 作为 systemd
+服务运行在 `127.0.0.1:8791`；该端口不向公网开放，只能经 SSH 隧道访问。本机
+不需要 Claude 登录，也不会复制远端 OAuth 凭据。
+
 ## 托管密钥版本（`ai-remote`）
 
 `ai-remote` 使用与 `ai` 相同的 Agent 和终端界面，但真实模型密钥只保存在远端

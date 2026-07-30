@@ -8,7 +8,7 @@
 //   chat-history.md     人类可读，按「[渠道] 话题」分节，方便直接翻看
 
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 
 /**
@@ -19,6 +19,9 @@ import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
  * 放到函数里运行时才计算，esbuild 就无法常量折叠。
  */
 function getLogDir(): string {
+  const configured = process.env.AI_LOG_DIR?.trim()
+  if (configured) return resolve(configured)
+
   // 注意：此处的 import.meta.url 是调用时所在模块的 URL。
   // 当 chatlog.ts 被 esbuild 内联到 dist/cli.js 后，
   // import.meta.url 对应的是 dist/cli.js 的路径。

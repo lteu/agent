@@ -32,6 +32,7 @@ import {
 import { interpretShellCommandResult } from './shell-command-semantics.js'
 import { classifyVerificationCommand, type VerificationCheckKind } from './agent/verification-policy.js'
 import { managedSubagents, type ManagedSubagentResult } from './agent/subagent-manager.js'
+import type { TokenUsage } from './token-usage.js'
 import { PDFParse } from 'pdf-parse'
 import XLSX from 'xlsx'
 import JSZip from 'jszip'
@@ -45,6 +46,8 @@ export type ToolContext = {
   signal?: AbortSignal
   /** 子 agent 递归深度，防止 run_agent 无限自我派生。 */
   depth?: number
+  /** 主会话 token 累计器；子 agent 请求也汇总到同一会话。 */
+  onUsage?: (usage: TokenUsage) => void
   /** 最近一次 read_file/本进程写入后的文件快照，用于阻止盲写和覆盖外部修改。 */
   readSnapshots?: Map<string, FileReadSnapshot>
   /** 同一路径的写操作串行化，防止同一批并发工具互相覆盖。 */
@@ -294,7 +297,7 @@ export const TOOL_SCHEMAS = [
     function: {
       name: 'run_bash',
       description:
-        '在本地 shell 执行一条命令并返回 stdout/stderr。用于建目录(mkdir)、移动、运行脚本等。',
+        '在本地 shell 执行一条不需要管理员权限的命令并返回 stdout/stderr。用于建目录(mkdir)、移动、运行脚本等。不要在这里使用 sudo；需要管理员权限时改用 run_admin。',
       parameters: {
         type: 'object',
         properties: {
@@ -303,6 +306,29 @@ export const TOOL_SCHEMAS = [
             type: 'string',
             description:
               '这条命令想达成什么，用一句简短中文说明（≤16 字），如「安装缺失依赖」「查看阶段四报错详情」。会显示给用户，让进度可读。',
+          },
+        },
+        required: ['command', 'intent'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_admin',
+      description:
+        '在 macOS 上执行确实需要管理员权限的 shell 命令。调用后会弹出系统密码授权框，密码只交给 macOS，不会传给 Agent。command 中不要写 sudo；用户取消授权时命令不会执行。',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: '需要以管理员身份执行的命令（不要包含 sudo）',
+          },
+          intent: {
+            type: 'string',
+            description:
+              '为什么需要管理员权限，用一句简短中文说明（≤16 字），如「更新 hosts 映射」。会在弹框前显示给用户。',
           },
         },
         required: ['command', 'intent'],
@@ -750,7 +776,12 @@ export function validateToolInput(name: string, args: Record<string, unknown>): 
     if (expected !== 'number' && typeof value !== expected) return `参数 ${key} 必须是 ${expected}`
   }
 
-  if (name === 'run_bash' && !String(args.command ?? '').trim()) return 'command 不能为空'
+  if ((name === 'run_bash' || name === 'run_admin') && !String(args.command ?? '').trim()) {
+    return 'command 不能为空'
+  }
+  if (name === 'run_admin' && containsSudoCommand(String(args.command ?? ''))) {
+    return 'run_admin 已经以管理员身份执行，command 中不要再写 sudo'
+  }
   if (name === 'edit_file') {
     if (!String(args.old_string ?? '')) return 'old_string 不能为空'
     if (args.old_string === args.new_string) return 'old_string 与 new_string 相同，无需修改'
@@ -760,6 +791,22 @@ export function validateToolInput(name: string, args: Record<string, unknown>): 
   }
   return null
 }
+
+// sudo 依赖交互式终端输入密码，而 run_bash 的 stdin 是管道；让它继续执行只会报
+// “a terminal is required”或一直等到超时。只识别真正位于命令起始/控制符后的 sudo，
+// 避免把 `echo sudo` 这类普通文本误判成提权命令。
+function containsSudoCommand(command: string): boolean {
+  return /(?:^|[;&|(\n]\s*)sudo(?:\s|$)/.test(command)
+}
+
+const ADMIN_APPLE_SCRIPT = `
+on run argv
+  set commandText to item 1 of argv
+  set workingDirectory to item 2 of argv
+  set privilegedCommand to "cd " & quoted form of workingDirectory & " && " & commandText
+  do shell script privilegedCommand with prompt "AI 请求执行管理员命令。请确认这是你刚刚要求的操作。" with administrator privileges
+end run
+`
 
 function failedToolResult(
   code: string,
@@ -909,6 +956,52 @@ async function runToolText(
                 ctx.executionMeta.commandIsError = false
               }
               res(out || '(无输出)')
+            }
+          },
+        )
+      })
+    }
+    case 'run_admin': {
+      const command = String(args.command ?? '')
+      if (ctx?.executionMeta) ctx.executionMeta.command = command
+      if (ctx?.signal?.aborted) {
+        if (ctx.executionMeta) ctx.executionMeta.cancelled = true
+        return '（已中断，未执行）'
+      }
+      return await new Promise<string>(res => {
+        execFile(
+          '/usr/bin/osascript',
+          ['-e', ADMIN_APPLE_SCRIPT, command, process.cwd()],
+          // 给用户留出看到并处理系统授权框的时间；Esc/Ctrl+C 仍会立即终止等待。
+          {
+            timeout: 300_000,
+            maxBuffer: 10 * 1024 * 1024,
+            signal: ctx?.signal,
+            killSignal: 'SIGKILL',
+            // 部分非英文 locale 下，osascript 无法识别 Standard Additions 的英文参数名
+            // （如 administrator privileges），固定解析 locale 不影响中文弹框文本。
+            env: { ...process.env, LANG: 'C', LC_ALL: 'C' },
+          },
+          (err, stdout, stderr) => {
+            const cap = (s: string) => (s.length > 20000 ? s.slice(0, 20000) + '\n…（已截断）' : s)
+            const out = cap([stdout, stderr].filter(Boolean).join('\n').trim())
+            if (err && (err as any).name === 'AbortError') {
+              if (ctx?.executionMeta) ctx.executionMeta.cancelled = true
+              res(`管理员命令已被用户中断${out ? `\n${out}` : ''}`)
+            } else if (err) {
+              const exitCode = typeof (err as any).code === 'number' ? (err as any).code : 1
+              if (ctx?.executionMeta) {
+                ctx.executionMeta.exitCode = exitCode
+                ctx.executionMeta.commandIsError = true
+                ctx.executionMeta.timedOut = Boolean((err as any).killed && (err as any).signal === 'SIGKILL')
+              }
+              res(`命令退出码 ${exitCode}\n${out || (err as Error).message}`)
+            } else {
+              if (ctx?.executionMeta) {
+                ctx.executionMeta.exitCode = 0
+                ctx.executionMeta.commandIsError = false
+              }
+              res(out || '(管理员命令执行成功，无输出)')
             }
           },
         )
@@ -1115,6 +1208,7 @@ async function runToolText(
         signal: ctx.signal,
         maxSteps,
         depth: (ctx.depth ?? 0) + 1,
+        onUsage: ctx.onUsage,
         verifyLevel: 0, // 子 agent 自行完成并结构化报告；避免递归调用裁判模型
       }))
       return JSON.stringify(result, null, 2)
@@ -1209,6 +1303,22 @@ export async function runTool(
   if (validationError) {
     writeToolDebugEvent('tool_input_validation_failed', { toolName: name, error: validationError })
     return failedToolResult('invalid_input', validationError, startedAt, '工具参数无效')
+  }
+
+  if (name === 'run_bash' && containsSudoCommand(String(args.command ?? ''))) {
+    return failedToolResult(
+      'use_admin_dialog',
+      'run_bash 无法交互式读取 sudo 密码；请改用 run_admin，并从 command 中去掉 sudo',
+      startedAt,
+      '需要管理员权限，将改用 macOS 系统授权框',
+    )
+  }
+  if (name === 'run_admin' && process.platform !== 'darwin') {
+    return failedToolResult(
+      'unsupported_platform',
+      'run_admin 的系统授权框目前只支持 macOS',
+      startedAt,
+    )
   }
 
   const snapshots = ctx?.readSnapshots ?? new Map<string, FileReadSnapshot>()
@@ -1314,7 +1424,7 @@ export async function runTool(
       }
     }
 
-    if (name === 'run_bash') {
+    if (name === 'run_bash' || name === 'run_admin') {
       const command = String(args.command)
       const checkKind = classifyVerificationCommand(command) ?? undefined
       const ok = !meta.cancelled && !meta.timedOut && meta.commandIsError !== true
@@ -1471,6 +1581,10 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       const label = bashLabel(String(args.command ?? ''))
       if (label.startsWith('进入目录')) return label // 纯 cd 本身已自解释，无需再缀意图
       return intent ? `${intent} · ${label}` : `运行 ${label}`
+    }
+    case 'run_admin': {
+      const intent = String(args.intent ?? '').trim()
+      return `${intent || '执行管理员命令'} · ${bashLabel(String(args.command ?? ''))}（系统授权）`
     }
     case 'send_email':
       return `发邮件给 ${args.to}`

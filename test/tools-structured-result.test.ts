@@ -38,6 +38,33 @@ test('run_agent 暴露恢复 ID 和独立预算参数', () => {
   assert.equal(schema.properties.max_steps.type, 'number')
 })
 
+test('管理员命令使用独立工具，并阻止 sudo 卡在非交互 shell', async () => {
+  const schema = TOOL_SCHEMAS
+    .find(tool => tool.function.name === 'run_admin')?.function.parameters as any
+  assert.deepEqual(schema.required, ['command', 'intent'])
+
+  const intercepted = await runTool('run_bash', {
+    command: "printf '127.0.0.1 example.test\\n' | sudo tee -a /etc/hosts",
+    intent: '更新 hosts',
+  }, context())
+  assert.equal(intercepted.ok, false)
+  assert.equal(intercepted.error?.code, 'use_admin_dialog')
+  assert.match(intercepted.error?.message ?? '', /run_admin/)
+
+  const ordinaryText = await runTool('run_bash', {
+    command: "printf 'sudo is text'",
+    intent: '输出普通文本',
+  }, context())
+  assert.equal(ordinaryText.ok, true)
+
+  const nestedSudo = await runTool('run_admin', {
+    command: 'sudo touch /tmp/should-not-run',
+    intent: '验证参数',
+  }, context())
+  assert.equal(nestedSudo.ok, false)
+  assert.equal(nestedSudo.error?.code, 'invalid_input')
+})
+
 test('web_fetch 会重试瞬时网络错误，并在恢复后返回成功', async t => {
   const originalFetch = globalThis.fetch
   let attempts = 0
