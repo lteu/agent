@@ -2,7 +2,7 @@ import { readFileSync } from 'fs'
 import { useState, useRef, useCallback, useEffect, memo, useMemo } from 'react'
 import { render, Box, Text, useApp, useInput, Static } from 'ink'
 import MultilineInput from './MultilineInput.js'
-import { type ChatMessage } from './llm.js'
+import { chatComplete, type ChatMessage } from './llm.js'
 import {
   loadConfig,
   loadRawConfig,
@@ -145,6 +145,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
 对话框内命令:
   /models           列出已保存的模型预设
   /models <序号|名字>  切换到某个预设（当场生效，无需重启）
+  /btw <问题>       运行中旁问：共享当前上下文、无工具、不打断主任务、不写入历史
   /usage            查看本次会话 input/output/cache/total token
   /usage reset      清零本次会话 token 计数
 
@@ -155,6 +156,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   Ctrl+A / Ctrl+E 行首 / 行尾
   Ctrl+U          删到行首
   Esc             清空输入
+  运行中 Enter     将下一条 prompt 加入队列，当前任务结束后自动执行
   Ctrl+C 两次      退出
 `)
   process.exit(0)
@@ -715,6 +717,12 @@ type ToolTranscriptEntry = {
   detail?: string
 }
 
+type BtwState = {
+  question: string
+  status: 'loading' | 'done' | 'error'
+  answer?: string
+}
+
 function transcriptDetail(detail: string): string {
   const lines = detail.replace(/\0/g, '').split('\n')
   const shown = lines.slice(-6).join('\n')
@@ -968,6 +976,10 @@ function App() {
   const [toolTranscript, setToolTranscript] = useState<ToolTranscriptEntry[]>([])
   const [showTranscript, setShowTranscript] = useState(false)
   const [busy, setBusy] = useState(false)
+  // 运行中仍保持输入框可编辑。普通 prompt 先排队，当前 turn 收口后按提交顺序执行。
+  const [queuedPrompts, setQueuedPrompts] = useState<string[]>([])
+  // /btw 是独立、无工具、不会写入主历史的旁路请求。
+  const [btw, setBtw] = useState<BtwState | null>(null)
   const [activity, setActivity] = useState<ActivityCounts>({ ...EMPTY_ACTIVITY_COUNTS })
   const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null)
   const [elapsedMs, setElapsedMs] = useState(0)
@@ -980,6 +992,14 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const lastCtrlC = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
+  const btwAbortRef = useRef<AbortController | null>(null)
+  const btwRequestRef = useRef(0)
+  const busyRef = useRef(false)
+  const queuedPromptsRef = useRef<string[]>([])
+  const sendRef = useRef<((text: string) => Promise<void>) | null>(null)
+  // 主 turn 运行时，historyRef 可能暂时包含尚未配对的 tool_call。/btw 只读取
+  // turn 开始时的合法快照，避免旁路请求拿到半截协议消息。
+  const sideHistoryRef = useRef<ChatMessage[]>([])
   const toolBatchesRef = useRef(new Map<string, ToolBatch>())
   const historyRef = useRef<ChatMessage[]>([{ role: 'system', content: SYSTEM_PROMPT }])
   const tokenUsageRef = useRef<TokenUsage>({ ...EMPTY_TOKEN_USAGE })
@@ -1027,6 +1047,20 @@ function App() {
   // Esc：生成中按一下即中断当前任务（不退出程序）。
   // Ctrl+C：忙时一次中断生成，空闲时连按两次退出。
   useInput((_input, key) => {
+    if (btw) {
+      if (
+        key.escape ||
+        key.return ||
+        _input === ' ' ||
+        (key.ctrl && (_input === 'c' || _input === 'd'))
+      ) {
+        btwRequestRef.current += 1
+        btwAbortRef.current?.abort()
+        btwAbortRef.current = null
+        setBtw(null)
+      }
+      return
+    }
     if (showTranscript) {
       if ((key.ctrl && _input === 'o') || (key.ctrl && _input === 'c') || key.escape || _input === 'q') {
         setShowTranscript(false)
@@ -1059,15 +1093,71 @@ function App() {
     }
   })
 
+  const askBtw = useCallback(
+    async (question: string) => {
+      const requestId = ++btwRequestRef.current
+      btwAbortRef.current?.abort()
+      const controller = new AbortController()
+      btwAbortRef.current = controller
+      setError(null)
+      setBtw({ question, status: 'loading' })
+
+      // 忙时使用 turn 开始时的稳定快照；空闲时直接复制完整主历史。
+      const baseHistory = busyRef.current ? sideHistoryRef.current : historyRef.current
+      const context = structuredClone(baseHistory)
+      context.push({
+        role: 'user',
+        content:
+          '这是一个临时旁问。请只根据当前对话上下文简洁回答；不要调用工具，也不要改变或继续主任务。' +
+          `\n\n问题：${question}`,
+      })
+
+      try {
+        const completion = await chatComplete(context, {
+          apiKey: apiKey!,
+          model: modelConfig.model,
+          baseURL: modelConfig.baseURL,
+          provider: modelConfig.provider,
+          signal: controller.signal,
+          onUsage: usage => {
+            const next = addTokenUsage(tokenUsageRef.current, usage)
+            tokenUsageRef.current = next
+            setTokenUsage(next)
+          },
+        })
+        if (btwRequestRef.current !== requestId || controller.signal.aborted) return
+        setBtw({
+          question,
+          status: 'done',
+          answer: completion.content.trim() || '没有收到回答。',
+        })
+      } catch (e: any) {
+        if (btwRequestRef.current !== requestId || controller.signal.aborted) return
+        setBtw({ question, status: 'error', answer: e?.message ?? String(e) })
+      } finally {
+        if (btwRequestRef.current === requestId) btwAbortRef.current = null
+      }
+    },
+    [apiKey, modelConfig],
+  )
+
   const send = useCallback(
     async (text: string) => {
       setError(null)
-      const uid = ++idRef.current
-      setMessages(prev => [...prev, { id: uid, role: 'user', content: text }])
 
       // /usage、/models 都是本地命令：不进 LLM 历史、不消耗 token。
       const trimmed = text.trim()
+      if (trimmed === '/btw' || trimmed.startsWith('/btw ')) {
+        const question = trimmed.slice('/btw'.length).trim()
+        if (!question) {
+          setError('用法：/btw <问题>')
+          return
+        }
+        void askBtw(question)
+        return
+      }
       if (trimmed === '/usage' || trimmed === '/usage reset') {
+        setMessages(prev => [...prev, { id: ++idRef.current, role: 'user', content: text }])
         const pushLocal = (content: string) =>
           setMessages(prev => [...prev, { id: ++idRef.current, role: 'tool', content, gap: true }])
         if (trimmed.endsWith('reset')) {
@@ -1081,6 +1171,7 @@ function App() {
         return
       }
       if (trimmed === '/models' || trimmed.startsWith('/models ')) {
+        setMessages(prev => [...prev, { id: ++idRef.current, role: 'user', content: text }])
         const pushLocal = (content: string) =>
           setMessages(prev => [...prev, { id: ++idRef.current, role: 'tool', content, gap: true }])
         const arg = trimmed.slice('/models'.length).trim()
@@ -1111,6 +1202,15 @@ function App() {
         return
       }
 
+      if (busyRef.current) {
+        queuedPromptsRef.current.push(text)
+        setQueuedPrompts([...queuedPromptsRef.current])
+        return
+      }
+
+      busyRef.current = true
+      const uid = ++idRef.current
+      setMessages(prev => [...prev, { id: uid, role: 'user', content: text }])
       setBusy(true)
       const startedAt = Date.now()
       setBusyStartedAt(startedAt)
@@ -1123,6 +1223,7 @@ function App() {
       const historyTrace = createHistoryTraceContext('terminal', 'terminal')
       traceHistory(historyTrace, 'before-user-push', history)
       history.push({ role: 'user', content: text })
+      sideHistoryRef.current = structuredClone(history)
       traceHistory(historyTrace, 'after-user-push', history)
 
       const controller = new AbortController()
@@ -1310,6 +1411,8 @@ function App() {
         }
       } finally {
         preserveTail(true) // 兜底：任何残留尾巴都不丢
+        const nextPrompt = queuedPromptsRef.current.shift()
+        setQueuedPrompts([...queuedPromptsRef.current])
         setBusy(false)
         setBusyStartedAt(null)
         streamTailRef.current = ''
@@ -1317,10 +1420,21 @@ function App() {
         setActiveTools([])
         toolBatchesRef.current.clear()
         abortRef.current = null
+        // 保持 busyRef 到当前任务完全收口；微任务中再交给下一轮，避免两个
+        // runAgent 并发修改同一份 history。
+        if (nextPrompt !== undefined) {
+          queueMicrotask(() => {
+            busyRef.current = false
+            void sendRef.current?.(nextPrompt)
+          })
+        } else {
+          busyRef.current = false
+        }
       }
     },
-    [apiKey, modelConfig],
+    [apiKey, modelConfig, askBtw],
   )
+  sendRef.current = send
 
   // header props 用 useMemo 稳定引用，避免传给 memo(Header) 时每帧都是新对象
   const headerProps = useMemo(
@@ -1454,22 +1568,60 @@ function App() {
         </Box>
       )}
 
-      {/* 输入框 */}
-      {!busy && (
+      {queuedPrompts.length > 0 && (
+        <Box flexDirection="column" marginBottom={1}>
+          {queuedPrompts.map((prompt, index) => (
+            <Text key={`${index}-${prompt}`} dimColor>
+              {index === 0 ? '排队中 › ' : '       › '}{prompt}
+            </Text>
+          ))}
+        </Box>
+      )}
+
+      {btw && (
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor="yellow"
+          paddingX={1}
+          marginBottom={1}
+        >
+          <Text>
+            <Text color="yellow" bold>/btw </Text>
+            <Text dimColor>{btw.question}</Text>
+          </Text>
+          <Box marginTop={1}>
+            {btw.status === 'loading' ? (
+              <Text color="yellow"><Spinner /> 正在旁路回答…</Text>
+            ) : (
+              <Text color={btw.status === 'error' ? 'red' : undefined}>{btw.answer}</Text>
+            )}
+          </Box>
+          <Text dimColor>Space / Enter / Esc 关闭；不会写入主对话</Text>
+        </Box>
+      )}
+
+      {/* 输入框：主任务运行中仍保持可输入；/btw 弹层打开时由弹层接管键盘。 */}
+      {!btw && (
         <MultilineInput
           onSubmit={send}
-          topRightLabel={`${formatTokenCount(tokenUsage.totalTokens)} tokens`}
+          topRightLabel={
+            busy
+              ? `${queuedPrompts.length} queued · /btw 可旁问`
+              : `${formatTokenCount(tokenUsage.totalTokens)} tokens`
+          }
           width={Math.max(20, terminalSize.columns - 4)}
         />
       )}
 
       {/* 常驻页脚提示 */}
-      {!busy && <Box paddingX={1}>
+      {!btw && <Box paddingX={1}>
         <Text dimColor>
           {modelConfig.model}
           {' · '}↑{formatTokenCount(tokenUsage.inputTokens)}
           {' · '}↓{formatTokenCount(tokenUsage.outputTokens)}
           {' · '}Ctrl+O details · Esc interrupt
+          {busy ? ' · Enter queues next prompt' : ''}
         </Text>
       </Box>}
     </Box>

@@ -117,6 +117,14 @@ cache write 和 total 明细；`/usage reset` 只清零本次会话计数，不�
 `ai ask ...` 会在 stderr 的耗时信息后打印同样的 Tokens 明细。主 Agent、
 子 Agent、自动压缩和最终核验的模型请求都会计入。
 
+主 Agent 运行时输入框仍然可用：
+
+- 直接输入普通 prompt 并按 Enter，会加入可见队列；当前 turn 完成或被中断后，按提交顺序自动执行。
+- 输入 `/btw <问题>` 会立即启动一次独立旁问。它能看到主会话在本 turn 开始时的上下文，
+  但没有工具权限，不会中断主任务，也不会把问题和回答写入主历史。
+- `/btw` 回答出现后按 Space、Enter 或 Esc 关闭；主任务继续在后台运行。
+- Esc 仍用于中断当前主 turn；已经排队的 prompt 不会因此丢失。
+
 ## 通过远端调用 Claude（`ai-claude`）
 
 `ai-claude` 启动本项目自己的 AI Agent，因此读取、编辑、Bash 和工作目录全部
