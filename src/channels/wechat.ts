@@ -21,7 +21,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createHash, createDecipheriv } from 'node:crypto'
 import { runAgent } from '../agent/engine.js'
 import { isStopCommand } from './stopwords.js'
-import { formatWorkedFor } from '../duration.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { createHistoryTraceContext, traceHistory } from '../agent/history-trace.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
@@ -85,7 +84,7 @@ class TokenManager {
 }
 
 export function startWechat(): void {
-  const cfg = loadConfig()
+  const cfg = loadConfig('wechat')
   const wx = loadWechatConfig()
 
   if (!cfg.apiKey) {
@@ -156,7 +155,6 @@ export function startWechat(): void {
       return
     }
     busy.add(sessionId)
-    const startedAt = Date.now()
     const controller = new AbortController()
     controllers.set(sessionId, controller)
     const history = sessions.get(sessionId)
@@ -165,9 +163,12 @@ export function startWechat(): void {
     history.push({ role: 'user', content: text })
     traceHistory(historyTrace, 'after-user-push', history)
     try {
+      // 每条消息重新读取渠道模型绑定：切换企业微信模型无需重启守护进程。
+      const modelConfig = loadConfig('wechat')
+      if (!modelConfig.apiKey) throw new Error('企业微信当前模型缺少 API key，请重新绑定带凭据的模型预设')
       let said = false
       const answers: string[] = []
-      for await (const out of runAgent(history, { apiKey: cfg.apiKey!, model: cfg.model, baseURL: cfg.baseURL, provider: cfg.provider, signal: controller.signal, historyTrace })) {
+      for await (const out of runAgent(history, { apiKey: modelConfig.apiKey, model: modelConfig.model, baseURL: modelConfig.baseURL, provider: modelConfig.provider, signal: controller.signal, historyTrace })) {
         if (out.type === 'text' && out.content.trim()) {
           await sendText(fromUser, out.content)
           answers.push(out.content)
@@ -179,7 +180,6 @@ export function startWechat(): void {
       }
       traceHistory(historyTrace, 'after-run-agent', history)
       if (!said) await sendText(fromUser, '(已完成，无文字输出)')
-      await sendText(fromUser, formatWorkedFor(Date.now() - startedAt))
       logChat({ channel: 'wechat', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {

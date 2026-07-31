@@ -74,6 +74,29 @@ ai --use-model doubao     # 切换：把该预设整体写进顶层 apiKey/model
 ai --rm-model doubao      # 删除一个预设
 ```
 
+### QQ / 微信独立模型
+
+QQ、个人微信和企业微信可以各自绑定不同预设：
+
+```bash
+ai --use-model deepseek --channel qq       # 只切 QQ
+ai --use-model doubao --channel wx         # 只切个人微信（ai wx）
+ai --use-model qwen --channel wechat       # 只切企业微信（ai wechat）
+ai --use-model deepseek --channel all      # 三个长驻消息渠道一起切
+ai --use-model deepseek                    # 只切默认/终端模型
+ai --list-models                           # 查看 default / qq / wx / wechat 当前绑定
+```
+
+- `qq` 是 QQ 官方机器人，`wx` 是个人微信（`ai wx`），`wechat` 是企业微信（`ai wechat`）；
+- 切换会在该渠道的**下一条消息**自动生效，长驻服务无需重启；
+- 未显式绑定的渠道继承默认/终端模型；一旦绑定，普通的 `ai --use-model <名字>` 不会改变它；
+- 渠道绑定保存的是预设名，实际 `model` / `baseURL` / `apiKey` 每条消息都会从配置重新读取；
+- 若要做到凭据和故障完全隔离，给每个渠道使用的预设都填写自己的 `apiKey`。省略 `apiKey` 会继承全局 key；
+- 某个渠道遇到 `HTTP 401`、token 过期或服务商故障时，用 `--channel` 将该渠道切到健康预设，其他绑定到不同预设的渠道不受影响。
+
+需要用环境变量独立覆盖时，可使用 `AI_QQ_API_KEY` / `AI_QQ_MODEL` / `AI_QQ_BASE_URL` /
+`AI_QQ_PROVIDER`，并将 `QQ` 替换成 `WX`（个人微信）或 `WECHAT`（企业微信）。
+
 对话框内也能直接切，当场生效、不用重启：
 
 ```

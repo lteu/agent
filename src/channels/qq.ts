@@ -98,7 +98,7 @@ export async function qqPush(text: string): Promise<void> {
 }
 
 export function startQQ(): void {
-  const cfg = loadConfig()
+  const cfg = loadConfig('qq')
   const qq = loadQQConfig()
   const doubaoTts = loadDoubaoTtsConfig()
   const useDoubao = Boolean(doubaoTts.appId && doubaoTts.token && doubaoTts.voiceType)
@@ -377,13 +377,16 @@ export function startQQ(): void {
     history.push({ role: 'user', content: agentInput })
     traceHistory(historyTrace, 'after-user-push', history)
     try {
+      // 每条消息重新读取渠道模型绑定：`ai --use-model ... --channel qq` 无需重启守护进程。
+      const modelConfig = loadConfig('qq')
+      if (!modelConfig.apiKey) throw new Error('QQ 当前模型缺少 API key，请重新绑定带凭据的模型预设')
       let said = false
       const answers: string[] = []
       for await (const out of runAgent(history, {
-        apiKey: cfg.apiKey!,
-        model: cfg.model,
-        baseURL: cfg.baseURL,
-        provider: cfg.provider,
+        apiKey: modelConfig.apiKey,
+        model: modelConfig.model,
+        baseURL: modelConfig.baseURL,
+        provider: modelConfig.provider,
         signal: controller.signal,
         extraTools: {
           schemas: [SEND_IMAGE_SCHEMA, SEND_FILE_SCHEMA],
@@ -434,7 +437,6 @@ export function startQQ(): void {
         }
       }
       if (!said) await sendReply(target, msgId, '(已完成，无文字输出)')
-      await sendReply(target, msgId, formatWorkedFor(Date.now() - startedAt))
       logChat({ channel: 'qq', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {

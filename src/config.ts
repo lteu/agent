@@ -121,6 +121,8 @@ export type ModelProfile = {
   provider?: string
 }
 
+export type ModelChannel = 'qq' | 'wx' | 'wechat'
+
 export type Config = {
   apiKey?: string
   model?: string
@@ -131,6 +133,8 @@ export type Config = {
   models?: ModelProfile[]
   /** 当前生效的预设名（仅用于 /models 列表里标注「当前」，不影响实际连接参数）。 */
   activeModel?: string
+  /** 长驻消息渠道各自使用的模型预设名。未设置的渠道继承顶层 activeModel / 模型配置。 */
+  channelModels?: Partial<Record<ModelChannel, string>>
   qq?: QQConfig
   wechat?: WechatConfig
   wx?: WxConfig
@@ -183,13 +187,21 @@ export function loadRawConfig(): Config {
  * 环境变量：AI_API_KEY / AI_MODEL / AI_BASE_URL / AI_PROVIDER。
  * 为兼容旧配置，仍接受 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL 作为后备。
  */
-export function loadConfig(): Required<Pick<Config, 'model' | 'baseURL'>> & {
+export type EffectiveModelConfig = Required<Pick<Config, 'model' | 'baseURL'>> & {
   apiKey?: string
   provider?: string
   activeModel?: string
-} {
+}
+
+/**
+ * 读取模型调用参数。传 channel 时优先使用该渠道绑定的模型预设，并在每次调用时重新读文件，
+ * 因而长驻的 QQ / 微信进程无需重启即可切换模型。
+ *
+ * 渠道专用环境变量（如 AI_QQ_API_KEY）优先级最高；未绑定渠道预设时继承全局配置。
+ */
+export function loadConfig(channel?: ModelChannel): EffectiveModelConfig {
   const file = readFile()
-  return {
+  const global: EffectiveModelConfig = {
     apiKey: process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || file.apiKey,
     model: process.env.AI_MODEL || file.model || DEFAULT_MODEL,
     baseURL:
@@ -199,6 +211,21 @@ export function loadConfig(): Required<Pick<Config, 'model' | 'baseURL'>> & {
       DEFAULT_BASE_URL,
     provider: process.env.AI_PROVIDER || file.provider,
     activeModel: file.activeModel,
+  }
+  if (!channel) return global
+
+  const envPrefix = `AI_${channel.toUpperCase()}_`
+  const profileName = file.channelModels?.[channel]
+  const profile = profileName
+    ? (file.models ?? []).find(m => m.name.toLowerCase() === profileName.toLowerCase())
+    : undefined
+
+  return {
+    apiKey: process.env[`${envPrefix}API_KEY`] || profile?.apiKey || global.apiKey,
+    model: process.env[`${envPrefix}MODEL`] || profile?.model || global.model,
+    baseURL: process.env[`${envPrefix}BASE_URL`] || profile?.baseURL || global.baseURL,
+    provider: process.env[`${envPrefix}PROVIDER`] || (profile ? profile.provider : global.provider),
+    activeModel: profile?.name || global.activeModel,
   }
 }
 
@@ -246,7 +273,11 @@ export function saveModelProfile(profile: ModelProfile): ModelProfile[] {
 export function removeModelProfile(name: string): ModelProfile[] {
   const current = readFile()
   const list = (current.models ?? []).filter(m => m.name.toLowerCase() !== name.toLowerCase())
-  writeConfig({ ...current, models: list })
+  const channelModels = { ...current.channelModels }
+  for (const channel of ['qq', 'wx', 'wechat'] as const) {
+    if (channelModels[channel]?.toLowerCase() === name.toLowerCase()) delete channelModels[channel]
+  }
+  writeConfig({ ...current, models: list, channelModels })
   return list
 }
 
@@ -255,10 +286,17 @@ export function removeModelProfile(name: string): ModelProfile[] {
  * 写进顶层配置，并记下 activeModel 名字（仅用于 /models 列表标注「当前」）。
  * 找不到该名字则返回 undefined，调用方据此提示用户。
  */
-export function switchModel(name: string): ModelProfile | undefined {
+export function switchModel(name: string, channel?: ModelChannel): ModelProfile | undefined {
   const current = readFile()
   const profile = (current.models ?? []).find(m => m.name.toLowerCase() === name.toLowerCase())
   if (!profile) return undefined
+  if (channel) {
+    writeConfig({
+      ...current,
+      channelModels: { ...current.channelModels, [channel]: profile.name },
+    })
+    return profile
+  }
   writeConfig({
     ...current,
     apiKey: profile.apiKey ?? current.apiKey,
@@ -266,6 +304,18 @@ export function switchModel(name: string): ModelProfile | undefined {
     baseURL: profile.baseURL,
     provider: profile.provider,
     activeModel: profile.name,
+  })
+  return profile
+}
+
+/** 将同一个预设绑定到全部长驻消息渠道。 */
+export function switchAllChannelModels(name: string): ModelProfile | undefined {
+  const current = readFile()
+  const profile = (current.models ?? []).find(m => m.name.toLowerCase() === name.toLowerCase())
+  if (!profile) return undefined
+  writeConfig({
+    ...current,
+    channelModels: { qq: profile.name, wx: profile.name, wechat: profile.name },
   })
   return profile
 }

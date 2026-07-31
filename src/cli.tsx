@@ -14,6 +14,8 @@ import {
   saveModelProfile,
   removeModelProfile,
   switchModel,
+  switchAllChannelModels,
+  type ModelChannel,
   type ModelProfile,
   saveQQConfig,
   addQQAllow,
@@ -108,7 +110,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai --list-models         列出已保存的模型预设，标注当前生效的那个
   ai --models              --list-models 的别名
   ai --model-list          --list-models 的别名
-  ai --use-model <名字>    切换到某个已保存的模型预设
+  ai --use-model <名字> [--channel qq|wx|wechat|all]
+                           切换默认模型，或单独切换 QQ / 个人微信 / 企业微信（长驻服务无需重启）
   ai --rm-model <名字>     删除一个模型预设
   ai --set-qq-app <ID> <SECRET>  保存 QQ 机器人 AppID 和 AppSecret
   ai --qq-allow <openid>   往 QQ 白名单追加一个 openid（可多次；未授权用户发消息会回显其 openid）
@@ -176,6 +179,12 @@ if (argv[0] === '--config') {
     for (const m of models) {
       console.log(`  ${m.name}  ${m.model} @ ${m.baseURL}${m.provider ? `  (${m.provider})` : ''}`)
     }
+    console.log('')
+    console.log('──────── 渠道模型（未设置则继承默认模型） ────────')
+    for (const channel of ['qq', 'wx', 'wechat'] as const) {
+      const channelConfig = loadConfig(channel)
+      console.log(`  ${channel.padEnd(7)} = ${raw.channelModels?.[channel] || '(继承默认)'}  → ${channelConfig.model}`)
+    }
   }
   process.exit(0)
 }
@@ -211,8 +220,13 @@ if (argv[0] === '--list-models' || argv[0] === '--models' || argv[0] === '--mode
     console.log('暂无已保存的模型预设。用 ai --add-model <名字> model=.. baseURL=.. [apiKey=..] [provider=..] 添加。')
   } else {
     console.log(`已保存 ${list.length} 个模型预设：\n`)
+    const raw = loadRawConfig()
     list.forEach((m, i) => {
-      const cur = m.name === effective.activeModel ? '  ← 当前' : ''
+      const uses = [
+        m.name === effective.activeModel ? 'default' : '',
+        ...(['qq', 'wx', 'wechat'] as const).filter(c => raw.channelModels?.[c] === m.name),
+      ].filter(Boolean)
+      const cur = uses.length ? `  ← ${uses.join(', ')}` : ''
       console.log(`  ${i + 1}. ${m.name}  ${m.model} @ ${m.baseURL}${m.provider ? `  (${m.provider})` : ''}${cur}`)
     })
   }
@@ -222,15 +236,35 @@ if (argv[0] === '--list-models' || argv[0] === '--models' || argv[0] === '--mode
 if (argv[0] === '--use-model') {
   const name = argv[1]
   if (!name) {
-    console.error('用法: ai --use-model <名字>')
+    console.error('用法: ai --use-model <名字> [--channel qq|wx|wechat|all]')
     process.exit(1)
   }
-  const profile = switchModel(name)
+  const channelFlag = argv.indexOf('--channel')
+  const channelArg = channelFlag >= 0 ? argv[channelFlag + 1]?.toLowerCase() : undefined
+  const validChannels = ['qq', 'wx', 'wechat', 'all']
+  if (channelFlag >= 0 && (!channelArg || !validChannels.includes(channelArg))) {
+    console.error('渠道必须是 qq、wx（个人微信）、wechat（企业微信）或 all。')
+    process.exit(1)
+  }
+  const profile =
+    channelArg === 'all'
+      ? switchAllChannelModels(name)
+      : switchModel(name, channelArg as ModelChannel | undefined)
   if (!profile) {
     console.error(`未找到模型「${name}」。先用 ai --list-models（或 --models / --model-list）看已保存哪些。`)
     process.exit(1)
   }
-  console.log(`✓ 已切换到「${profile.name}」：${profile.model} @ ${profile.baseURL}`)
+  const scope = channelArg
+    ? channelArg === 'all'
+      ? 'QQ、个人微信、企业微信'
+      : channelArg === 'wx'
+        ? '个人微信'
+        : channelArg === 'wechat'
+          ? '企业微信'
+          : 'QQ'
+    : '默认/终端'
+  console.log(`✓ ${scope}已切换到「${profile.name}」：${profile.model} @ ${profile.baseURL}`)
+  if (channelArg) console.log('  长驻服务会在下一条消息自动加载，无需重启。')
   process.exit(0)
 }
 

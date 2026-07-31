@@ -32,7 +32,6 @@ import { readFileSync } from 'node:fs'
 import { resolve, basename, extname } from 'node:path'
 import { runAgent } from '../agent/engine.js'
 import { isStopCommand } from './stopwords.js'
-import { formatWorkedFor } from '../duration.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { createHistoryTraceContext, traceHistory } from '../agent/history-trace.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
@@ -184,7 +183,7 @@ export async function setupWx(): Promise<void> {
 // 服务主体
 // ————————————————————————————————————————————————————————————
 export function startWx(): void {
-  const cfg = loadConfig()
+  const cfg = loadConfig('wx')
   const wx = loadWxConfig()
 
   if (!cfg.apiKey) {
@@ -446,7 +445,6 @@ export function startWx(): void {
   async function dispatchToAgent(fromUserId: string, contextToken: string, text: string) {
     const sessionId = `u:${fromUserId}`
     busy.add(sessionId)
-    const startedAt = Date.now()
     const controller = new AbortController()
     controllers.set(sessionId, controller)
     const stopTyping = startTyping(fromUserId, contextToken)
@@ -456,13 +454,16 @@ export function startWx(): void {
     history.push({ role: 'user', content: text })
     traceHistory(historyTrace, 'after-user-push', history)
     try {
+      // 每条消息重新读取渠道模型绑定：`ai --use-model ... --channel wx` 无需重启守护进程。
+      const modelConfig = loadConfig('wx')
+      if (!modelConfig.apiKey) throw new Error('个人微信当前模型缺少 API key，请重新绑定带凭据的模型预设')
       let said = false
       const answers: string[] = []
       for await (const out of runAgent(history, {
-        apiKey: cfg.apiKey!,
-        model: cfg.model,
-        baseURL: cfg.baseURL,
-        provider: cfg.provider,
+        apiKey: modelConfig.apiKey,
+        model: modelConfig.model,
+        baseURL: modelConfig.baseURL,
+        provider: modelConfig.provider,
         signal: controller.signal,
         extraTools: {
           schemas: [SEND_IMAGE_SCHEMA, SEND_FILE_SCHEMA],
@@ -481,7 +482,6 @@ export function startWx(): void {
       }
       traceHistory(historyTrace, 'after-run-agent', history)
       if (!said) await sendText(fromUserId, contextToken, '(已完成，无文字输出)')
-      await sendText(fromUserId, contextToken, formatWorkedFor(Date.now() - startedAt))
       logChat({ channel: 'wx', sessionId, question: text, answer: answers.join('\n') })
       sessions.trim(sessionId)
     } catch (err: any) {
