@@ -22,6 +22,7 @@ import {
   prunePastedTextRefs,
   shouldCollapsePaste,
 } from './pasted-text.js'
+import { stripSgrMouseSequences } from './ui-transcript.js'
 
 type Props = {
   onSubmit: (value: string) => void
@@ -114,6 +115,14 @@ export default function MultilineInput({
 
   useInput(
     (input, key) => {
+      // 全局启用 SGR mouse 后，Ink 可能把滚轮报告去掉 ESC 再交给输入框。
+      // 必须在粘贴/普通字符逻辑之前过滤，否则触控板滚动会写入“[<64;…M”。
+      input = stripSgrMouseSequences(input)
+      // Ink may coalesce repeated control keys into one chunk and then fail to mark
+      // key.ctrl. Never allow C0 controls (except tab/newline/return) into editable text.
+      input = input.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+      if (!input && !key.return && !key.leftArrow && !key.rightArrow && !key.upArrow &&
+          !key.downArrow && !key.backspace && !key.delete && !key.escape) return
       recordInput(input, key as unknown as Record<string, unknown>)
       const value = valueRef.current
       const cursor = cursorRef.current

@@ -153,3 +153,36 @@ test('Remote 网关结构化流错误保留 request ID 和真实原因', async t
     /req_debug_1.*unsupported remote tool: run_bash/,
   )
 })
+
+test('Claude session limit 直接显示原始系统提示，不添加网关噪声', async t => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write(
+      'data: {"choices":[],"ai_remote_error":{"requestId":"req_limit_1","code":"CLAUDE_RATE_LIMIT","message":"You\'ve hit your session limit."}}\n\n',
+    )
+    res.end('data: [DONE]\n\n')
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const address = server.address()
+  assert(address && typeof address === 'object')
+
+  await assert.rejects(
+    async () => {
+      const stream = streamCompletion([{ role: 'user', content: 'hi' }], {
+        apiKey: 'test',
+        model: 'test',
+        baseURL: `http://127.0.0.1:${address.port}`,
+      })
+      for await (const _part of stream) {
+        // consume
+      }
+    },
+    error => {
+      assert(error instanceof Error)
+      assert.equal(error.message, "You've hit your session limit.")
+      assert.equal((error as Error & { code?: string }).code, 'CLAUDE_RATE_LIMIT')
+      return true
+    },
+  )
+})

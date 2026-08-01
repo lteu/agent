@@ -280,7 +280,7 @@ async function* anthropicStreamCompletion(
   // 按 content block index 累积：text 块边到边吐 delta，tool_use 块攒够 input_json_delta
   // 后在 content_block_stop 时一次性产出（Anthropic 明确告诉我们块何时结束，不必像
   // OpenAI 那样靠「下一个 index 出现」去猜）。
-  const blocks = new Map<number, { type: 'text' | 'tool_use'; id?: string; name?: string; args: string }>()
+  const blocks = new Map<number, { type: 'text' | 'thinking' | 'tool_use'; id?: string; name?: string; args: string }>()
   let content = ''
   let stopReason: string | undefined
   let usage = tokenUsageFromAnthropic(undefined)
@@ -316,6 +316,7 @@ async function* anthropicStreamCompletion(
         case 'content_block_start': {
           const cb = evt.content_block
           if (cb?.type === 'text') blocks.set(evt.index, { type: 'text', args: '' })
+          else if (cb?.type === 'thinking') blocks.set(evt.index, { type: 'thinking', args: cb.thinking ?? '' })
           else if (cb?.type === 'tool_use') blocks.set(evt.index, { type: 'tool_use', id: cb.id, name: cb.name, args: '' })
           break
         }
@@ -325,6 +326,9 @@ async function* anthropicStreamCompletion(
           if (evt.delta?.type === 'text_delta' && typeof evt.delta.text === 'string') {
             content += evt.delta.text
             yield { type: 'text', delta: evt.delta.text }
+          } else if (evt.delta?.type === 'thinking_delta' && typeof evt.delta.thinking === 'string') {
+            b.args += evt.delta.thinking
+            yield { type: 'thinking', delta: evt.delta.thinking }
           } else if (evt.delta?.type === 'input_json_delta' && typeof evt.delta.partial_json === 'string') {
             b.args += evt.delta.partial_json
           }
@@ -451,7 +455,9 @@ export async function chatComplete(
 // 这正是上层 StreamingToolExecutor「模型还在输出就开跑」的前提。
 export type StreamPart =
   | { type: 'text'; delta: string }
+  | { type: 'thinking'; delta: string }
   | { type: 'tool'; call: RawToolCall }
+  | { type: 'model'; phase: 'connecting' | 'waiting' | 'receiving' }
   | {
       type: 'progress'
       progress: {
@@ -462,6 +468,35 @@ export type StreamPart =
         callId?: string
       }
     }
+
+function positiveEnvMs(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+async function readWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+  stage: string,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`LLM ${stage} timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        )
+      }),
+    ])
+  } catch (error) {
+    void reader.cancel(error).catch(() => {})
+    throw error
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 /**
  * 流式补全，支持 function calling。
@@ -474,7 +509,21 @@ export async function* streamCompletion(
   messages: ChatMessage[],
   opts: StreamOptions & { tools?: readonly unknown[] },
 ): AsyncGenerator<StreamPart, Completion, unknown> {
-  if (isAnthropic(opts)) return yield* anthropicStreamCompletion(messages, opts)
+  yield { type: 'model', phase: 'connecting' }
+  if (isAnthropic(opts)) {
+    const stream = anthropicStreamCompletion(messages, opts)
+    let firstPart = true
+    let result = await stream.next()
+    while (!result.done) {
+      if (firstPart) {
+        firstPart = false
+        yield { type: 'model', phase: 'receiving' }
+      }
+      yield result.value
+      result = await stream.next()
+    }
+    return result.value
+  }
 
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const url = `${baseURL}/chat/completions`
@@ -491,17 +540,35 @@ export async function* streamCompletion(
   }
   const serializedBody = JSON.stringify(body)
   emitRequest(opts, 'openai-compatible', url, headers, serializedBody)
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: serializedBody,
-    signal: opts.signal,
-  })
+  const headerTimeoutMs = positiveEnvMs('AI_LLM_HEADERS_TIMEOUT_MS', 60_000)
+  // 响应头超时只能约束建连阶段。AbortSignal.timeout() 传入 fetch 后会在响应体
+  // 读取期间继续存活，导致持续有 WebSearch/heartbeat 的请求也在固定 60 秒被误杀。
+  // 收到 headers 后清掉独立 timer；之后由 first-token / stream-idle watchdog 接管。
+  const headerController = new AbortController()
+  const headerTimer = setTimeout(
+    () => headerController.abort(new Error(`LLM headers timed out after ${headerTimeoutMs}ms`)),
+    headerTimeoutMs,
+  )
+  headerTimer.unref()
+  const signals: AbortSignal[] = [headerController.signal]
+  if (opts.signal) signals.push(opts.signal)
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: serializedBody,
+      signal: AbortSignal.any(signals),
+    })
+  } finally {
+    clearTimeout(headerTimer)
+  }
 
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
     throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
   }
+  yield { type: 'model', phase: 'waiting' }
 
   // 按 index 累积各工具调用的 id/name/arguments 片段。
   const acc = new Map<number, { id: string; name: string; args: string }>()
@@ -510,7 +577,26 @@ export async function* streamCompletion(
   let content = ''
   let finishReason: string | undefined
   let usage = tokenUsageFromOpenAI(undefined)
+  let reportedUsage = tokenUsageFromOpenAI(undefined)
   let remoteContext = ''
+
+  const reportCumulativeUsage = (next: TokenUsage) => {
+    const delta: TokenUsage = {
+      inputTokens: Math.max(0, next.inputTokens - reportedUsage.inputTokens),
+      outputTokens: Math.max(0, next.outputTokens - reportedUsage.outputTokens),
+      cacheReadInputTokens: Math.max(
+        0,
+        next.cacheReadInputTokens - reportedUsage.cacheReadInputTokens,
+      ),
+      cacheCreationInputTokens: Math.max(
+        0,
+        next.cacheCreationInputTokens - reportedUsage.cacheCreationInputTokens,
+      ),
+      totalTokens: Math.max(0, next.totalTokens - reportedUsage.totalTokens),
+    }
+    reportedUsage = next
+    if (delta.totalTokens > 0) opts.onUsage?.(delta)
+  }
 
   // 产出所有 index < upto（'all' 表示全部）且尚未产出的、已完整的工具调用。
   function* flush(upto: number | 'all'): Generator<StreamPart> {
@@ -529,10 +615,19 @@ export async function* streamCompletion(
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let firstChunk = true
+  let streamDone = false
 
-  while (true) {
-    const { value, done } = await reader.read()
+  while (!streamDone) {
+    const timeoutMs = firstChunk
+      ? positiveEnvMs('AI_LLM_FIRST_TOKEN_TIMEOUT_MS', 300_000)
+      : positiveEnvMs('AI_LLM_STREAM_IDLE_TIMEOUT_MS', 120_000)
+    const { value, done } = await readWithTimeout(reader, timeoutMs, firstChunk ? 'first token' : 'stream idle')
     if (done) break
+    if (firstChunk) {
+      firstChunk = false
+      yield { type: 'model', phase: 'receiving' }
+    }
     buffer += decoder.decode(value, { stream: true })
 
     let nl: number
@@ -541,7 +636,10 @@ export async function* streamCompletion(
       buffer = buffer.slice(nl + 1)
       if (!line.startsWith('data:')) continue
       const payload = line.slice(5).trim()
-      if (payload === '[DONE]') break
+      if (payload === '[DONE]') {
+        streamDone = true
+        break
+      }
       let json: any
       try {
         json = JSON.parse(payload)
@@ -550,11 +648,13 @@ export async function* streamCompletion(
       }
       if (json?.ai_remote_error?.message) {
         const requestId = json.ai_remote_error.requestId
-        throw new Error(
-          `Remote Claude 网关错误${requestId ? `（${requestId}）` : ''}: ${
-            json.ai_remote_error.message
-          }`,
-        )
+        const code = json.ai_remote_error.code
+        const message = code === 'CLAUDE_RATE_LIMIT'
+          ? json.ai_remote_error.message
+          : `Remote Claude 网关错误${requestId ? `（${requestId}）` : ''}: ${
+              json.ai_remote_error.message
+            }`
+        throw Object.assign(new Error(message), { code })
       }
       if (typeof json?.ai_remote_context?.content === 'string') {
         remoteContext = json.ai_remote_context.content
@@ -567,6 +667,10 @@ export async function* streamCompletion(
         typeof progress.name === 'string' &&
         typeof progress.summary === 'string'
       ) {
+        if (progress.name === 'thinking' && typeof progress.detail === 'string') {
+          yield { type: 'thinking', delta: progress.detail }
+          continue
+        }
         yield {
           type: 'progress',
           progress: {
@@ -579,7 +683,12 @@ export async function* streamCompletion(
         }
         continue
       }
-      if (json?.usage) usage = tokenUsageFromOpenAI(json.usage)
+      if (json?.usage) {
+        usage = tokenUsageFromOpenAI(json.usage)
+        // Usage is reported as a cumulative snapshot. Commit only its delta as soon as it
+        // arrives, so a later stream failure does not reset already-billed work to zero.
+        reportCumulativeUsage(usage)
+      }
       const choice = json?.choices?.[0]
       if (choice?.finish_reason) finishReason = choice.finish_reason
       const delta = choice?.delta
@@ -588,6 +697,13 @@ export async function* streamCompletion(
         content += delta.content
         yield { type: 'text', delta: delta.content }
       }
+      const reasoningDelta =
+        typeof delta.reasoning_content === 'string'
+          ? delta.reasoning_content
+          : typeof delta.reasoning === 'string'
+            ? delta.reasoning
+            : ''
+      if (reasoningDelta) yield { type: 'thinking', delta: reasoningDelta }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) {
           const idx: number = tc.index ?? 0
@@ -617,7 +733,6 @@ export async function* streamCompletion(
       type: 'function',
       function: { name: t.name, arguments: t.args },
     }))
-  opts.onUsage?.(usage)
   return { content, toolCalls, finishReason, usage, remoteContext: remoteContext || undefined }
 }
 

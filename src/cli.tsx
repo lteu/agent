@@ -1,5 +1,14 @@
 import { readFileSync } from 'fs'
-import { useState, useRef, useCallback, useEffect, memo, useMemo } from 'react'
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useInsertionEffect,
+  memo,
+  useMemo,
+  type ReactNode,
+} from 'react'
 import { render, Box, Text, useApp, useInput, Static } from 'ink'
 import MultilineInput from './MultilineInput.js'
 import { chatComplete, type ChatMessage } from './llm.js'
@@ -42,6 +51,16 @@ import { loadSkills, readSkill, scaffoldSkill } from './skills.js'
 import { logChat, writeLogBanner } from './agent/chatlog.js'
 import { writeCrash } from './crashlog.js'
 import {
+  createInkInputBridge,
+  createScrollbackPreservingStdout,
+  restoreTerminalModes,
+  safeTerminalSize,
+  setTerminalAlternateScreenActive,
+  setTerminalRawModeLock,
+  terminalControlEvents,
+  terminalMouseEvents,
+} from './terminal-io.js'
+import {
   addTokenUsage,
   EMPTY_TOKEN_USAGE,
   formatTokenCount,
@@ -52,6 +71,10 @@ import {
   EMPTY_ACTIVITY_COUNTS,
   activityCategory,
   addActivity,
+  activeToolPresentation,
+  conciseShellFailure,
+  conciseToolCardResult,
+  conciseWebFetchResult,
   formatActivity,
   formatUserPrompt,
   hasActivity,
@@ -59,6 +82,24 @@ import {
   type ActivityCounts,
   type AgentCardItem,
 } from './ui-activity.js'
+import {
+  inlineMarkdownSegments,
+  localWebFetchUrl,
+  markdownLinePresentation,
+  splitRemoteWebTitle,
+  terminalHyperlink,
+} from './ui-format.js'
+import { formatModelStatus, type ModelStatus } from './ui-model-status.js'
+import {
+  anchoredTranscriptOffset,
+  isKeyTool,
+  parseSgrMouseEvents,
+  transcriptLines,
+  transcriptViewport,
+  type TranscriptEvent,
+  type TranscriptEventKind,
+  type TranscriptLine,
+} from './ui-transcript.js'
 
 /** 把环境变量字符串转成验证级别（0|1|2），无效值返回 undefined（走 engine 默认值）。 */
 function parseVerifyLevel(raw: string | undefined): 0 | 1 | 2 | undefined {
@@ -685,16 +726,21 @@ type UIMessage = {
     | 'assistant'
     | 'assistant-line'
     | 'assistant-status'
+    | 'thinking-marker'
     | 'tool'
     | 'remote-tool'
+    | 'tool-card'
     | 'activity'
     | 'agent-batch'
   content: string
   gap?: boolean
   toolCard?: {
+    name?: string
     title: string
     result: string
     failed: boolean
+    preview?: string
+    remote?: boolean
   }
   agentCard?: AgentCardItem[]
 }
@@ -703,18 +749,19 @@ type ActiveTool = {
   callId: string
   name: string
   summary: string
+  detail?: string
 }
 
 type ToolBatch = {
   expected: number
-  tools: Map<string, { name: string; title: string; result?: string; detail?: string; failed?: boolean }>
-}
-
-type ToolTranscriptEntry = {
-  id: number
-  phase: 'start' | 'success' | 'failure' | 'info'
-  summary: string
-  detail?: string
+  tools: Map<string, {
+    name: string
+    title: string
+    inputDetail?: string
+    result?: string
+    resultDetail?: string
+    failed?: boolean
+  }>
 }
 
 type BtwState = {
@@ -723,24 +770,120 @@ type BtwState = {
   answer?: string
 }
 
-function transcriptDetail(detail: string): string {
-  const lines = detail.replace(/\0/g, '').split('\n')
-  const shown = lines.slice(-6).join('\n')
-  const clipped = shown.length > 800 ? `${shown.slice(0, 797)}…` : shown
-  return lines.length > 6 ? `…\n${clipped}` : clipped
+function toolPreview(detail: string | undefined, failed: boolean): string | undefined {
+  if (!detail) return undefined
+  const lines = detail.replace(/\0/g, '').split('\n').filter(line => line.trim())
+  if (!lines.length) return undefined
+  const selected = failed ? lines.slice(-3) : lines.slice(0, 3)
+  const preview = selected.join('\n')
+  const clipped = preview.length > 500 ? `${preview.slice(0, 497)}…` : preview
+  return lines.length > selected.length ? `${clipped}\n…` : clipped
 }
 
-function tailTranscript(entries: ToolTranscriptEntry[], maxRows: number): ToolTranscriptEntry[] {
-  const visible: ToolTranscriptEntry[] = []
-  let used = 0
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const detailRows = entries[i].detail ? transcriptDetail(entries[i].detail!).split('\n').length + 1 : 0
-    const rows = 1 + detailRows
-    if (visible.length && used + rows > maxRows) break
-    visible.unshift(entries[i])
-    used += rows
+function semanticToolPreview(
+  name: string,
+  inputDetail: string | undefined,
+  resultDetail: string | undefined,
+  failed: boolean,
+): string | undefined {
+  // Web failures commonly contain an HTML challenge page or a one-line JSON body.
+  // Claude Code keeps that diagnostic payload in the verbose transcript and shows
+  // only the actionable failure summary in the normal conversation.
+  if (failed && (name === 'web_fetch' || name === 'WebFetch' || name === 'WebSearch')) {
+    return undefined
   }
-  return visible
+  // Shell failures are summarized into the result row. Keep tracebacks and
+  // compiler diagnostics in Ctrl+O instead of painting several rows red here.
+  if (failed && (name === 'run_bash' || name === 'run_admin')) return undefined
+  // Claude Code 的默认 Web 卡片只显示查询目标与次数/耗时或响应摘要；完整搜索
+  // 结果和抓取正文留在 Ctrl+O transcript，避免原始 JSON 淹没正常对话。
+  if (!failed && (name === 'WebSearch' || name === 'WebFetch' || name === 'web_fetch')) {
+    return undefined
+  }
+  if (!failed && (name === 'write_file' || name === 'edit_file') && inputDetail) {
+    try {
+      const input = JSON.parse(inputDetail)
+      const changed = name === 'write_file' ? input.content : input.new_string
+      if (typeof changed === 'string' && changed) return toolPreview(changed, false)
+    } catch {
+      // Fall through to the result preview for legacy/plain-text tool details.
+    }
+  }
+  return toolPreview(resultDetail, failed)
+}
+
+function InlineMarkdown({ children }: { children: string }) {
+  const line = markdownLinePresentation(children)
+  return (
+    <Text bold={line.heading}>
+      {inlineMarkdownSegments(line.content).map((segment, index) => (
+        <Text
+          key={index}
+          bold={segment.style === 'bold'}
+          italic={segment.style === 'italic'}
+          color={segment.style === 'link' ? 'blue' : segment.style === 'code' ? 'cyan' : undefined}
+          underline={segment.style === 'link'}
+        >
+          {segment.style === 'link' && segment.href
+            ? terminalHyperlink(segment.href, segment.text)
+            : segment.text}
+        </Text>
+      ))}
+    </Text>
+  )
+}
+
+function ToolCardTitle({
+  title,
+  name,
+  remote,
+}: {
+  title: string
+  name?: string
+  remote?: boolean
+}) {
+  const localUrl = name === 'web_fetch' ? localWebFetchUrl(title) : undefined
+  if (localUrl) {
+    return <Text><Text bold>Fetch</Text>({localUrl})</Text>
+  }
+  if (name === 'run_bash' || name === 'run_admin') {
+    const separator = title.indexOf(' · ')
+    if (separator > 0) {
+      return (
+        <Text>
+          <Text bold>{title.slice(0, separator)}</Text>
+          <Text dimColor>{title.slice(separator)}</Text>
+        </Text>
+      )
+    }
+  }
+  const webTitle = remote ? splitRemoteWebTitle(title) : undefined
+  if (!webTitle) return <Text bold>{title}</Text>
+  return (
+    <Text>
+      <Text bold>{webTitle.tool}</Text>
+      {webTitle.argument}
+    </Text>
+  )
+}
+
+function TranscriptLineContent({ line }: { line: TranscriptLine }) {
+  const marker = line.accent && /^([●✗○])\s(.*)$/s.exec(line.text)
+  if (!marker) return <>{line.text}</>
+  // Long verbose Fetch inputs may already have been wrapped before rendering,
+  // so style the leading tool name even when the closing parenthesis is on a
+  // later terminal row.
+  const webTitle = /^(Web Search|Fetch)(.*)$/s.exec(marker[2])
+  return (
+    <>
+      <Text color={line.accent === 'failure' ? 'magenta' : line.accent === 'success' ? 'green' : undefined}>
+        {marker[1]}
+      </Text>{' '}
+      {webTitle ? (
+        <><Text bold>{webTitle[1]}</Text>{webTitle[2]}</>
+      ) : marker[2]}
+    </>
+  )
 }
 
 // 单条消息行：memo 化，props 不变就不重绘。
@@ -784,6 +927,13 @@ const MessageRow = memo(
       </Box>
     )
   }
+  if (role === 'thinking-marker') {
+    return (
+      <Box marginBottom={1}>
+        <Text dimColor italic>∴ Thinking · Ctrl+O to expand</Text>
+      </Box>
+    )
+  }
   if (role === 'agent-batch' && agentCard) {
     const finished = agentCard.filter(item => item.status === 'Done').length
     const failed = agentCard.length - finished
@@ -813,19 +963,28 @@ const MessageRow = memo(
       </Box>
     )
   }
-  if (role === 'remote-tool' && toolCard) {
+  if ((role === 'remote-tool' || role === 'tool-card') && toolCard) {
+    const quietShellFailure = toolCard.failed && (
+      toolCard.name === 'run_bash' || toolCard.name === 'run_admin'
+    )
     return (
       <Box marginBottom={1} flexDirection="column">
         <Text>
-          <Text color={toolCard.failed ? 'magenta' : 'green'}>●</Text>{' '}
-          <Text bold>{toolCard.title}</Text>
+          <Text color={toolCard.failed ? 'red' : 'green'}>●</Text>{' '}
+          <ToolCardTitle title={toolCard.title} name={toolCard.name} remote={toolCard.remote} />
         </Text>
-        <Text color={toolCard.failed ? 'magenta' : undefined} dimColor={!toolCard.failed}>
-          {'  '}{toolCard.failed ? '└' : '├'} {toolCard.result}
+        <Text
+          color={toolCard.failed && !quietShellFailure ? 'red' : undefined}
+          dimColor={!toolCard.failed || quietShellFailure}
+        >
+          {'  '}└ {toolCard.result}
         </Text>
-        {!toolCard.failed && (
-          <Text dimColor>
-            {'  '}└ Allowed by Remote Web allowlist
+        {toolCard.preview && (
+          <Text
+            color={toolCard.failed && !quietShellFailure ? 'red' : undefined}
+            dimColor={!toolCard.failed || quietShellFailure}
+          >
+            {'    '}{toolCard.preview}
           </Text>
         )}
       </Box>
@@ -847,7 +1006,7 @@ const MessageRow = memo(
     // 空行也要占一行高度，保留段落间的视觉间隔。
     return (
       <Box marginBottom={gap ? 1 : 0}>
-        <Text>{content.length ? content : ' '}</Text>
+        {content.length ? <InlineMarkdown>{content}</InlineMarkdown> : <Text> </Text>}
       </Box>
     )
   }
@@ -938,6 +1097,28 @@ const Spinner = memo(() => {
   return <Text color="yellow">{ANIMATE_SPINNER ? SPINNER_FRAMES[i] : '●'}</Text>
 })
 
+const BlinkingToolDot = memo(() => {
+  const [visible, setVisible] = useState(true)
+  useEffect(() => {
+    if (!ANIMATE_SPINNER) return
+    const id = setInterval(() => setVisible(value => !value), 500)
+    return () => clearInterval(id)
+  }, [])
+  return <Text color="white">{!ANIMATE_SPINNER || visible ? '●' : ' '}</Text>
+})
+
+const ActiveToolRow = memo(({ tool }: { tool: ActiveTool }) => {
+  const presentation = activeToolPresentation(tool.name, tool.summary, tool.detail)
+  return (
+    <Box flexDirection="column">
+      <Text>
+        <BlinkingToolDot /> {presentation.label}
+      </Text>
+      {presentation.detail && <Text dimColor>{'  └ '}{presentation.detail}</Text>}
+    </Box>
+  )
+})
+
 // 取文本「末尾若干行」，按终端列宽把自动换行也算进占用行数。
 // 用途：底部那截「正在生成、尚未成行」的流式尾巴限高，绝不让它撑爆动态区、
 // 把输入框顶到屏幕最上方。完整内容会逐行沉淀进上方历史，这里只截断实时预览，不丢信息。
@@ -957,6 +1138,46 @@ function tailByRows(text: string, maxRows: number, cols: number): { shown: strin
   return { shown: out.join('\n'), truncated: out.length < logical.length }
 }
 
+function TranscriptAlternateScreen({
+  rows,
+  onRestored,
+  children,
+}: {
+  rows: number
+  onRestored: () => void
+  children: ReactNode
+}) {
+  // Enter during React's mutation phase, before Ink paints the transcript frame.
+  // Exit in the passive cleanup, after Ink has painted the normal branch into the
+  // disposable alt buffer; restoring DEC 1049 then reveals the untouched main UI.
+  useInsertionEffect(() => {
+    // MultilineInput unmounts in the same commit. Re-assert raw mode before its
+    // cleanup can expose POSIX VDISCARD (Ctrl+O) and let the terminal swallow it.
+    setTerminalRawModeLock(true)
+    setTerminalAlternateScreenActive(true)
+    process.stdin.setRawMode?.(true)
+    process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h')
+    return () => {
+      // Deliberately exit in useEffect cleanup below.
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      setTerminalRawModeLock(false)
+      process.stdout.write('\x1b[?1000l\x1b[?1006l\x1b[?1049l')
+      setTerminalAlternateScreenActive(false)
+      queueMicrotask(onRestored)
+    }
+  }, [onRestored])
+
+  return (
+    <Box flexDirection="column" height={Math.max(3, rows - 1)} overflow="hidden" flexShrink={0}>
+      {children}
+    </Box>
+  )
+}
+
 function App() {
   const { exit } = useApp()
   const [apiKey, setApiKey] = useState<string | undefined>(config.apiKey)
@@ -973,8 +1194,10 @@ function App() {
   const [streaming, setStreaming] = useState('')
   // 工具调用在动态区只占一个活动项；收到 result 后移除，并把最终态沉淀到 Static 历史。
   const [activeTools, setActiveTools] = useState<ActiveTool[]>([])
-  const [toolTranscript, setToolTranscript] = useState<ToolTranscriptEntry[]>([])
+  const [transcriptEvents, setTranscriptEvents] = useState<TranscriptEvent[]>([])
   const [showTranscript, setShowTranscript] = useState(false)
+  const [transcriptOffset, setTranscriptOffset] = useState(0)
+  const [transcriptShowRaw, setTranscriptShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
   // 运行中仍保持输入框可编辑。普通 prompt 先排队，当前 turn 收口后按提交顺序执行。
   const [queuedPrompts, setQueuedPrompts] = useState<string[]>([])
@@ -983,10 +1206,12 @@ function App() {
   const [activity, setActivity] = useState<ActivityCounts>({ ...EMPTY_ACTIVITY_COUNTS })
   const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null)
   const [elapsedMs, setElapsedMs] = useState(0)
-  const [terminalSize, setTerminalSize] = useState({
-    columns: process.stdout.columns || 80,
-    rows: process.stdout.rows || 24,
-  })
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null)
+  const [terminalSize, setTerminalSize] = useState(() =>
+    safeTerminalSize(process.stdout.columns, process.stdout.rows),
+  )
+  const [staticBaseMessageCount, setStaticBaseMessageCount] = useState(0)
+  const [staticHeaderVisible, setStaticHeaderVisible] = useState(true)
   const [staticEpoch, setStaticEpoch] = useState(0)
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ ...EMPTY_TOKEN_USAGE })
   const [error, setError] = useState<string | null>(null)
@@ -1001,6 +1226,7 @@ function App() {
   // turn 开始时的合法快照，避免旁路请求拿到半截协议消息。
   const sideHistoryRef = useRef<ChatMessage[]>([])
   const toolBatchesRef = useRef(new Map<string, ToolBatch>())
+  const turnIdRef = useRef(0)
   const historyRef = useRef<ChatMessage[]>([{ role: 'system', content: SYSTEM_PROMPT }])
   const tokenUsageRef = useRef<TokenUsage>({ ...EMPTY_TOKEN_USAGE })
   const activityRef = useRef<ActivityCounts>({ ...EMPTY_ACTIVITY_COUNTS })
@@ -1008,6 +1234,9 @@ function App() {
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 自增 id：给每条消息一个稳定 key，避免数组索引漂移引发不必要的重绘。
   const idRef = useRef(0)
+  const transcriptIdRef = useRef(0)
+  const transcriptLineCountRef = useRef(0)
+  const transcriptEntryMessageCountRef = useRef(0)
   // 流式「未完成的最后一行」。完整行随到随沉淀进上方 Static 历史，动态区只留这截尾巴，
   // 让底部输入框高度恒定、使用过程中不跳顶（对标 Claude Code）。ref 同步、避免批处理丢字。
   const streamTailRef = useRef('')
@@ -1020,6 +1249,54 @@ function App() {
     return () => clearInterval(id)
   }, [busyStartedAt])
 
+  // 与 Claude Code 一致：正常 REPL 不启用 mouse tracking，让终端原生负责
+  // scrollback、拖拽圈选和复制。只有 Ctrl+O 的完整转录视图接管滚轮；该视图
+  // 底部灰色提示行可以点击关闭。退出/卸载时必须恢复终端模式。
+  useEffect(() => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) return
+    const enable = '\x1b[?1000h\x1b[?1006h'
+    const disable = '\x1b[?1000l\x1b[?1006l'
+    if (!showTranscript) {
+      process.stdout.write(disable)
+      return
+    }
+    process.stdout.write(enable)
+    const onMouse = (report: string) => {
+      const events = parseSgrMouseEvents(report)
+      if (!events.length) return
+
+      // 完整转录占满终端；只让底部灰色操作提示成为点击目标。正文点击不触发
+      // 状态变化，避免“一点任意位置就关闭”。SGR 坐标为 1-based。
+      const footerClick = events.some(event =>
+        event.kind === 'primary' &&
+        event.action === 'press' &&
+        event.row >= Math.max(1, terminalSize.rows - 1),
+      )
+      if (footerClick) {
+        setShowTranscript(false)
+        return
+      }
+
+      const wheelUp = events.filter(event => event.kind === 'wheel-up').length
+      const wheelDown = events.filter(event => event.kind === 'wheel-down').length
+      if (wheelUp === 0 && wheelDown === 0) return
+      // 一个滚轮报告移动三行；同一 stdin chunk 内的全部触控板事件都会累计，
+      // 保留连续手势的速度与方向，而不是只处理第一个事件。
+      const delta = (wheelUp - wheelDown) * 3
+      setTranscriptOffset(value => Math.max(0, value + delta))
+    }
+    const onControl = (control: string) => {
+      if (control === 'ctrl-o') setShowTranscript(false)
+    }
+    terminalMouseEvents.on('mouse', onMouse)
+    terminalControlEvents.on('control', onControl)
+    return () => {
+      terminalMouseEvents.off('mouse', onMouse)
+      terminalControlEvents.off('control', onControl)
+      process.stdout.write(disable)
+    }
+  }, [showTranscript, terminalSize.rows])
+
   // <Static> 历史不会自行按新列宽重排。resize 高频触发时不逐帧清屏；
   // 等拖动停下 120ms 后做一次完整重绘。messages/activity/streaming 均保留在
   // React 状态中，重绘只改变排版，不会删除任何中间结果。
@@ -1027,12 +1304,13 @@ function App() {
     const onResize = () => {
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
       resizeTimerRef.current = setTimeout(() => {
-        const next = {
-          columns: process.stdout.columns || 80,
-          rows: process.stdout.rows || 24,
-        }
-        process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
+        const next = safeTerminalSize(process.stdout.columns, process.stdout.rows)
+        // Repaint the visible screen without CSI 3J. Clearing scrollback here erased the
+        // very intermediate evidence Ctrl+O is meant to preserve.
+        process.stdout.write('\x1b[2J\x1b[H')
         setTerminalSize(next)
+        setStaticBaseMessageCount(0)
+        setStaticHeaderVisible(true)
         setStaticEpoch(epoch => epoch + 1)
         resizeTimerRef.current = null
       }, 120)
@@ -1047,6 +1325,34 @@ function App() {
   // Esc：生成中按一下即中断当前任务（不退出程序）。
   // Ctrl+C：忙时一次中断生成，空闲时连按两次退出。
   useInput((_input, key) => {
+    // Ink parses one readable chunk as one key. Under terminal load, repeated Ctrl+O
+    // bytes can arrive together and would otherwise be classified as ordinary text.
+    // Treat an all-Ctrl+O chunk atomically; an even count cancels itself, an odd count
+    // toggles once. MultilineInput independently rejects all remaining C0 bytes.
+    if (_input.length > 0 && [..._input].every(char => char === '\x0f')) {
+      if (_input.length % 2 === 1) {
+        setShowTranscript(current => {
+          if (!current) {
+            transcriptEntryMessageCountRef.current = messages.length
+            setTranscriptOffset(0)
+            setTranscriptShowRaw(false)
+          }
+          return !current
+        })
+      }
+      return
+    }
+    // Apply the same protection to coalesced Ctrl+C. Two or more while idle means
+    // the user's explicit double-press; a single byte falls through to normal logic.
+    if (_input.length > 1 && [..._input].every(char => char === '\x03')) {
+      if (busy && abortRef.current) abortRef.current.abort()
+      else exit()
+      return
+    }
+    // Ink 5 does not understand SGR mouse reports. Depending on the terminal it can expose
+    // them as a bare "[<64;…M" string and/or mark the leading ESC as key.escape. The raw
+    // mouse listener owns these events; keyboard shortcuts must never see them.
+    if (parseSgrMouseEvents(_input).length > 0) return
     if (btw) {
       if (
         key.escape ||
@@ -1062,12 +1368,30 @@ function App() {
       return
     }
     if (showTranscript) {
-      if ((key.ctrl && _input === 'o') || (key.ctrl && _input === 'c') || key.escape || _input === 'q') {
+      if (key.ctrl && _input === 'e') {
+        setTranscriptShowRaw(value => !value)
+        setTranscriptOffset(0)
+      } else if ((key.ctrl && _input === 'o') || (key.ctrl && _input === 'c') || key.escape || _input === 'q') {
         setShowTranscript(false)
+      } else if (key.upArrow) {
+        setTranscriptOffset(value => value + 1)
+      } else if (key.downArrow) {
+        setTranscriptOffset(value => Math.max(0, value - 1))
+      } else if (key.pageUp) {
+        setTranscriptOffset(value => value + Math.max(5, terminalSize.rows - 5))
+      } else if (key.pageDown) {
+        setTranscriptOffset(value => Math.max(0, value - Math.max(5, terminalSize.rows - 5)))
+      } else if (_input === 'g') {
+        setTranscriptOffset(Number.MAX_SAFE_INTEGER)
+      } else if (_input === 'G') {
+        setTranscriptOffset(0)
       }
       return
     }
     if (key.ctrl && _input === 'o') {
+      transcriptEntryMessageCountRef.current = messages.length
+      setTranscriptOffset(0)
+      setTranscriptShowRaw(false)
       setShowTranscript(true)
       return
     }
@@ -1211,10 +1535,22 @@ function App() {
       busyRef.current = true
       const uid = ++idRef.current
       setMessages(prev => [...prev, { id: uid, role: 'user', content: text }])
+      const turnId = ++turnIdRef.current
+      setTranscriptEvents(prev => [
+        ...prev,
+        {
+          id: ++transcriptIdRef.current,
+          turnId,
+          at: Date.now(),
+          kind: 'user',
+          summary: text,
+        },
+      ])
       setBusy(true)
       const startedAt = Date.now()
       setBusyStartedAt(startedAt)
       setElapsedMs(0)
+      setModelStatus(null)
       turnOutputStartRef.current = tokenUsageRef.current.outputTokens
       activityRef.current = { ...EMPTY_ACTIVITY_COUNTS }
       setActivity({ ...EMPTY_ACTIVITY_COUNTS })
@@ -1230,6 +1566,42 @@ function App() {
       abortRef.current = controller
       const answers: string[] = []
       let activityPersisted = false
+      let thinkingMarkerShown = false
+
+      const appendTranscript = (
+        kind: TranscriptEventKind,
+        summary: string,
+        extra: Partial<Omit<TranscriptEvent, 'id' | 'turnId' | 'at' | 'kind' | 'summary'>> = {},
+      ) => {
+        const event: TranscriptEvent = {
+          id: ++transcriptIdRef.current,
+          turnId,
+          at: Date.now(),
+          kind,
+          summary,
+          ...extra,
+        }
+        setTranscriptEvents(prev => [...prev, event])
+      }
+      const appendTranscriptDelta = (kind: 'assistant_text' | 'thinking', content: string) => {
+        if (!content) return
+        setTranscriptEvents(prev => {
+          const last = prev.at(-1)
+          if (last?.turnId === turnId && last.kind === kind) {
+            return [...prev.slice(0, -1), { ...last, summary: last.summary + content }]
+          }
+          return [
+            ...prev,
+            {
+              id: ++transcriptIdRef.current,
+              turnId,
+              at: Date.now(),
+              kind,
+              summary: content,
+            },
+          ]
+        })
+      }
 
       // 往 Static 历史追加一行（统一分配稳定 key）。
       const pushRow = (role: UIMessage['role'], content: string, gap = false) =>
@@ -1259,6 +1631,35 @@ function App() {
           signal: controller.signal,
           verifyLevel: parseVerifyLevel(process.env.AI_VERIFY_LEVEL),
           historyTrace,
+          drainQueuedPrompts: () => {
+            if (!queuedPromptsRef.current.length) return []
+            const prompts = queuedPromptsRef.current.splice(0)
+            setQueuedPrompts([])
+            setMessages(prev => [
+              ...prev,
+              ...prompts.map(prompt => ({
+                id: ++idRef.current,
+                role: 'user' as const,
+                content: prompt,
+              })),
+            ])
+            setTranscriptEvents(prev => [
+              ...prev,
+              ...prompts.map(prompt => ({
+                id: ++transcriptIdRef.current,
+                turnId,
+                at: Date.now(),
+                kind: 'user' as const,
+                summary: prompt,
+              })),
+            ])
+            // runAgent appends the combined steering message immediately after this
+            // callback returns. Refresh the stable side-question snapshot afterwards.
+            queueMicrotask(() => {
+              sideHistoryRef.current = structuredClone(history)
+            })
+            return prompts
+          },
           onUsage: usage => {
             const next = addTokenUsage(tokenUsageRef.current, usage)
             tokenUsageRef.current = next
@@ -1266,6 +1667,12 @@ function App() {
           },
         })) {
           if (ev.type === 'delta') {
+            appendTranscriptDelta('assistant_text', ev.content)
+            setModelStatus(current =>
+              current
+                ? { ...current, phase: 'receiving', lastActivityAt: Date.now() }
+                : current,
+            )
             // 流式增量：拼到尾巴上，每凑满一整行（遇 \n）就立刻沉淀进 Static 历史，
             // 动态区永远只剩最后一截没写完的行 —— 这是底部输入框使用中不跳顶的关键。
             let tail = streamTailRef.current + ev.content
@@ -1279,62 +1686,90 @@ function App() {
             // SSH 下逐 token 重画仍可能压垮兼容性较差的远程终端。完整行照常实时沉淀，
             // 只把未换行的尾巴留到下一行或本段结束时一次性显示。
             if (!REMOTE_SAFE_UI) setStreaming(tail)
+          } else if (ev.type === 'thinking') {
+            appendTranscriptDelta('thinking', ev.content)
+            if (!thinkingMarkerShown) {
+              thinkingMarkerShown = true
+              pushRow('thinking-marker', '')
+            }
           } else if (ev.type === 'text') {
             // 一段文本收口：把剩余尾巴沉淀，段尾留一行间距。完整内容已逐行进历史，
             // 这里不再重复 push 整段，只取 ev.content 做日志。
             preserveTail(true)
             answers.push(ev.content)
+          } else if (ev.type === 'model') {
+            setModelStatus({
+              phase: ev.phase,
+              phaseStartedAt: ev.at,
+              lastActivityAt: ev.at,
+            })
           } else if (ev.type === 'limit') {
             // 撞到步数上限：提示而非硬停，回复「继续」即可再跑一轮。
             preserveTail(true)
+            appendTranscript('system', `已连续执行 ${ev.steps} 步仍未结束`, { phase: 'info' })
             pushRow('tool', `⏸ 已连续执行 ${ev.steps} 步仍未结束。回复「继续」可再跑一轮。`)
           } else if (ev.name === 'remote-status' && ev.phase === 'info') {
             // Claude Code 会把多步研究中的阶段结论作为独立白点消息保留，例如
             // “Found exact snapshots…”。它不是工具摘要，也不是最终回答。
             preserveTail(true)
-            setToolTranscript(prev => [
-              ...prev,
-              { id: ++idRef.current, phase: ev.phase, summary: ev.summary, detail: ev.detail },
-            ])
+            appendTranscript('milestone', ev.summary.replace(/^●\s*/, ''), {
+              phase: ev.phase,
+              detail: ev.detail,
+            })
             pushRow('assistant-status', ev.summary.replace(/^●\s*/, ''))
           } else if (ev.phase === 'start' && ev.callId) {
+            setModelStatus(null)
             // 工具开始：只进入可变动态区，不能写进 Static，否则结束时只能再追加一条重复记录。
             preserveTail(true)
-            setToolTranscript(prev => [
-              ...prev,
-              { id: ++idRef.current, phase: ev.phase, summary: ev.summary, detail: ev.detail },
-            ])
+            appendTranscript('tool', ev.summary, {
+              phase: ev.phase,
+              name: ev.name,
+              callId: ev.callId,
+              batchId: ev.batchId,
+              detail: ev.detail,
+            })
             const batchId = ev.batchId ?? ev.callId
             const batch = toolBatchesRef.current.get(batchId) ?? {
               expected: ev.batchSize ?? 1,
               tools: new Map(),
             }
-            batch.tools.set(ev.callId, { name: ev.name, title: ev.summary })
+            batch.tools.set(ev.callId, {
+              name: ev.name,
+              title: ev.summary,
+              inputDetail: ev.detail,
+            })
             toolBatchesRef.current.set(batchId, batch)
             const category = activityCategory(ev.name)
-            if (category === 'remote-web' || category === 'subagent') {
-              setActiveTools(prev => [
-                ...prev.filter(tool => tool.callId !== ev.callId),
-                { callId: ev.callId!, name: ev.name, summary: ev.summary },
-              ])
-            } else {
+            setActiveTools(prev => [
+              ...prev.filter(tool => tool.callId !== ev.callId),
+              {
+                callId: ev.callId!,
+                name: ev.name,
+                summary: ev.summary,
+                detail: ev.detail,
+              },
+            ])
+            if (category !== 'remote-web' && category !== 'subagent') {
               const next = addActivity(activityRef.current, ev.name)
               activityRef.current = next
               setActivity(next)
             }
           } else {
             preserveTail(true)
-            setToolTranscript(prev => [
-              ...prev,
-              { id: ++idRef.current, phase: ev.phase, summary: ev.summary, detail: ev.detail },
-            ])
+            appendTranscript(ev.callId ? 'tool' : 'system', ev.summary, {
+              phase: ev.phase,
+              name: ev.name,
+              callId: ev.callId,
+              batchId: ev.batchId,
+              detail: ev.detail,
+            })
             if (ev.callId) setActiveTools(prev => prev.filter(tool => tool.callId !== ev.callId))
             if (ev.callId && ev.batchId) {
               const batch = toolBatchesRef.current.get(ev.batchId)
               const tool = batch?.tools.get(ev.callId)
               if (batch && tool) {
                 tool.result = ev.summary
-                tool.detail = ev.detail
+                tool.resultDetail = ev.detail
                 tool.failed = ev.phase === 'failure'
                 const finished = [...batch.tools.values()].filter(item => item.result).length
                 if (batch.tools.size === batch.expected && finished === batch.expected) {
@@ -1352,9 +1787,17 @@ function App() {
                         role: 'remote-tool' as const,
                         content: '',
                         toolCard: {
+                          name: item.name,
                           title: item.title,
                           result: item.result ?? (item.failed ? 'Error' : 'Completed'),
                           failed: Boolean(item.failed),
+                          preview: semanticToolPreview(
+                            item.name,
+                            item.inputDetail,
+                            item.resultDetail,
+                            Boolean(item.failed),
+                          ),
+                          remote: true,
                         },
                       })),
                     ])
@@ -1370,21 +1813,59 @@ function App() {
                         role: 'agent-batch',
                         content: '',
                         agentCard: tools.map(item =>
-                          parseAgentCardItem(item.title, item.detail, Boolean(item.failed))),
+                          parseAgentCardItem(item.title, item.resultDetail, Boolean(item.failed))),
                       },
                     ])
                     toolBatchesRef.current.delete(ev.batchId)
                     continue
                   }
-                  // 工具失败属于 agent 的内部恢复过程。默认聊天区不展示退出码、shell
-                  // 报错等噪声；完整 summary/detail 已写入 toolTranscript，可用 Ctrl+O 查看。
-                  // 整批全部成功时才沉淀简洁摘要，避免把部分失败包装成误导性的成功。
+                  const keyTools = tools.filter(item =>
+                    item.failed || (
+                      isKeyTool(item.name) &&
+                      item.name !== 'run_bash' &&
+                      item.name !== 'run_admin'
+                    ))
+                  if (keyTools.length) {
+                    setMessages(prev => [
+                      ...prev,
+                      ...keyTools.map(item => ({
+                        id: ++idRef.current,
+                        role: 'tool-card' as const,
+                        content: '',
+                        toolCard: {
+                          name: item.name,
+                          title: item.title,
+                          result: !item.failed && item.name === 'web_fetch'
+                            ? conciseWebFetchResult(item.result, item.resultDetail)
+                            : item.failed && (
+                            item.name === 'run_bash' || item.name === 'run_admin'
+                          )
+                            ? conciseShellFailure(
+                                conciseToolCardResult(item.title, item.result, true),
+                                item.resultDetail,
+                              )
+                            : conciseToolCardResult(
+                                item.title,
+                                item.result,
+                                Boolean(item.failed),
+                              ),
+                          failed: Boolean(item.failed),
+                          preview: semanticToolPreview(
+                            item.name,
+                            item.inputDetail,
+                            item.resultDetail,
+                            Boolean(item.failed),
+                          ),
+                        },
+                      })),
+                    ])
+                  }
                   toolBatchesRef.current.delete(ev.batchId)
                 }
-              } else if (ev.phase !== 'failure' && activityCategory(ev.name) !== 'subagent') {
+              } else if (activityCategory(ev.name) !== 'subagent') {
                 pushRow('tool', ev.summary)
               }
-            } else if (ev.phase !== 'failure' && activityCategory(ev.name) !== 'subagent') {
+            } else if (activityCategory(ev.name) !== 'subagent') {
               pushRow('tool', ev.summary)
             }
           }
@@ -1401,12 +1882,14 @@ function App() {
           setActiveTools([])
           toolBatchesRef.current.clear()
           pushRow('assistant', '[已中断]')
+          appendTranscript('system', '已中断', { phase: 'failure' })
           logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: '[已中断]' })
         } else {
           traceHistory(historyTrace, 'run-agent-error', history, { note: e?.message ?? String(e) })
           preserveTail(true)
           persistActivity()
           setError(e?.message ?? String(e))
+          appendTranscript('system', e?.message ?? String(e), { phase: 'failure' })
           logChat({ channel: 'terminal', sessionId: 'terminal', question: text, answer: `[错误] ${e?.message ?? String(e)}` })
         }
       } finally {
@@ -1415,6 +1898,7 @@ function App() {
         setQueuedPrompts([...queuedPromptsRef.current])
         setBusy(false)
         setBusyStartedAt(null)
+        setModelStatus(null)
         streamTailRef.current = ''
         setStreaming('')
         setActiveTools([])
@@ -1450,9 +1934,22 @@ function App() {
   // 每个元素只会被 Ink 写入终端一次，因此这部分永远不参与重绘。
   type StaticRow = { kind: 'header' } | { kind: 'msg'; msg: UIMessage }
   const staticRows = useMemo<StaticRow[]>(
-    () => [{ kind: 'header' }, ...messages.map(msg => ({ kind: 'msg' as const, msg }))],
-    [messages],
+    () => [
+      ...(staticHeaderVisible ? [{ kind: 'header' as const }] : []),
+      ...messages
+        .slice(staticBaseMessageCount)
+        .map(msg => ({ kind: 'msg' as const, msg })),
+    ],
+    [messages, staticBaseMessageCount, staticHeaderVisible],
   )
+
+  const finishTranscriptRestore = useCallback(() => {
+    // The main terminal buffer already contains everything that was static when
+    // Ctrl+O opened. Only append messages completed while the alt screen was up.
+    setStaticBaseMessageCount(transcriptEntryMessageCountRef.current)
+    setStaticHeaderVisible(false)
+    setStaticEpoch(epoch => epoch + 1)
+  }, [])
 
   // 流式尾巴正常只有一行；但模型若长时间不吐换行，这一「逻辑行」也可能很长，
   // 自动换行后撑高动态区。按终端高度兜底截断，保证动态区永不超出屏幕、输入框不跳顶。
@@ -1462,6 +1959,24 @@ function App() {
   const stream = streaming
     ? tailByRows(streaming, Math.max(3, termRows - 9), termCols)
     : { shown: '', truncated: false }
+  const projectedTranscriptLines = useMemo(
+    () => showTranscript
+      ? transcriptLines(transcriptEvents, termCols, { showRaw: transcriptShowRaw })
+      : [],
+    [showTranscript, transcriptEvents, termCols, transcriptShowRaw],
+  )
+  useEffect(() => {
+    const previous = transcriptLineCountRef.current
+    const next = projectedTranscriptLines.length
+    transcriptLineCountRef.current = next
+    if (!showTranscript || next <= previous) return
+    setTranscriptOffset(offset => anchoredTranscriptOffset(offset, previous, next))
+  }, [showTranscript, projectedTranscriptLines.length])
+  const transcriptWindow = transcriptViewport(
+    projectedTranscriptLines,
+    Math.max(3, termRows - 5),
+    transcriptOffset,
+  )
 
   // 缺少 key：启动时引导用户输入并保存
   if (!apiKey) {
@@ -1475,28 +1990,74 @@ function App() {
     )
   }
 
+  const staticHistory = (
+    <Static key={staticEpoch} items={staticRows}>
+      {row =>
+        row.kind === 'header' ? (
+          <Header key="header" {...headerProps} />
+        ) : (
+          <MessageRow
+            key={row.msg.id}
+            role={row.msg.role}
+            content={row.msg.content}
+            gap={row.msg.gap}
+            toolCard={row.msg.toolCard}
+            agentCard={row.msg.agentCard}
+          />
+        )
+      }
+    </Static>
+  )
+
   if (showTranscript) {
-    const visible = tailTranscript(toolTranscript, Math.max(5, termRows - 4))
     return (
-      <Box flexDirection="column" paddingX={1} height={termRows}>
+      <Box flexDirection="column" paddingX={1}>
+        {staticHistory}
+        <TranscriptAlternateScreen rows={termRows} onRestored={finishTranscriptRestore}>
+          <Box flexDirection="column" height={Math.max(3, termRows - 1)} overflow="hidden" flexShrink={0}>
         <Box marginBottom={1}>
-          <Text color="cyan" bold>详细转录</Text>
-          <Text dimColor> · 最近 {visible.length}/{toolTranscript.length} 条工具事件</Text>
+          <Text color="cyan" bold>完整转录</Text>
+          <Text dimColor>
+            {' '}· {transcriptShowRaw ? 'raw' : 'expanded'} · events {transcriptEvents.length} · lines {projectedTranscriptLines.length
+              ? `${transcriptWindow.start + 1}-${transcriptWindow.end}/${projectedTranscriptLines.length}`
+              : '0/0'}
+          </Text>
         </Box>
-        <Box flexDirection="column" flexGrow={1}>
-          {visible.length ? visible.map(entry => (
-            <Box key={entry.id} flexDirection="column" marginBottom={entry.detail ? 1 : 0}>
-              <Text
-                color={entry.phase === 'failure' || entry.phase === 'success' ? 'yellow' : undefined}
-                dimColor={entry.phase !== 'failure'}
-              >
-                {entry.phase === 'start' ? '○ ' : ''}{entry.summary}
-              </Text>
-              {entry.detail && <Text dimColor>{transcriptDetail(entry.detail)}</Text>}
-            </Box>
-          )) : <Text dimColor>还没有工具调用。</Text>}
+        <Box
+          flexDirection="column"
+          height={Math.max(1, termRows - 5)}
+          overflow="hidden"
+          flexShrink={0}
+        >
+          {transcriptWindow.visible.length ? (
+            // One Yoga text node is substantially safer than dozens of flex children
+            // when the ledger contains large Web/PDF payloads and wide CJK text.
+            <Text>
+              {transcriptWindow.visible.map((line, index) => (
+                <Text
+                  key={line.key}
+                  color={
+                    line.tone === 'failure'
+                      ? 'magenta'
+                      : line.tone === 'thinking'
+                          ? 'yellow'
+                          : undefined
+                  }
+                  dimColor={line.tone === 'dim' || line.tone === 'thinking'}
+                  italic={line.tone === 'thinking'}
+                >
+                  <TranscriptLineContent line={line} />{index < transcriptWindow.visible.length - 1 ? '\n' : ''}
+                </Text>
+              ))}
+            </Text>
+          ) : <Text dimColor>还没有转录事件。</Text>}
         </Box>
-        <Text dimColor>Ctrl+O / Esc / q 返回默认视图</Text>
+        <Text dimColor>
+          touchpad/↑/↓ scroll · PgUp/PgDn · g/G · Ctrl+E {transcriptShowRaw ? 'expanded' : 'raw'} · click footer/Ctrl+O/Esc/q close
+          {transcriptOffset === 0 ? ' · following live output' : ''}
+        </Text>
+          </Box>
+        </TranscriptAlternateScreen>
       </Box>
     )
   }
@@ -1506,52 +2067,39 @@ function App() {
       {/* 头部 + 历史消息 — 用 Static 渲染：每条只往终端写一次，永不重绘。
           这才是根除闪烁的关键：Spinner 每 120ms 触发的重渲染只会重画下方
           的动态区（spinner + 输入框），不再连带重画整段历史。 */}
-      <Static key={staticEpoch} items={staticRows}>
-        {row =>
-          row.kind === 'header' ? (
-            <Header key="header" {...headerProps} />
-          ) : (
-            <MessageRow
-              key={row.msg.id}
-              role={row.msg.role}
-              content={row.msg.content}
-              gap={row.msg.gap}
-              toolCard={row.msg.toolCard}
-              agentCard={row.msg.agentCard}
-            />
-          )
-        }
-      </Static>
+      {staticHistory}
 
       {/* —— 动态区：高度恒定的底栏，已生成内容都已逐行沉淀进上方 Static —— */}
 
       {/* 流式尾巴 — 当前正在打字、尚未凑满一整行的最后一截（已成行的都在上方历史里）。 */}
       {streaming && (
         <Box marginBottom={1}>
-          <Text>{stream.shown}</Text>
+          <InlineMarkdown>{stream.shown}</InlineMarkdown>
         </Box>
       )}
 
-      {busy && hasActivity(activity) && (
+      {/* Active tools have their own unresolved rows below. Show the aggregate only
+          between batches, otherwise "running 1 command" is repeated twice. */}
+      {busy && activeTools.length === 0 && hasActivity(activity) && (
         <Box>
-          <Text dimColor>{formatActivity(activity, true)}</Text>
+          <Text dimColor>{formatActivity(activity, false)}</Text>
         </Box>
       )}
 
-      {/* 远端 Web 与子 agent 保留独立活动行；普通本地工具已聚合在上方。 */}
-      {activeTools.map(tool => (
-        <Box key={tool.callId}>
-          <Text dimColor>
-            <Spinner /> {tool.summary}
-          </Text>
-        </Box>
+      {/* 当前具体目标始终可见；活动摘要只负责说明累计工作量。 */}
+      {activeTools.slice(-3).map(tool => (
+        <ActiveToolRow key={tool.callId} tool={tool} />
       ))}
 
       {busy && (
         <Box marginBottom={streaming ? 0 : 1}>
           <Text>
             <Text color="yellow"><Spinner /></Text>{' '}
-            <Text>Contemplating…</Text>
+            <Text>
+              {modelStatus
+                ? formatModelStatus(modelStatus, Date.now(), modelConfig.model)
+                : '准备下一步'}
+            </Text>
             <Text dimColor>
               {' '}({Math.max(1, Math.floor(elapsedMs / 1000))}s
               {' · '}↓ {formatTokenCount(Math.max(0, tokenUsage.outputTokens - turnOutputStartRef.current))} tokens
@@ -1708,16 +2256,48 @@ if (argv[0] === 'serve') {
 } else {
   // exitOnCtrlC: false —— 关掉 Ink 内置的「Ctrl+C 即退出」，把控制权交给 useInput，
   // 否则第一次 Ctrl+C 就被 Ink 直接退出了，下面的「连按两次才退出」逻辑根本来不及生效。
-  const instance = render(<App />, { exitOnCtrlC: false })
+  // Filter SGR mouse reports before Ink's keyboard parser receives them. A custom
+  // stdout also removes Ink's automatic CSI 3J so view changes preserve scrollback.
+  // Enable raw input on the actual TTY before inserting the decoder stream. Ink's
+  // raw-mode support detection only sees the decoder and some PTYs otherwise leave
+  // VDISCARD (Ctrl+O) active, so the kernel consumes the shortcut before JavaScript.
+  if (process.stdin.isTTY) process.stdin.setRawMode?.(true)
+  const inputBridge = createInkInputBridge(process.stdin)
+  const inkStdout = createScrollbackPreservingStdout(process.stdout)
+  const restoreTerminal = () => restoreTerminalModes(process.stdout)
+  // Last-resort protection for uncaught errors and process.exit(): never return to
+  // the user's shell while SGR mouse tracking is still enabled.
+  process.once('exit', restoreTerminal)
+  const instance = render(<App />, {
+    exitOnCtrlC: false,
+    stdin: inputBridge.stdin,
+    stdout: inkStdout,
+  })
+  // useApp().exit() unmounts Ink but does not know about our upstream pipe.
+  // Dispose it as part of the same lifecycle so a clean exit cannot leave stdin alive.
+  void instance.waitUntilExit().then(
+    () => {
+      inputBridge.dispose()
+      restoreTerminal()
+      process.off('exit', restoreTerminal)
+    },
+    () => {
+      inputBridge.dispose()
+      restoreTerminal()
+      process.off('exit', restoreTerminal)
+    },
+  )
 
   const bail = (label: string) => (err: unknown) => {
     const logPath = writeCrash(label, err)
+    // Do this before Ink.unmount(): the renderer itself may be the failing component.
+    restoreTerminal()
     try {
       instance.unmount()
     } catch {
       /* 卸载失败也要继续恢复终端 */
     }
-    process.stdout.write('\x1b[?25h')
+    inputBridge.dispose()
     console.error(`\nai 遇到了意外错误（${label}）。详细日志（含最近按键）已写入：`)
     console.error(`  ${logPath}`)
     console.error(err instanceof Error ? err.stack ?? err.message : String(err))

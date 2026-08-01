@@ -44,8 +44,15 @@ import {
 } from './verification-policy.js'
 
 export type AgentEvent =
+  | {
+      type: 'model'
+      phase: 'connecting' | 'waiting' | 'receiving'
+      at: number
+    }
   // 流式文本增量：给终端做实时显示；channel（QQ/微信）按段发送，忽略它。
   | { type: 'delta'; content: string }
+  // 后端明确提供的 thinking/reasoning 增量；只用于 UI 转录，不写入普通聊天正文。
+  | { type: 'thinking'; content: string }
   // 一整段助手文本（一轮里 content 的最终态）：channel/日志按段消费。
   | { type: 'text'; content: string }
   | {
@@ -109,6 +116,19 @@ export type EngineDeps = CompactDeps & {
   maxVerifyRetries?: number
   /** 关联 full/summary history trace；未提供时由引擎创建 unknown 上下文。 */
   historyTrace?: HistoryTraceContext
+  /**
+   * Drain prompts entered while this agent is working. Called only at a protocol-safe
+   * loop boundary, never between an assistant tool call and its tool results.
+   */
+  drainQueuedPrompts?: () => string[]
+}
+
+export function queuedPromptMessage(prompts: string[]): string {
+  const cleaned = prompts.map(prompt => prompt.trim()).filter(Boolean)
+  return [
+    '用户在你执行当前任务期间追加了以下指令。立即把它们纳入当前任务，并据此调整后续行动；不要等原任务结束后再处理。',
+    ...cleaned.map((prompt, index) => `\n[追加指令 ${index + 1}]\n${prompt}`),
+  ].join('\n')
 }
 
 /**
@@ -302,6 +322,19 @@ async function* runAgentCore(
     // ⓪ 用户已中断（Esc/Ctrl+C）：立刻收手，别再压缩历史或发起下一次模型调用。
     if (deps.signal?.aborted) throw new DOMException('已中断', 'AbortError')
 
+    // Claude Code drains queued prompts between loop iterations: at this point the
+    // previous assistant tool calls (if any) already have all matching tool results.
+    // Injecting here steers the very next model request without corrupting function-
+    // calling message order or waiting for the whole agent run to finish.
+    const queuedPrompts = deps.drainQueuedPrompts?.().map(prompt => prompt.trim()).filter(Boolean) ?? []
+    if (queuedPrompts.length) {
+      history.push({ role: 'user', content: queuedPromptMessage(queuedPrompts) })
+      traceHistory(historyTrace, 'after-queued-prompts', history, {
+        step,
+        note: `count=${queuedPrompts.length}`,
+      })
+    }
+
     // ① 每轮开头按需压缩历史（就地 splice，保持调用方持有的引用有效）。
     if (!deps.noCompact) {
       const historyLengthBeforeCompact = history.length
@@ -350,6 +383,10 @@ async function* runAgentCore(
         if (part.type === 'text') {
           textSegment += part.delta
           yield { type: 'delta', content: part.delta }
+        } else if (part.type === 'thinking') {
+          yield { type: 'thinking', content: part.delta }
+        } else if (part.type === 'model') {
+          yield { type: 'model', phase: part.phase, at: Date.now() }
         } else if (part.type === 'tool') {
           // 工具调用先于其后内容到达时，先把已说的文本作为一段 text 收口（保证 channel 端顺序正确）。
           yield* flushText()
@@ -622,7 +659,6 @@ async function* runAgentCore(
 
 function describeToolDetail(name: string, args: Record<string, any>): string {
   if (name === 'run_bash') return String(args.command ?? '')
-  if (name === 'write_file') return String(args.path ?? '')
   try {
     return JSON.stringify(args, null, 2)
   } catch {
@@ -665,7 +701,7 @@ function isTransientNetworkError(e: any): boolean {
     return true
   }
   const msg = String(e?.message ?? e).toLowerCase() + ' ' + String(e?.cause?.message ?? '').toLowerCase()
-  return /terminated|fetch failed|socket hang up|other side closed|premature close|network error|econnreset|etimedout|timed out|gateway timeout|http 50[24]/.test(
+  return /terminated|fetch failed|socket hang up|other side closed|premature close|network error|econnreset|etimedout|timeout|timed out|gateway timeout|http 50[24]/.test(
     msg,
   )
 }

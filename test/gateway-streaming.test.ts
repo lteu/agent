@@ -113,6 +113,17 @@ lines.on('line', line => {
       })
       return
     }
+    if (line.includes('session-limit')) {
+      send({
+        type: 'rate_limit_event',
+        rate_limit_info: {
+          status: 'rejected',
+          rateLimitType: 'five_hour',
+          resetsAt: 1_800_000_000,
+        },
+      })
+      return
+    }
     emitText("I'll search for the exact source first.")
     return
   }
@@ -120,6 +131,10 @@ lines.on('line', line => {
     type: 'assistant',
     message: {
       content: [
+        {
+          type: 'thinking',
+          thinking: 'Compare both snapshots before choosing the next source.',
+        },
         {
           type: 'text',
           text:
@@ -152,7 +167,7 @@ lines.on('line', line => {
         content: [{
           type: 'tool_result',
           tool_use_id: 'remote_search_1',
-          content: 'Web search results for query: "test"',
+          content: 'REMOTE_RESULT_HEAD ' + 'r'.repeat(2_500) + ' REMOTE_RESULT_TAIL',
         }],
       },
       tool_use_result: { searchCount: 1, durationSeconds: 1.2 },
@@ -224,6 +239,10 @@ lines.on('line', line => {
   assert.match(payload, /TAIL_FACT_MUST_REMAIN_VISIBLE/)
   assert.match(payload, /Web Search/)
   assert.match(payload, /Did 1 search in 1s/)
+  assert.match(payload, /Compare both snapshots before choosing the next source\./)
+  assert.match(payload, /REMOTE_RESULT_HEAD/)
+  assert.match(payload, /REMOTE_RESULT_TAIL/)
+  assert.match(payload, /"usage":\{"prompt_tokens":/)
   assert.match(payload, /data: \[DONE\]/)
   const completedHealth: any = await fetch(`${origin}/health`).then(res => res.json())
   assert.equal(completedHealth.remote_web_searches, 1)
@@ -266,6 +285,23 @@ lines.on('line', line => {
   assert.match(unsupportedPayload, /ai_remote_error/)
   assert.match(unsupportedPayload, /DangerousRemoteTool/)
   assert.match(unsupportedPayload, /data: \[DONE\]/)
+
+  const limitStarted = Date.now()
+  const limitResponse = await fetch(`${origin}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'test',
+      stream: true,
+      messages: [{ role: 'user', content: 'session-limit' }],
+    }),
+  })
+  const limitPayload = await limitResponse.text()
+  assert(Date.now() - limitStarted < 1_000, 'rate limit should terminate immediately')
+  assert.match(limitPayload, /ai_remote_error/)
+  assert.match(limitPayload, /You've hit your session limit/)
+  assert.match(limitPayload, /CLAUDE_RATE_LIMIT/)
+  assert.match(limitPayload, /data: \[DONE\]/)
 
   const disconnected = await fetch(`${origin}/v1/chat/completions`, {
     method: 'POST',

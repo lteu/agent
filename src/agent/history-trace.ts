@@ -33,6 +33,7 @@ type AgentEventForLog = {
   callId?: string
   batchId?: string
   phase?: string
+  at?: number
   steps?: number
 }
 
@@ -79,6 +80,7 @@ export function traceAgentEvent(
     name: event?.name,
     callId: event?.callId,
     batchId: event?.batchId,
+    at: event?.at,
     steps: event?.steps,
     summary: event?.summary?.slice(0, 1_000),
     contentLength: content.length || undefined,

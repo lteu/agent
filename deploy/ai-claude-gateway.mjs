@@ -10,6 +10,36 @@ const MAX_PROTOCOL_CONTINUES = 2
 const REMOTE_BUILTIN_TOOLS = new Set(['WebSearch', 'WebFetch'])
 const REMOTE_BUILTIN_TOOL_LIST = [...REMOTE_BUILTIN_TOOLS].join(',')
 
+const RATE_LIMIT_NAMES = {
+  five_hour: 'session limit',
+  seven_day: 'weekly limit',
+  seven_day_opus: 'Opus limit',
+  seven_day_sonnet: 'Sonnet limit',
+  overage: 'extra usage limit',
+}
+
+function rateLimitError(info = {}) {
+  const name = RATE_LIMIT_NAMES[info.rateLimitType] ?? 'session limit'
+  const reset = Number(info.resetsAt)
+  const resetText = Number.isFinite(reset)
+    ? ` Resets at ${new Date(reset * 1000).toISOString()}.`
+    : ''
+  const error = new Error(`You've hit your ${name}.${resetText}`)
+  error.code = 'CLAUDE_RATE_LIMIT'
+  return error
+}
+
+function resultEventError(event) {
+  if (event?.type !== 'result' || event.is_error !== true) return undefined
+  const errors = Array.isArray(event.errors)
+    ? event.errors.filter(value => typeof value === 'string' && value.trim())
+    : []
+  const useful = errors.find(value => !value.startsWith('[ede_diagnostic]'))
+  const error = new Error(useful ?? `Claude stopped with ${event.subtype ?? 'an execution error'}`)
+  error.code = 'CLAUDE_EXECUTION_ERROR'
+  return error
+}
+
 const GATEWAY_EVENT_LOG =
   process.env.AI_CLAUDE_GATEWAY_EVENT_LOG ?? '/var/log/ai-claude-gateway/events.jsonl'
 const GATEWAY_EVENT_LOG_MAX_BYTES = 25 * 1024 * 1024
@@ -179,7 +209,7 @@ remains.`
     }))
   }
 
-  function callClaude(body, signal, onProgress = () => {}) {
+  function callClaude(body, signal, onProgress = () => {}, onUsage = () => {}) {
     return new Promise((resolve, reject) => {
       const tools = mcpTools(Array.isArray(body.tools) ? body.tools : [])
       const localToolNames = new Set(tools.map(tool => tool.name))
@@ -248,6 +278,7 @@ remains.`
       let pendingToolCompletion = null
       let protocolContinues = 0
       const pendingRemoteTools = new Map()
+      const emittedThinking = new Set()
       const remoteResearch = []
       const usage = {
         input_tokens: 0,
@@ -307,7 +338,6 @@ remains.`
       signal?.addEventListener('abort', onAbort, { once: true })
       child.stderr.on('data', chunk => stderr.push(chunk))
       const lines = readline.createInterface({ input: child.stdout })
-      lines.on('line', resetIdleTimer)
       resetIdleTimer()
       const sendConversation = () => {
         child.stdin.write(
@@ -357,7 +387,31 @@ remains.`
         } catch {
           return
         }
+        // Claude Code emits subscription limits as dedicated SDK events. They
+        // are not assistant text and were previously ignored while still
+        // keeping the gateway idle timer alive indefinitely.
+        if (event.type === 'rate_limit_event') {
+          if (event.rate_limit_info?.status === 'rejected') {
+            fail(rateLimitError(event.rate_limit_info))
+          }
+          return
+        }
+        if (event.type === 'assistant' && event.error) {
+          const error = event.error === 'rate_limit'
+            ? rateLimitError()
+            : Object.assign(new Error(`Claude API error: ${event.error}`), {
+                code: 'CLAUDE_API_ERROR',
+              })
+          fail(error)
+          return
+        }
+        const resultError = resultEventError(event)
+        if (resultError) {
+          fail(resultError)
+          return
+        }
         if (event.type === 'user' && Array.isArray(event.message?.content)) {
+          resetIdleTimer()
           for (const block of event.message.content) {
             if (block.type !== 'tool_result' || !block.tool_use_id) continue
             const pending = pendingRemoteTools.get(block.tool_use_id)
@@ -423,12 +477,15 @@ remains.`
               name: pending.name,
               callId: block.tool_use_id,
               summary,
-              detail: typeof block.content === 'string' ? block.content.slice(0, 2_000) : undefined,
+              // UI transcript and model context have different retention rules. The local
+              // transcript receives the complete result; remoteResearch above remains bounded.
+              detail: typeof block.content === 'string' ? block.content : undefined,
             })
           }
           return
         }
         if (event.type !== 'assistant' || !Array.isArray(event.message?.content)) return
+        resetIdleTimer()
         if (!handshakeDone) {
           handshakeDone = true
           handshakeTurnFinishing = true
@@ -436,6 +493,17 @@ remains.`
           return
         }
         const content = event.message.content
+        for (const block of content) {
+          if (block.type !== 'thinking' || typeof block.thinking !== 'string' || !block.thinking) continue
+          if (emittedThinking.has(block.thinking)) continue
+          emittedThinking.add(block.thinking)
+          onProgress({
+            phase: 'info',
+            name: 'thinking',
+            summary: 'Thinking',
+            detail: block.thinking,
+          })
+        }
         const toolBlocks = content.filter(
           block =>
             block.type === 'tool_use' &&
@@ -516,7 +584,7 @@ remains.`
               callId,
               summary:
                 block.name === 'WebSearch'
-                  ? `Web Search(${target ? JSON.stringify(target) : ''})`
+                  ? `Web Search(${target.replace(/\s+/g, ' ').trim()})`
                   : `Fetch(${target})`,
               detail: JSON.stringify(input, null, 2),
             })
@@ -540,7 +608,9 @@ remains.`
           return
         }
         if (event.type !== 'stream_event' || event.event?.type !== 'message_delta') return
+        resetIdleTimer()
         addUsage(event.event.usage)
+        onUsage({ ...usage })
         const stopReason = event.event.delta?.stop_reason
         if (!stopReason || settled) return
         if (handshakeTurnFinishing) {
@@ -717,6 +787,11 @@ remains.`
     res.write(`data: ${JSON.stringify({ choices: [], ai_remote_progress: progress })}\n\n`)
   }
 
+  function writeUsage(res, usage) {
+    if (res.writableEnded || res.destroyed) return
+    res.write(`data: ${JSON.stringify({ choices: [], usage })}\n\n`)
+  }
+
   function writeStreamError(res, error, requestId) {
     if (res.writableEnded || res.destroyed) return
     res.write(
@@ -794,6 +869,9 @@ remains.`
               logGatewayEvent(requestId, 'progress', progress)
               writeProgress(res, progress)
             }
+          : undefined,
+        body.stream
+          ? usage => writeUsage(res, openAIUsage(usage))
           : undefined,
       )
       const choice = choiceFor(completion)
