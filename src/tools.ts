@@ -33,6 +33,7 @@ import { interpretShellCommandResult } from './shell-command-semantics.js'
 import { classifyVerificationCommand, type VerificationCheckKind } from './agent/verification-policy.js'
 import { managedSubagents, type ManagedSubagentResult } from './agent/subagent-manager.js'
 import type { TokenUsage } from './token-usage.js'
+import { compactUrlForDisplay } from './ui-format.js'
 import { PDFParse } from 'pdf-parse'
 import XLSX from 'xlsx'
 import JSZip from 'jszip'
@@ -1576,15 +1577,18 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
     case 'list_dir':
       return `列目录 ${args.path ?? '.'}`
     case 'run_bash': {
-      // 模型用 intent 声明「这条命令想干嘛」，把它当成动词放命令前面，让进度行先说清意图。
+      // intent 是普通视图的标题。存在时不再把原始命令拼进标题；
+      // 完整命令仍保存在工具 detail 中，可在 Ctrl+O transcript 查看。
       const intent = String(args.intent ?? '').trim()
       const label = bashLabel(String(args.command ?? ''))
       if (label.startsWith('进入目录')) return label // 纯 cd 本身已自解释，无需再缀意图
-      return intent ? `${intent} · ${label}` : `运行 ${label}`
+      return intent || `运行 ${label}`
     }
     case 'run_admin': {
       const intent = String(args.intent ?? '').trim()
-      return `${intent || '执行管理员命令'} · ${bashLabel(String(args.command ?? ''))}（系统授权）`
+      return intent
+        ? `${intent}（系统授权）`
+        : `执行管理员命令 ${bashLabel(String(args.command ?? ''))}（系统授权）`
     }
     case 'send_email':
       return `发邮件给 ${args.to}`
@@ -1601,7 +1605,7 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
     case 'grep':
       return `检索 /${String(args.pattern ?? '').slice(0, 60)}/`
     case 'web_fetch':
-      return `抓取 ${args.url}`
+      return `抓取 ${compactUrlForDisplay(String(args.url ?? ''))}`
     case 'run_agent':
       return args.agent_id
         ? `续跑子 agent ${args.agent_id}：${args.description ?? ''}`
@@ -1619,9 +1623,11 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
     case 'term_kill':
       return `结束终端 ${args.name}`
     case 'browser_open':
-      return args.url ? `开浏览器 ${args.name} ▶ ${args.url}` : `开浏览器 ${args.name}`
+      return args.url
+        ? `开浏览器 ${args.name} ▶ ${compactUrlForDisplay(String(args.url))}`
+        : `开浏览器 ${args.name}`
     case 'browser_goto':
-      return `浏览器 ${args.name} 跳转 ${args.url}`
+      return `浏览器 ${args.name} 跳转 ${compactUrlForDisplay(String(args.url ?? ''))}`
     case 'browser_snapshot':
       return `浏览器 ${args.name} 快照`
     case 'browser_click':

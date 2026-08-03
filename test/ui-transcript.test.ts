@@ -102,6 +102,70 @@ test('默认转录把 WebSearch 投影成 Claude 风格的单张摘要卡', () =
   assert.equal(compact.some(line => line.text.includes('large search payload')), false)
 })
 
+test('展开转录保留浏览器跳转后的完整 URL 和页面快照', () => {
+  const fullUrl = 'https://login.example.net/login?service=oauth&state=full-value'
+  const events: TranscriptEvent[] = [
+    {
+      id: 1,
+      turnId: 1,
+      at: 1,
+      kind: 'tool',
+      phase: 'start',
+      name: 'browser_goto',
+      callId: 'browser-1',
+      summary: '浏览器 auth 跳转 login.example.net/login',
+      detail: JSON.stringify({ name: 'auth', url: fullUrl }),
+    },
+    {
+      id: 2,
+      turnId: 1,
+      at: 2,
+      kind: 'tool',
+      phase: 'success',
+      name: 'browser_goto',
+      callId: 'browser-1',
+      summary: '✓ 浏览器 auth 跳转 login.example.net/login',
+      detail: `标题: Login\n地址: ${fullUrl}\n\ne1 button "Continue"`,
+    },
+  ]
+  const expanded = transcriptLines(events, 120)
+  assert.ok(expanded.some(line => line.text.includes('state=full-value')))
+  assert.ok(expanded.some(line => line.text.includes('e1 button "Continue"')))
+})
+
+test('shell 展开转录保留完整命令和原始错误', () => {
+  const events: TranscriptEvent[] = [
+    {
+      id: 1,
+      turnId: 1,
+      at: 1,
+      kind: 'tool',
+      phase: 'start',
+      name: 'run_bash',
+      callId: 'shell-1',
+      summary: '统计引用数',
+      detail: JSON.stringify({
+        intent: '统计引用数',
+        command: '/usr/bin/python3 /tmp/dcpv2_cli.py --params "very long value"',
+      }),
+    },
+    {
+      id: 2,
+      turnId: 1,
+      at: 2,
+      kind: 'tool',
+      phase: 'failure',
+      name: 'run_bash',
+      callId: 'shell-1',
+      summary: '✗ 统计引用数 · 命令退出码 1',
+      detail: '命令退出码 1\nTraceback\nJSONDecodeError: Expecting value',
+    },
+  ]
+  const expanded = transcriptLines(events, 120)
+  assert.ok(expanded.some(line => line.text.includes('/usr/bin/python3 /tmp/dcpv2_cli.py')))
+  assert.ok(expanded.some(line => line.text.includes('JSONDecodeError: Expecting value')))
+})
+
 test('viewport 从底部滚动且不修改源数据', () => {
   const lines = Array.from({ length: 20 }, (_, i) => ({
     key: String(i),

@@ -4,13 +4,46 @@ import {
   EMPTY_ACTIVITY_COUNTS,
   activeToolPresentation,
   addActivity,
+  compactToolResultRows,
+  conciseBrowserToolCard,
   conciseShellFailure,
   conciseToolCardResult,
   conciseWebFetchResult,
   formatActivity,
   formatUserPrompt,
   parseAgentCardItem,
+  recoverableToolFailure,
 } from '../src/ui-activity.js'
+
+test('浏览器跳转结果默认只显示页面语义，不重复完整 URL', () => {
+  const card = conciseBrowserToolCard(
+    'browser_goto',
+    [
+      '标题: 奇富科技｜统一认证中心',
+      '地址: https://login.example.net/login?service=https%3A%2F%2Fmcphub.example.net%2Foauth',
+      '',
+      '(当前页面没有可交互元素)',
+    ].join('\n'),
+  )
+  assert.deepEqual(card, {
+    result: '已跳转到 奇富科技｜统一认证中心',
+    preview: '(当前页面没有可交互元素)',
+    finalUrl: 'https://login.example.net/login?service=https%3A%2F%2Fmcphub.example.net%2Foauth',
+  })
+  assert.equal(card?.result.includes('https://'), false)
+  assert.equal(card?.preview?.includes('地址:'), false)
+})
+
+test('工具结果按终端视觉宽度折叠为最多三行', () => {
+  const compact = compactToolResultRows(
+    'Completed',
+    `地址: https://example.com/${'very-long-path/'.repeat(12)}\nline 2\nline 3`,
+    50,
+  )
+  assert.equal(compact.text.split('\n').length, 3)
+  assert.ok(compact.hiddenRows > 0)
+  assert.match(compact.text, /Ctrl\+O to expand/)
+})
 
 test('普通本地工具聚合为 Claude Code 风格活动摘要', () => {
   let counts = { ...EMPTY_ACTIVITY_COUNTS }
@@ -87,6 +120,26 @@ test('shell 失败只保留退出码和一行可操作原因', () => {
     ),
     "命令退出码 1 · ModuleNotFoundError: No module named 'cv2'",
   )
+})
+
+test('编辑前置条件失败显示为单条弱提示', () => {
+  assert.deepEqual(
+    recoverableToolFailure(
+      'edit_file',
+      '✗ 编辑 references/setup.md · 修改已有文件前必须先用 read_file 读取：/tmp/setup.md',
+      '错误: 修改已有文件前必须先用 read_file 读取：/tmp/setup.md',
+    ),
+    { result: '修改前需要先读取文件', quiet: true },
+  )
+  assert.deepEqual(
+    recoverableToolFailure(
+      'write_file',
+      '✗ 写文件 /tmp/setup.md · 文件在读取后已被其他进程修改，请重新 read_file 后再编辑：/tmp/setup.md',
+      '错误: 文件在读取后已被其他进程修改，请重新 read_file 后再编辑：/tmp/setup.md',
+    ),
+    { result: '文件已发生变化，需要重新读取', quiet: true },
+  )
+  assert.equal(recoverableToolFailure('run_bash', '命令退出码 1'), undefined)
 })
 
 test('本地 Fetch 普通视图只显示状态元数据，不重复 URL 和正文', () => {

@@ -185,6 +185,17 @@ function compactToolPair(start: TranscriptEvent, result: TranscriptEvent): Trans
     detail = /^(?:Did \d+ search(?:es)?|Error:|Search failed)/i.test(result.summary)
       ? result.summary
       : result.phase === 'failure' ? 'Search failed' : 'Did 1 search'
+  } else if (name.startsWith('browser_')) {
+    // Browser snapshots are intentionally compact in the normal conversation,
+    // but Ctrl+O is the explicit detail surface and must retain the full page
+    // title, final URL, and interactive-element list.
+    detail = result.detail?.trim() || (result.summary === start.summary ? undefined : result.summary)
+  } else if (name === 'run_bash' || name === 'run_admin') {
+    const command = typeof input?.command === 'string' ? input.command.trim() : undefined
+    detail = [
+      command ? `$ ${command}` : undefined,
+      result.detail?.trim() || (result.summary === start.summary ? undefined : result.summary),
+    ].filter(Boolean).join('\n') || undefined
   } else {
     detail = result.summary === start.summary ? undefined : result.summary
   }

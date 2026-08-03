@@ -24,6 +24,29 @@ export function terminalHyperlink(url: string, text: string): string {
 }
 
 /**
+ * Keep URLs recognisable in compact tool headers without letting query strings
+ * take over the terminal. The original URL is kept separately for hyperlinks,
+ * transcript detail, and clipboard actions.
+ */
+export function compactUrlForDisplay(value: string, maxLength = 80): string {
+  const raw = String(value ?? '').trim()
+  if (!raw) return ''
+
+  let display = raw
+  try {
+    const parsed = new URL(raw)
+    const pathname = parsed.pathname === '/' ? '' : parsed.pathname
+    display = `${parsed.host}${pathname}`
+  } catch {
+    // Non-URL legacy values still get a bounded, identifiable preview.
+  }
+
+  return display.length > maxLength
+    ? `${display.slice(0, Math.max(1, maxLength - 1))}…`
+    : display
+}
+
+/**
  * Parse the small inline-markdown subset used by streamed assistant prose.
  * Keeping this independent from React makes the behaviour easy to test while
  * still letting Ink render emphasis without showing the marker characters.

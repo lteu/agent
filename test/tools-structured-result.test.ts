@@ -102,7 +102,7 @@ test('工具成功摘要明确报告成功，并保留抓取证据', () => {
 
   assert.equal(
     describeToolSuccess('web_fetch', { url: 'https://example.com/data' }, result),
-    '✓ 抓取 https://example.com/data（HTTP 200，3 次尝试）',
+    '✓ 抓取 example.com/data（HTTP 200，3 次尝试）',
   )
 })
 
@@ -116,7 +116,7 @@ test('工具失败摘要保留原调用标题，避免并行结果失去上下�
 
   assert.equal(
     describeToolFailure('run_bash', { intent: '查看日志', command: 'cat build.log' }, result),
-    '✗ 查看日志 · `cat build.log` · 命令退出码 1',
+    '✗ 查看日志 · 命令退出码 1',
   )
 })
 

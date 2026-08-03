@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  compactUrlForDisplay,
   inlineMarkdownSegments,
   localWebFetchUrl,
   markdownLinePresentation,
   splitRemoteWebTitle,
   terminalHyperlink,
 } from '../src/ui-format.js'
+
+test('长 URL 的默认标题只保留域名和路径', () => {
+  assert.equal(
+    compactUrlForDisplay(
+      'https://mcphub.example.net/oauth/authorize?response_type=code&client_id=abc&state=very-long-state',
+    ),
+    'mcphub.example.net/oauth/authorize',
+  )
+  assert.equal(compactUrlForDisplay('not-a-url', 6), 'not-a…')
+})
 
 test('助手正文渲染单星号和双星号强调且隐藏标记', () => {
   assert.deepEqual(inlineMarkdownSegments('the *soft* and **strong** words'), [

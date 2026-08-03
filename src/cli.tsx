@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs'
+import { spawn } from 'node:child_process'
 import {
   useState,
   useRef,
@@ -72,6 +73,8 @@ import {
   activityCategory,
   addActivity,
   activeToolPresentation,
+  compactToolResultRows,
+  conciseBrowserToolCard,
   conciseShellFailure,
   conciseToolCardResult,
   conciseWebFetchResult,
@@ -79,11 +82,13 @@ import {
   formatUserPrompt,
   hasActivity,
   parseAgentCardItem,
+  recoverableToolFailure,
   type ActivityCounts,
   type AgentCardItem,
 } from './ui-activity.js'
 import {
   inlineMarkdownSegments,
+  compactUrlForDisplay,
   localWebFetchUrl,
   markdownLinePresentation,
   splitRemoteWebTitle,
@@ -741,6 +746,8 @@ type UIMessage = {
     failed: boolean
     preview?: string
     remote?: boolean
+    rawUrl?: string
+    quietFailure?: boolean
   }
   agentCard?: AgentCardItem[]
 }
@@ -761,6 +768,7 @@ type ToolBatch = {
     result?: string
     resultDetail?: string
     failed?: boolean
+    rawUrl?: string
   }>
 }
 
@@ -812,6 +820,63 @@ function semanticToolPreview(
   return toolPreview(resultDetail, failed)
 }
 
+function toolUrl(
+  name: string,
+  inputDetail: string | undefined,
+  resultDetail?: string,
+): string | undefined {
+  if (!(name.startsWith('browser_') || name === 'web_fetch' || name === 'WebFetch')) {
+    return undefined
+  }
+  if (inputDetail) {
+    try {
+      const input = JSON.parse(inputDetail)
+      if (typeof input?.url === 'string' && /^https?:\/\//i.test(input.url)) return input.url
+    } catch {
+      // Legacy/plain-text detail falls through to conservative URL extraction.
+    }
+  }
+  return resultDetail?.match(/^地址:\s*(https?:\/\/\S+)$/m)?.[1]
+    ?? inputDetail?.match(/https?:\/\/[^\s"']+/)?.[0]
+}
+
+function copyToClipboard(value: string): Promise<void> {
+  const candidates: Array<[string, string[]]> = process.platform === 'darwin'
+    ? [['/usr/bin/pbcopy', []]]
+    : process.platform === 'win32'
+      ? [['clip', []]]
+      : process.env.WAYLAND_DISPLAY
+        ? [['wl-copy', []], ['xclip', ['-selection', 'clipboard']]]
+        : [['xclip', ['-selection', 'clipboard']], ['wl-copy', []]]
+
+  const attempt = (index: number): Promise<void> => new Promise((resolve, reject) => {
+    const candidate = candidates[index]
+    if (!candidate) {
+      reject(new Error('未找到可用的系统剪贴板命令'))
+      return
+    }
+    const child = spawn(candidate[0], candidate[1], { stdio: ['pipe', 'ignore', 'ignore'] })
+    let settled = false
+    const retry = () => {
+      if (settled) return
+      settled = true
+      void attempt(index + 1).then(resolve, reject)
+    }
+    child.once('error', () => {
+      retry()
+    })
+    child.once('exit', code => {
+      if (settled) return
+      settled = true
+      if (code === 0) resolve()
+      else void attempt(index + 1).then(resolve, reject)
+    })
+    child.stdin.end(value)
+  })
+
+  return attempt(0)
+}
+
 function InlineMarkdown({ children }: { children: string }) {
   const line = markdownLinePresentation(children)
   return (
@@ -837,14 +902,27 @@ function ToolCardTitle({
   title,
   name,
   remote,
+  rawUrl,
 }: {
   title: string
   name?: string
   remote?: boolean
+  rawUrl?: string
 }) {
-  const localUrl = name === 'web_fetch' ? localWebFetchUrl(title) : undefined
+  const localUrl = name === 'web_fetch' ? rawUrl ?? localWebFetchUrl(title) : undefined
   if (localUrl) {
-    return <Text><Text bold>Fetch</Text>({localUrl})</Text>
+    return (
+      <Text>
+        <Text bold>Fetch</Text>
+        ({terminalHyperlink(localUrl, compactUrlForDisplay(localUrl))})
+      </Text>
+    )
+  }
+  if (rawUrl && name === 'WebFetch') {
+    return <Text><Text bold>Fetch</Text>({terminalHyperlink(rawUrl, compactUrlForDisplay(rawUrl))})</Text>
+  }
+  if (rawUrl && name?.startsWith('browser_')) {
+    return <Text bold>{terminalHyperlink(rawUrl, title)}</Text>
   }
   if (name === 'run_bash' || name === 'run_admin') {
     const separator = title.indexOf(' · ')
@@ -964,29 +1042,31 @@ const MessageRow = memo(
     )
   }
   if ((role === 'remote-tool' || role === 'tool-card') && toolCard) {
-    const quietShellFailure = toolCard.failed && (
+    const quietFailure = toolCard.failed && (toolCard.quietFailure || (
       toolCard.name === 'run_bash' || toolCard.name === 'run_admin'
-    )
+    ))
+    const compactResult = compactToolResultRows(
+      toolCard.result,
+      toolCard.preview,
+      process.stdout.columns || 80,
+    ).text.replace(/\n/g, '\n    ')
     return (
       <Box marginBottom={1} flexDirection="column">
         <Text>
           <Text color={toolCard.failed ? 'red' : 'green'}>●</Text>{' '}
-          <ToolCardTitle title={toolCard.title} name={toolCard.name} remote={toolCard.remote} />
+          <ToolCardTitle
+            title={toolCard.title}
+            name={toolCard.name}
+            remote={toolCard.remote}
+            rawUrl={toolCard.rawUrl}
+          />
         </Text>
         <Text
-          color={toolCard.failed && !quietShellFailure ? 'red' : undefined}
-          dimColor={!toolCard.failed || quietShellFailure}
+          color={toolCard.failed && !quietFailure ? 'red' : undefined}
+          dimColor={!toolCard.failed || quietFailure}
         >
-          {'  '}└ {toolCard.result}
+          {'  '}└ {compactResult}
         </Text>
-        {toolCard.preview && (
-          <Text
-            color={toolCard.failed && !quietShellFailure ? 'red' : undefined}
-            dimColor={!toolCard.failed || quietShellFailure}
-          >
-            {'    '}{toolCard.preview}
-          </Text>
-        )}
       </Box>
     )
   }
@@ -1198,6 +1278,7 @@ function App() {
   const [showTranscript, setShowTranscript] = useState(false)
   const [transcriptOffset, setTranscriptOffset] = useState(0)
   const [transcriptShowRaw, setTranscriptShowRaw] = useState(false)
+  const [transcriptNotice, setTranscriptNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // 运行中仍保持输入框可编辑。普通 prompt 先排队，当前 turn 收口后按提交顺序执行。
   const [queuedPrompts, setQueuedPrompts] = useState<string[]>([])
@@ -1237,6 +1318,7 @@ function App() {
   const transcriptIdRef = useRef(0)
   const transcriptLineCountRef = useRef(0)
   const transcriptEntryMessageCountRef = useRef(0)
+  const lastCopyableUrlRef = useRef<string | null>(null)
   // 流式「未完成的最后一行」。完整行随到随沉淀进上方 Static 历史，动态区只留这截尾巴，
   // 让底部输入框高度恒定、使用过程中不跳顶（对标 Claude Code）。ref 同步、避免批处理丢字。
   const streamTailRef = useRef('')
@@ -1336,6 +1418,7 @@ function App() {
             transcriptEntryMessageCountRef.current = messages.length
             setTranscriptOffset(0)
             setTranscriptShowRaw(false)
+            setTranscriptNotice(null)
           }
           return !current
         })
@@ -1371,6 +1454,16 @@ function App() {
       if (key.ctrl && _input === 'e') {
         setTranscriptShowRaw(value => !value)
         setTranscriptOffset(0)
+      } else if (_input.toLowerCase() === 'p') {
+        const url = lastCopyableUrlRef.current
+        if (!url) {
+          setTranscriptNotice('没有可复制的 URL')
+        } else {
+          void copyToClipboard(url).then(
+            () => setTranscriptNotice(`已复制 ${compactUrlForDisplay(url)}`),
+            error => setTranscriptNotice(`复制失败：${error instanceof Error ? error.message : String(error)}`),
+          )
+        }
       } else if ((key.ctrl && _input === 'o') || (key.ctrl && _input === 'c') || key.escape || _input === 'q') {
         setShowTranscript(false)
       } else if (key.upArrow) {
@@ -1392,6 +1485,7 @@ function App() {
       transcriptEntryMessageCountRef.current = messages.length
       setTranscriptOffset(0)
       setTranscriptShowRaw(false)
+      setTranscriptNotice(null)
       setShowTranscript(true)
       return
     }
@@ -1733,10 +1827,13 @@ function App() {
               expected: ev.batchSize ?? 1,
               tools: new Map(),
             }
+            const rawUrl = toolUrl(ev.name, ev.detail)
+            if (rawUrl) lastCopyableUrlRef.current = rawUrl
             batch.tools.set(ev.callId, {
               name: ev.name,
               title: ev.summary,
               inputDetail: ev.detail,
+              rawUrl,
             })
             toolBatchesRef.current.set(batchId, batch)
             const category = activityCategory(ev.name)
@@ -1771,6 +1868,11 @@ function App() {
                 tool.result = ev.summary
                 tool.resultDetail = ev.detail
                 tool.failed = ev.phase === 'failure'
+                const completedUrl = toolUrl(tool.name, tool.inputDetail, tool.resultDetail)
+                if (completedUrl) {
+                  tool.rawUrl = completedUrl
+                  lastCopyableUrlRef.current = completedUrl
+                }
                 const finished = [...batch.tools.values()].filter(item => item.result).length
                 if (batch.tools.size === batch.expected && finished === batch.expected) {
                   const tools = [...batch.tools.values()]
@@ -1791,6 +1893,7 @@ function App() {
                           title: item.title,
                           result: item.result ?? (item.failed ? 'Error' : 'Completed'),
                           failed: Boolean(item.failed),
+                          rawUrl: item.rawUrl ?? toolUrl(item.name, item.inputDetail, item.resultDetail),
                           preview: semanticToolPreview(
                             item.name,
                             item.inputDetail,
@@ -1828,36 +1931,53 @@ function App() {
                   if (keyTools.length) {
                     setMessages(prev => [
                       ...prev,
-                      ...keyTools.map(item => ({
-                        id: ++idRef.current,
-                        role: 'tool-card' as const,
-                        content: '',
-                        toolCard: {
-                          name: item.name,
-                          title: item.title,
-                          result: !item.failed && item.name === 'web_fetch'
-                            ? conciseWebFetchResult(item.result, item.resultDetail)
-                            : item.failed && (
-                            item.name === 'run_bash' || item.name === 'run_admin'
-                          )
-                            ? conciseShellFailure(
-                                conciseToolCardResult(item.title, item.result, true),
-                                item.resultDetail,
-                              )
-                            : conciseToolCardResult(
-                                item.title,
-                                item.result,
-                                Boolean(item.failed),
-                              ),
-                          failed: Boolean(item.failed),
-                          preview: semanticToolPreview(
-                            item.name,
-                            item.inputDetail,
-                            item.resultDetail,
-                            Boolean(item.failed),
-                          ),
-                        },
-                      })),
+                      ...keyTools.map(item => {
+                        const browserCard = !item.failed
+                          ? conciseBrowserToolCard(item.name, item.resultDetail)
+                          : undefined
+                        const recoverableFailure = item.failed
+                          ? recoverableToolFailure(item.name, item.result, item.resultDetail)
+                          : undefined
+                        const rawUrl = item.rawUrl
+                          ?? toolUrl(item.name, item.inputDetail, item.resultDetail)
+                          ?? browserCard?.finalUrl
+                        return {
+                          id: ++idRef.current,
+                          role: 'tool-card' as const,
+                          content: '',
+                          toolCard: {
+                            name: item.name,
+                            title: item.title,
+                            result: browserCard?.result
+                              ?? recoverableFailure?.result
+                              ?? (!item.failed && item.name === 'web_fetch'
+                                ? conciseWebFetchResult(item.result, item.resultDetail)
+                                : item.failed && (
+                                  item.name === 'run_bash' || item.name === 'run_admin'
+                                )
+                                  ? conciseShellFailure(
+                                      conciseToolCardResult(item.title, item.result, true),
+                                      item.resultDetail,
+                                    )
+                                  : conciseToolCardResult(
+                                      item.title,
+                                      item.result,
+                                      Boolean(item.failed),
+                                    )),
+                            failed: Boolean(item.failed),
+                            preview: browserCard?.preview ?? (recoverableFailure
+                              ? undefined
+                              : semanticToolPreview(
+                                  item.name,
+                                  item.inputDetail,
+                                  item.resultDetail,
+                                  Boolean(item.failed),
+                                )),
+                            rawUrl,
+                            quietFailure: recoverableFailure?.quiet,
+                          },
+                        }
+                      }),
                     ])
                   }
                   toolBatchesRef.current.delete(ev.batchId)
@@ -2053,8 +2173,9 @@ function App() {
           ) : <Text dimColor>还没有转录事件。</Text>}
         </Box>
         <Text dimColor>
-          touchpad/↑/↓ scroll · PgUp/PgDn · g/G · Ctrl+E {transcriptShowRaw ? 'expanded' : 'raw'} · click footer/Ctrl+O/Esc/q close
+          touchpad/↑/↓ scroll · PgUp/PgDn · g/G · P copy URL · Ctrl+E {transcriptShowRaw ? 'expanded' : 'raw'} · click footer/Ctrl+O/Esc/q close
           {transcriptOffset === 0 ? ' · following live output' : ''}
+          {transcriptNotice ? ` · ${transcriptNotice}` : ''}
         </Text>
           </Box>
         </TranscriptAlternateScreen>

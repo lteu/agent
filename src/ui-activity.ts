@@ -118,6 +118,29 @@ export function conciseShellFailure(result: string, detail?: string): string {
   return result.includes(clipped) ? result : `${result} · ${clipped}`
 }
 
+export type RecoverableToolFailurePresentation = {
+  result: string
+  quiet: true
+}
+
+/** Expected coordination errors stay in the timeline, but only need one calm,
+ * actionable sentence in the normal view. Raw payloads remain in transcript. */
+export function recoverableToolFailure(
+  name: string,
+  result: string | undefined,
+  detail?: string,
+): RecoverableToolFailurePresentation | undefined {
+  if (name !== 'write_file' && name !== 'edit_file') return undefined
+  const message = `${result ?? ''}\n${detail ?? ''}`
+  if (/修改已有文件前必须先用\s+read_file\s+读取/.test(message)) {
+    return { result: '修改前需要先读取文件', quiet: true }
+  }
+  if (/文件在读取后已被其他进程修改|重新\s+read_file\s+后再编辑/.test(message)) {
+    return { result: '文件已发生变化，需要重新读取', quiet: true }
+  }
+  return undefined
+}
+
 /** Local web_fetch titles already contain the URL, so keep its result to status
  * metadata only. The response body belongs in the Ctrl+O transcript. */
 export function conciseWebFetchResult(result: string | undefined, detail?: string): string {
@@ -131,7 +154,54 @@ export function conciseWebFetchResult(result: string | undefined, detail?: strin
   return parts.length ? parts.join(' · ') : (plain || 'Completed')
 }
 
-function terminalWidth(text: string): number {
+export type BrowserToolCardPresentation = {
+  result: string
+  preview?: string
+  finalUrl?: string
+}
+
+/** Turn a browser snapshot into the small amount of information useful in the
+ * normal conversation. The full snapshot remains in the transcript ledger. */
+export function conciseBrowserToolCard(
+  name: string,
+  detail: string | undefined,
+): BrowserToolCardPresentation | undefined {
+  if (!name.startsWith('browser_') || !detail) return undefined
+
+  const title = detail.match(/^标题:\s*(.*)$/m)?.[1]?.trim()
+  const finalUrl = detail.match(/^地址:\s*(https?:\/\/\S+)$/m)?.[1]
+  if (!title && !finalUrl) return undefined
+
+  let target = title
+  if (!target && finalUrl) {
+    try {
+      const parsed = new URL(finalUrl)
+      target = `${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}`
+    } catch {
+      target = finalUrl
+    }
+  }
+
+  const verb = name === 'browser_goto'
+    ? '已跳转到'
+    : name === 'browser_open'
+      ? '已打开'
+      : name === 'browser_snapshot'
+        ? '已读取'
+        : '已更新'
+
+  const snapshotBody = detail
+    .replace(/[\s\S]*?^标题:.*\n地址:.*\n?/m, '')
+    .trim()
+
+  return {
+    result: `${verb} ${target || '当前页面'}`,
+    ...(snapshotBody ? { preview: snapshotBody } : {}),
+    ...(finalUrl ? { finalUrl } : {}),
+  }
+}
+
+export function terminalWidth(text: string): number {
   return [...text].reduce((width, char) => {
     const code = char.codePointAt(0) ?? 0
     const wide =
@@ -147,6 +217,57 @@ function terminalWidth(text: string): number {
       (code >= 0x1f300 && code <= 0x1faff)
     return width + (wide ? 2 : 1)
   }, 0)
+}
+
+function wrapByTerminalWidth(text: string, width: number): string[] {
+  const rows: string[] = []
+  for (const logicalLine of text.split('\n')) {
+    if (!logicalLine) {
+      rows.push('')
+      continue
+    }
+    let row = ''
+    let used = 0
+    for (const char of logicalLine) {
+      const charWidth = terminalWidth(char)
+      if (used + charWidth > width && row) {
+        rows.push(row.trimEnd())
+        row = ''
+        used = 0
+      }
+      row += char
+      used += charWidth
+    }
+    rows.push(row.trimEnd())
+  }
+  return rows
+}
+
+/** Limit the complete result area (summary plus preview) to three visual rows.
+ * Truncation is terminal-width aware, so one giant URL cannot create a dozen
+ * wrapped rows while still counting as one logical line. */
+export function compactToolResultRows(
+  result: string,
+  preview: string | undefined,
+  columns: number,
+  maxRows = 3,
+): { text: string; hiddenRows: number } {
+  const content = [result, preview].filter(Boolean).join('\n').trimEnd()
+  if (!content) return { text: '', hiddenRows: 0 }
+
+  const width = Math.max(10, columns - 6)
+  const rows = wrapByTerminalWidth(content, width)
+  if (rows.length <= maxRows) return { text: rows.join('\n'), hiddenRows: 0 }
+
+  const visibleContentRows = Math.max(1, maxRows - 1)
+  const hiddenRows = rows.length - visibleContentRows
+  return {
+    text: [
+      ...rows.slice(0, visibleContentRows),
+      `… +${hiddenRows} lines (Ctrl+O to expand)`,
+    ].join('\n'),
+    hiddenRows,
+  }
 }
 
 /** Build a full-width prompt block; Text background colors only the glyph area in Ink. */
