@@ -14,6 +14,25 @@ test('识别常见测试、类型检查、构建和语法检查命令', () => {
   assert.equal(classifyVerificationCommand('npm run lint'), 'lint')
   assert.equal(classifyVerificationCommand('npm run build'), 'build')
   assert.equal(classifyVerificationCommand('node --check script.js'), 'syntax')
+  assert.equal(
+    classifyVerificationCommand(
+      `node -e 'const esbuild = require("esbuild"); esbuild.transformSync(source, { loader: "tsx" })'`,
+    ),
+    'syntax',
+  )
+  assert.equal(
+    classifyVerificationCommand(
+      `node -e 'const { build } = require("esbuild"); build({ entryPoints: ["src/cli.tsx"] })'`,
+    ),
+    'build',
+  )
+  assert.equal(
+    classifyVerificationCommand(
+      './node_modules/@esbuild/linux-arm64/bin/esbuild src/cli.tsx --bundle --outfile=dist/cli.js',
+    ),
+    'build',
+  )
+  assert.equal(classifyVerificationCommand('esbuild --version'), null)
   assert.equal(classifyVerificationCommand('ls -la'), null)
 })
 

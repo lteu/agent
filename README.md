@@ -2,7 +2,7 @@
 
 在终端输入 `ai`，弹出一个**可编辑的对话框**（类似 `claude`），接入 **DeepSeek**。
 
-它不只是聊天：内置 `write_file / read_file / list_dir / run_bash` 工具，能在你本机**真正建文件、跑命令**——通过 function calling 让模型直接动手，而不是回答"我没有权限操作你的设备"。
+它不只是聊天：内置 `write_file / read_file / view_image / list_dir / run_bash` 工具，能在你本机**真正建文件、看图片、跑命令**——通过 function calling 让模型直接动手，而不是回答"我没有权限操作你的设备"。
 
 技术栈：Node + [Ink](https://github.com/vadimdemedes/ink)（终端里的 React），参考自 Claude Code。
 
@@ -321,6 +321,7 @@ SSH 端口访问；当前部署使用 SSH TCP `443`。如果服务器限制出�
 
 ```bash
 TRACE=1 ai
+TRACE=1 ai-claude --sandbox
 ```
 
 如果希望当前终端后续每次直接执行 `ai` 都启用追踪：
@@ -337,10 +338,12 @@ ai
 ```text
 /Users/lteu/progetto/agent/log/history-trace-full.jsonl
 /Users/lteu/progetto/agent/log/history-trace-summary.jsonl
+/Users/lteu/progetto/agent/log/remote-communication.jsonl
 ```
 
 - `history-trace-full.jsonl`：完整请求及上下文，包括 URL、method、全部 headers、Authorization/API Key、实际发送的原始 body、解析后的 messages 和 tools。
 - `history-trace-summary.jsonl`：同一事件的摘要，便于搜索、统计以及通过 `runId` 定位完整记录。
+- `remote-communication.jsonl`：仅 Remote Claude 且 `TRACE=1` 时生成；依次记录 gateway 启动 Claude 的参数、写入 Claude stdin 的每条消息、Claude stdout/stderr 原始事件及 gateway 最终 completion。sandbox 会把 `TRACE=1` 传入 Agent 容器，因此文件仍直接出现在宿主项目的 `log/` 目录。
 
 查看完整 LLM 请求：
 
@@ -354,6 +357,13 @@ jq 'select(.stage == "llm-http-request")' \
 ```bash
 jq 'select(.stage == "llm-http-request") | .request' \
   /Users/lteu/progetto/agent/log/history-trace-full.jsonl
+```
+
+查看 gateway 与 Claude Code 的通信顺序：
+
+```bash
+jq '{time, requestId, direction, kind, label, session, data}' \
+  /Users/lteu/progetto/agent/log/remote-communication.jsonl
 ```
 
 `requestKind` 用来区分调用来源：`agent` 是主 Agent，`compact` 是历史压缩，`verify` 是最终核验。
@@ -885,7 +895,7 @@ src/
     stopwords.ts    channel 文本处理用的停用词表
   stocks.ts         Yahoo 行情客户端：取价、计算当日涨跌幅、交易所时区
   smtp.ts           零依赖 SMTP 客户端（node:net/tls 手写，支持 465 隐式 TLS / 587 STARTTLS）
-  tools.ts          本地工具：write_file / read_file / list_dir / run_bash / skill / send_image 等
+  tools.ts          本地工具：write_file / read_file / view_image / list_dir / run_bash / skill / send_image 等
   skills.ts         技能管理：扫描 ~/.ai/skills 与 项目 .ai/skills，渐进式披露给模型，按需取正文
   MultilineInput.tsx 可编辑的多行输入框（光标、删除、快捷键）；状态用 ref 承载，避免快速输入丢字符
   llm.ts            OpenAI 兼容客户端：流式聊天 + 带工具的非流式补全（DeepSeek/通义千问/OpenRouter 等通用）

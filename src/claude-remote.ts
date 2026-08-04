@@ -37,6 +37,7 @@ function printHelp(): void {
   AI_CLAUDE_SANDBOX_IMAGE       sandbox 镜像名（默认 ai-claude-sandbox:local）
   AI_CLAUDE_SANDBOX_NETWORK     egress（默认，可访问公网）或 isolated（禁用公网）
   AI_CLAUDE_SANDBOX_DNS         egress DNS，逗号分隔（默认 1.1.1.1；system 表示跟随 Docker）
+  TRACE=1                       记录 HTTP 请求及 gateway ↔ Claude 原始通信到工作区 log/
 
 Agent、工作目录、Read/Edit/Bash 全部在本机；remote 使用自己的 ~/.claude
 认证完成模型推理，只返回文本或工具调用。
@@ -158,7 +159,7 @@ function ensureDocker(): void {
 }
 
 function sandboxEnv(): Record<string, string> {
-  return {
+  const env = {
     AI_API_KEY: 'ssh-local-only',
     AI_MODEL: model,
     AI_BASE_URL: 'http://claude-gateway:8791/v1',
@@ -167,6 +168,8 @@ function sandboxEnv(): Record<string, string> {
     HOME: '/home/agent',
     TERM: process.env.TERM ?? 'xterm-256color',
   }
+  if (process.env.TRACE === '1') return { ...env, TRACE: '1' }
+  return env
 }
 
 function sanitizedLocalEnv(baseURL: string): NodeJS.ProcessEnv {

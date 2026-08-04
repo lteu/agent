@@ -16,6 +16,7 @@ async function consume<T>(generator: AsyncGenerator<unknown, T, unknown>): Promi
 
 test('Remote Claude session 首步发全量，后续 --resume 只发增量消息', async t => {
   const bodies: any[] = []
+  const remoteTraces: any[] = []
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = []
     for await (const chunk of req) chunks.push(Buffer.from(chunk))
@@ -23,6 +24,18 @@ test('Remote Claude session 首步发全量，后续 --resume 只发增量消息
     bodies.push(body)
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     res.write(`data: ${JSON.stringify({ choices: [], ai_remote_session: body.ai_remote_session })}\n\n`)
+    if (body.ai_remote_trace) {
+      res.write(`data: ${JSON.stringify({
+        choices: [],
+        ai_remote_trace: {
+          requestId: `request-${bodies.length}`,
+          direction: 'gateway->claude',
+          kind: 'stdin',
+          label: body.ai_remote_session.mode,
+          data: { test: true },
+        },
+      })}\n\n`)
+    }
     if (body.ai_remote_session.mode === 'start') {
       res.write(`data: ${JSON.stringify({
         choices: [{
@@ -61,6 +74,7 @@ test('Remote Claude session 首步发全量，后续 --resume 只发增量消息
     provider: 'Claude via remote',
     baseURL: `http://127.0.0.1:${address.port}/v1`,
     remoteClaudeSession: session,
+    onRemoteTrace: event => remoteTraces.push(event),
   }
   const first = await consume(streamCompletion(history, options))
   history.push({ role: 'assistant', content: '', tool_calls: first.toolCalls })
@@ -75,6 +89,8 @@ test('Remote Claude session 首步发全量，后续 --resume 只发增量消息
   assert.equal(bodies[1].ai_remote_session.id, bodies[0].ai_remote_session.id)
   assert.equal(bodies[1].ai_remote_session.mode, 'resume')
   assert.equal(bodies[1].ai_remote_session.step, 1)
+  assert.equal(bodies[0].ai_remote_trace, true)
+  assert.deepEqual(remoteTraces.map(trace => trace.label), ['start', 'resume'])
 })
 
 test('gateway 未确认 session 协议时拒绝提交 cursor', async t => {

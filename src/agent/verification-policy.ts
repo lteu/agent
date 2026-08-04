@@ -36,6 +36,14 @@ function extension(path: string): string {
 export function classifyVerificationCommand(command: string): VerificationCheckKind | null {
   const normalized = command.replace(/\\\s*\n/g, ' ').replace(/\s+/g, ' ').trim()
   if (!normalized) return null
+  const usesEsbuildApi =
+    /require\s*\(\s*['"]esbuild['"]\s*\)|(?:import|from)\b[^;]*['"]esbuild['"]/i.test(normalized)
+  const invokesEsbuildBuild =
+    /(?:\.\s*)?build(?:Sync)?\s*\(/i.test(normalized)
+  const invokesEsbuildTransform =
+    /(?:\.\s*)?transform(?:Sync)?\s*\(/i.test(normalized)
+  const invokesEsbuildCli =
+    /(?:^|[;&|]\s*)(?:['"]?[^\s'"]*\/)?esbuild['"]?\s+(?!--version(?:\s|$))/i.test(normalized)
 
   if (
     /(?:^|[;&|]\s*)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|test:[\w:-]+)(?:\s|$)/i.test(normalized) ||
@@ -58,13 +66,16 @@ export function classifyVerificationCommand(command: string): VerificationCheckK
 
   if (
     /(?:^|[;&|]\s*)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build(?:\s|$)/i.test(normalized) ||
-    /(?:^|[;&|]\s*)(?:cargo\s+build|go\s+build|mvn\s+package|gradle\s+build)(?:\s|$)/i.test(normalized)
+    /(?:^|[;&|]\s*)(?:cargo\s+build|go\s+build|mvn\s+package|gradle\s+build)(?:\s|$)/i.test(normalized) ||
+    (usesEsbuildApi && invokesEsbuildBuild) ||
+    invokesEsbuildCli
   ) return 'build'
 
   if (
     /(?:^|[;&|]\s*)node\s+--check(?:\s|$)/i.test(normalized) ||
     /(?:^|[;&|]\s*)python(?:3)?\s+-m\s+py_compile(?:\s|$)/i.test(normalized) ||
-    /(?:^|[;&|]\s*)(?:bash|sh)\s+-n(?:\s|$)/i.test(normalized)
+    /(?:^|[;&|]\s*)(?:bash|sh)\s+-n(?:\s|$)/i.test(normalized) ||
+    (usesEsbuildApi && invokesEsbuildTransform)
   ) return 'syntax'
 
   return null

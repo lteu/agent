@@ -18,12 +18,21 @@ export type RawToolCall = {
   function: { name: string; arguments: string }
 }
 
+/** 本地工具专用的多模态结果；remote gateway 会把它转换成 Claude image block。 */
+export type LocalToolContentBlock = {
+  type: 'image'
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+  data: string
+}
+
 export type ChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | null
   // assistant 想调用工具时带上；tool 角色回结果时带 tool_call_id
   tool_calls?: RawToolCall[]
   tool_call_id?: string
+  /** 不属于 OpenAI 标准字段；仅发给受控 remote Claude gateway。 */
+  ai_local_tool_content?: LocalToolContentBlock[]
 }
 
 /**
@@ -35,6 +44,17 @@ export function messagesForRequest(messages: ChatMessage[]): ChatMessage[] {
     if (message.role !== 'assistant') return true
     if (message.tool_calls?.length) return true
     return Boolean(message.content?.trim())
+  })
+}
+
+function openAIMessagesForRequest(
+  messages: ChatMessage[],
+  preserveLocalToolContent: boolean,
+): ChatMessage[] {
+  return messagesForRequest(messages).map(message => {
+    if (preserveLocalToolContent || !message.ai_local_tool_content) return message
+    const { ai_local_tool_content: _privateContent, ...standardMessage } = message
+    return standardMessage
   })
 }
 
@@ -51,6 +71,17 @@ export type StreamOptions = {
   onUsage?: (usage: TokenUsage) => void
   /** Stateful Claude Code gateway session. Other OpenAI-compatible providers ignore this. */
   remoteClaudeSession?: RemoteClaudeSession
+  /** TRACE=1 时接收 gateway ↔ Claude Code 的原始通信事件。 */
+  onRemoteTrace?: (event: RemoteCommunicationTrace) => void
+}
+
+export type RemoteCommunicationTrace = {
+  requestId?: string
+  direction: 'gateway->claude' | 'claude->gateway' | 'gateway'
+  kind: 'spawn' | 'stdin' | 'stdout' | 'stderr' | 'completion'
+  label?: string
+  session?: { id: string; mode: 'start' | 'resume'; step: number }
+  data: unknown
 }
 
 export type RemoteClaudeSession = {
@@ -96,8 +127,11 @@ type RemoteSessionRequest = {
 function prepareRemoteSessionRequest(
   messages: ChatMessage[],
   session: RemoteClaudeSession | undefined,
+  preserveLocalToolContent = false,
 ): { request?: RemoteSessionRequest; messages: ChatMessage[] } {
-  if (!session || session.disabled) return { messages: messagesForRequest(messages) }
+  if (!session || session.disabled) {
+    return { messages: openAIMessagesForRequest(messages, preserveLocalToolContent) }
+  }
   if (!session.active) {
     return {
       request: { id: session.id, mode: 'start', step: session.step },
@@ -188,7 +222,16 @@ function toAnthropicPayload(messages: ChatMessage[]): { system?: string; message
     }
 
     if (m.role === 'tool') {
-      const block = { type: 'tool_result', tool_use_id: m.tool_call_id, content: m.content ?? '' }
+      const toolContent = m.ai_local_tool_content?.length
+        ? [
+            ...(m.content ? [{ type: 'text', text: m.content }] : []),
+            ...m.ai_local_tool_content.map(block => ({
+              type: 'image',
+              source: { type: 'base64', media_type: block.mediaType, data: block.data },
+            })),
+          ]
+        : m.content ?? ''
+      const block = { type: 'tool_result', tool_use_id: m.tool_call_id, content: toolContent }
       const last = out[out.length - 1]
       if (last && last.role === 'user' && Array.isArray(last.content) && last.content[0]?.type === 'tool_result') {
         last.content.push(block)
@@ -497,9 +540,10 @@ export async function chatComplete(
   const url = `${baseURL}/chat/completions`
   const body = {
     model: opts.model,
-    messages: messagesForRequest(messages),
+    messages: openAIMessagesForRequest(messages, isRemoteClaudeProvider(opts.provider)),
     stream: false,
     ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
+    ...(opts.onRemoteTrace ? { ai_remote_trace: true } : {}),
   }
   const headers = {
     'Content-Type': 'application/json',
@@ -520,6 +564,11 @@ export async function chatComplete(
   }
 
   const json = await res.json()
+  if (Array.isArray(json?.ai_remote_trace)) {
+    for (const event of json.ai_remote_trace) {
+      opts.onRemoteTrace?.(event as RemoteCommunicationTrace)
+    }
+  }
   const msg = json?.choices?.[0]?.message ?? {}
   const usage = tokenUsageFromOpenAI(json?.usage)
   opts.onUsage?.(usage)
@@ -607,7 +656,11 @@ export async function* streamCompletion(
 
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const url = `${baseURL}/chat/completions`
-  const remoteSession = prepareRemoteSessionRequest(messages, opts.remoteClaudeSession)
+  const remoteSession = prepareRemoteSessionRequest(
+    messages,
+    opts.remoteClaudeSession,
+    isRemoteClaudeProvider(opts.provider),
+  )
   const body = {
     model: opts.model,
     messages: remoteSession.messages,
@@ -615,6 +668,7 @@ export async function* streamCompletion(
     stream_options: { include_usage: true },
     ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
     ...(remoteSession.request ? { ai_remote_session: remoteSession.request } : {}),
+    ...(opts.onRemoteTrace ? { ai_remote_trace: true } : {}),
   }
   const headers = {
     'Content-Type': 'application/json',
@@ -758,6 +812,10 @@ export async function* streamCompletion(
         ) {
           remoteSessionAck = { id: ack.id, mode: ack.mode, step: ack.step }
         }
+        continue
+      }
+      if (json?.ai_remote_trace) {
+        opts.onRemoteTrace?.(json.ai_remote_trace as RemoteCommunicationTrace)
         continue
       }
       if (typeof json?.ai_remote_context?.content === 'string') {

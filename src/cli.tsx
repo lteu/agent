@@ -182,7 +182,8 @@ if (argv[0] === '--help' || argv[0] === '-h') {
 
 上下文追踪:
   TRACE=1 ai              同时写入 log/history-trace-full.jsonl 和
-                          log/history-trace-summary.jsonl（完整日志可能含敏感内容）
+                          log/history-trace-summary.jsonl；Remote Claude 额外写入
+                          log/remote-communication.jsonl（完整日志可能含敏感内容）
 
 验证级别（AI_VERIFY_LEVEL）:
   0 = 默认：本地确定性校验，不追加模型请求

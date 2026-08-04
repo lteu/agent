@@ -5,8 +5,6 @@ import http from 'node:http'
 import readline from 'node:readline'
 
 const MCP_PREFIX = 'mcp__local_agent__'
-const FINAL_MARKER = '<LOCAL_AGENT_FINAL>'
-const MAX_PROTOCOL_CONTINUES = 2
 const REMOTE_BUILTIN_TOOLS = new Set(['WebSearch', 'WebFetch'])
 const REMOTE_BUILTIN_TOOL_LIST = [...REMOTE_BUILTIN_TOOLS].join(',')
 
@@ -163,6 +161,11 @@ the next JSON conversation. Never claim a local tool is unavailable. Never guess
 tool results. If the latest tool-role message already contains the needed result, use it and
 continue.
 
+When the user asks to inspect or analyze a screenshot/image, call the proxied view_image tool and
+use the actual image block returned in LOCAL_AGENT_IMAGE_RESULT. Never read an image with read_file,
+install OCR as a substitute, or infer unseen pixels from the filename or user description. If
+view_image fails, do not make image-dependent edits until visual evidence is available.
+
 For public online research, prefer the built-in WebSearch and WebFetch tools. They run inside this
 remote Claude Code session and do not expose the user's local HOME, SSH credentials, or sandbox
 network address. Use the proxied local web_fetch or run_bash internet access only when the remote
@@ -175,14 +178,12 @@ During multi-step work, keep the user informed when a meaningful finding changes
 next step. Put one concise, factual progress sentence in the same assistant response as the next
 tool call, for example: "Found exact snapshots for both dates. Let me pull the menu content from
 each." Do not narrate every routine action, repeat tool parameters, or emit filler such as "I am
-working on it." A progress sentence is not a final answer and must not use ${FINAL_MARKER}.
+working on it." A progress sentence is not a final answer.
 
 A text-only response ends the LOCAL agent turn immediately. Therefore never return a progress-only
 message that merely says you will start, inspect, search, calculate, write, or continue later. In
 the same response, either call the required local tool, or provide the completed, self-contained
-answer. Prefix a genuinely complete text-only answer with exactly ${FINAL_MARKER}; the gateway
-removes this protocol marker before returning it to the user. Do not use the marker when work still
-remains.`
+answer.`
 
   function json(res, status, body) {
     const payload = `${JSON.stringify(body)}\n`
@@ -295,8 +296,60 @@ remains.`
     }
   }
 
+  function localImageBlocks(message) {
+    if (!Array.isArray(message?.ai_local_tool_content)) return []
+    return message.ai_local_tool_content.filter(
+      block =>
+        block?.type === 'image' &&
+        ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(block.mediaType) &&
+        typeof block.data === 'string' &&
+        block.data.length > 0,
+    )
+  }
+
+  function imageMessageBlocks(attachments) {
+    return attachments.flatMap(attachment =>
+      attachment.images.flatMap((image, index) => [
+        {
+          type: 'text',
+          text:
+            `LOCAL_AGENT_IMAGE_RESULT tool_use_id=${attachment.toolUseId} ` +
+            `image=${index + 1}/${attachment.images.length}. ` +
+            'The next content block is the authoritative local image. Analyze its actual pixels; ' +
+            'do not use OCR installation or infer the image from its filename.',
+        },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: image.mediaType, data: image.data },
+        },
+      ]),
+    )
+  }
+
+  function initialConversationInput(messages) {
+    const attachments = []
+    const sanitizedMessages = (Array.isArray(messages) ? messages : []).map(message => {
+      const images = localImageBlocks(message)
+      if (images.length) {
+        attachments.push({ toolUseId: message.tool_call_id ?? 'unknown', images })
+      }
+      const { ai_local_tool_content: _content, ...sanitized } = message ?? {}
+      return images.length
+        ? {
+            ...sanitized,
+            ai_local_images: images.map(image => ({ media_type: image.mediaType })),
+          }
+        : sanitized
+    })
+    return [
+      { type: 'text', text: JSON.stringify({ messages: sanitizedMessages }) },
+      ...imageMessageBlocks(attachments),
+    ]
+  }
+
   function resumeInput(messages) {
     const updates = []
+    const attachments = []
     const toolNames = new Map()
     for (const message of Array.isArray(messages) ? messages : []) {
       if (message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue
@@ -312,12 +365,17 @@ remains.`
             code: 'REMOTE_SESSION_INVALID',
           })
         }
+        const images = localImageBlocks(message)
         updates.push({
           type: 'local_tool_result',
           tool_use_id: message.tool_call_id,
           tool_name: toolNames.get(message.tool_call_id) ?? 'unknown',
           content: typeof message.content === 'string' ? message.content : '',
+          ...(images.length
+            ? { images: images.map(image => ({ media_type: image.mediaType })) }
+            : {}),
         })
+        if (images.length) attachments.push({ toolUseId: message.tool_call_id, images })
         continue
       }
       if ((message?.role === 'user' || message?.role === 'system') && typeof message.content === 'string') {
@@ -333,19 +391,29 @@ remains.`
       type: 'user',
       message: {
         role: 'user',
-        content: [{
-          type: 'text',
-          text:
-            'LOCAL_AGENT_RESUME_UPDATE\n' +
-            'These are authoritative incremental updates from the local agent. Use them to continue; ' +
-            'do not repeat completed local calls.\n' +
-            JSON.stringify(updates),
-        }],
+        content: [
+          {
+            type: 'text',
+            text:
+              'LOCAL_AGENT_RESUME_UPDATE\n' +
+              'These are authoritative incremental updates from the local agent. Use them to continue; ' +
+              'do not repeat completed local calls.\n' +
+              JSON.stringify(updates),
+          },
+          ...imageMessageBlocks(attachments),
+        ],
       },
     }
   }
 
-  function callClaude(body, remoteSession, signal, onProgress = () => {}, onUsage = () => {}) {
+  function callClaude(
+    body,
+    remoteSession,
+    signal,
+    onProgress = () => {},
+    onUsage = () => {},
+    onTrace = () => {},
+  ) {
     return new Promise((resolve, reject) => {
       const tools = mcpTools(Array.isArray(body.tools) ? body.tools : [])
       const localToolNames = new Set(tools.map(tool => tool.name))
@@ -399,16 +467,25 @@ remains.`
       )
       args.push('--')
 
+      const childEnv = {
+        HOME: '/root',
+        USER: 'root',
+        LOGNAME: 'root',
+        PATH: '/usr/local/bin:/usr/bin:/bin',
+        LANG: 'C.UTF-8',
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      }
+
+      onTrace({
+        direction: 'gateway',
+        kind: 'spawn',
+        session: remoteSession,
+        data: { executable: claudeBin, cwd: claudeCwd, args, env: childEnv },
+      })
+
       const child = spawn(claudeBin, args, {
         cwd: claudeCwd,
-        env: {
-          HOME: '/root',
-          USER: 'root',
-          LOGNAME: 'root',
-          PATH: '/usr/local/bin:/usr/bin:/bin',
-          LANG: 'C.UTF-8',
-          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-        },
+        env: childEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       const stderr = []
@@ -418,7 +495,6 @@ remains.`
       let remoteToolTurnFinishing = false
       let pendingText = null
       let pendingToolCompletion = null
-      let protocolContinues = 0
       const pendingRemoteTools = new Map()
       const emittedThinking = new Set()
       const remoteResearch = []
@@ -433,6 +509,16 @@ remains.`
           const count = Number(value?.[key])
           if (Number.isFinite(count) && count >= 0) usage[key] += count
         }
+      }
+      const writeClaudeInput = (label, message) => {
+        onTrace({
+          direction: 'gateway->claude',
+          kind: 'stdin',
+          label,
+          session: remoteSession,
+          data: message,
+        })
+        child.stdin.write(`${JSON.stringify(message)}\n`)
       }
       const terminateChild = () => {
         if (child.exitCode != null || child.signalCode != null) return
@@ -461,6 +547,12 @@ remains.`
         signal?.removeEventListener('abort', onAbort)
         const diagnostic = Buffer.concat(stderr).toString('utf8').trim()
         if (diagnostic) console.error(`claude stderr: ${diagnostic.slice(0, 2000)}`)
+        onTrace({
+          direction: 'gateway',
+          kind: 'completion',
+          session: remoteSession,
+          data: value,
+        })
         terminateChild()
         resolve(value)
       }
@@ -469,6 +561,15 @@ remains.`
         settled = true
         clearTimeout(idleTimer)
         signal?.removeEventListener('abort', onAbort)
+        onTrace({
+          direction: 'gateway',
+          kind: 'completion',
+          session: remoteSession,
+          data: {
+            failed: true,
+            error: { name: error?.name, code: error?.code, message: error?.message ?? String(error) },
+          },
+        })
         terminateChild()
         reject(error)
       }
@@ -478,49 +579,33 @@ remains.`
         return
       }
       signal?.addEventListener('abort', onAbort, { once: true })
-      child.stderr.on('data', chunk => stderr.push(chunk))
+      child.stderr.on('data', chunk => {
+        stderr.push(chunk)
+        onTrace({
+          direction: 'claude->gateway',
+          kind: 'stderr',
+          session: remoteSession,
+          data: chunk.toString('utf8'),
+        })
+      })
       const lines = readline.createInterface({ input: child.stdout })
+      lines.on('line', line => {
+        onTrace({
+          direction: 'claude->gateway',
+          kind: 'stdout',
+          session: remoteSession,
+          data: line,
+        })
+      })
       resetIdleTimer()
       const sendConversation = () => {
-        child.stdin.write(
-          `${JSON.stringify({
-            type: 'user',
-            message: {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    messages: Array.isArray(body.messages) ? body.messages : [],
-                  }),
-                },
-              ],
-            },
-          })}\n`,
-        )
-      }
-      const continueIncompleteResponse = () => {
-        protocolContinues += 1
-        pendingText = null
-        pendingToolCompletion = null
-        child.stdin.write(
-          `${JSON.stringify({
-            type: 'user',
-            message: {
-              role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text:
-                    'PROTOCOL_CONTINUE: Your previous response was only a progress update or did ' +
-                    `not mark a completed answer with ${FINAL_MARKER}. Do the promised work now. ` +
-                    'Call the required local tool in this response. If the task is already fully ' +
-                    `complete, return the self-contained final answer prefixed with ${FINAL_MARKER}.`,
-                },
-              ],
-            },
-          })}\n`,
-        )
+        writeClaudeInput('initial-conversation', {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: initialConversationInput(body.messages),
+          },
+        })
       }
       lines.on('line', line => {
         let event
@@ -802,33 +887,15 @@ remains.`
           return
         }
 
-        const markerPattern = /^\s*<LOCAL_AGENT_FINAL>\s*/
-        if (markerPattern.test(completionText)) {
-          finish({
-            content: completionText.replace(markerPattern, ''),
-            toolCalls: [],
-            finishReason: 'stop',
-            usage: { ...usage },
-          })
-          return
-        }
-        if (protocolContinues < MAX_PROTOCOL_CONTINUES) {
-          // An unmarked end_turn is not the final answer: the protocol will ask
-          // Claude to continue. Preserve its text before doing so, since it can
-          // contain evidence or conclusions gathered so far.
-          onProgress({
-            phase: 'info',
-            name: 'remote-status',
-            summary: `● ${completionText.trim()}`,
-          })
-          continueIncompleteResponse()
-          return
-        }
-        fail(
-          new Error(
-            `Claude returned ${MAX_PROTOCOL_CONTINUES + 1} text responses without completing the task`,
-          ),
-        )
+        // A non-empty end_turn is authoritative. Requiring a private completion marker caused a
+        // second near-identical generation and invalidated most of the prompt cache. Strip the
+        // legacy marker for sessions created by older gateways, but never ask Claude to rewrite.
+        finish({
+          content: completionText.replace(/^\s*<LOCAL_AGENT_FINAL>\s*/, ''),
+          toolCalls: [],
+          finishReason: 'stop',
+          usage: { ...usage },
+        })
       })
       child.once('error', fail)
       child.once('exit', code => {
@@ -841,17 +908,15 @@ remains.`
         }
       })
       if (remoteSession?.mode === 'resume') {
-        child.stdin.write(`${JSON.stringify(resumeInput(body.messages))}\n`)
+        writeClaudeInput('resume-update', resumeInput(body.messages))
       } else {
-        child.stdin.write(
-          `${JSON.stringify({
-            type: 'user',
-            message: {
-              role: 'user',
-              content: [{ type: 'text', text: 'MCP_GATEWAY_HANDSHAKE' }],
-            },
-          })}\n`,
-        )
+        writeClaudeInput('handshake', {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'MCP_GATEWAY_HANDSHAKE' }],
+          },
+        })
       }
     })
   }
@@ -938,6 +1003,11 @@ remains.`
     res.write(`data: ${JSON.stringify({ choices: [], ai_remote_session: session })}\n\n`)
   }
 
+  function writeRemoteTrace(res, trace) {
+    if (res.writableEnded || res.destroyed) return
+    res.write(`data: ${JSON.stringify({ choices: [], ai_remote_trace: trace })}\n\n`)
+  }
+
   function writeUsage(res, usage) {
     if (res.writableEnded || res.destroyed) return
     res.write(`data: ${JSON.stringify({ choices: [], usage })}\n\n`)
@@ -993,6 +1063,7 @@ remains.`
     let remoteSessionAcquired = false
     let remoteSessionCompleted = false
     let remoteSessionPendingToolUseIds = []
+    const remoteTraceEvents = []
     try {
       body = await readBody(req)
       remoteSession = remoteSessionFor(body)
@@ -1036,6 +1107,13 @@ remains.`
         body.stream
           ? usage => writeUsage(res, openAIUsage(usage))
           : undefined,
+        body.ai_remote_trace === true
+          ? trace => {
+              const event = { requestId, ...trace }
+              if (body.stream) writeRemoteTrace(res, event)
+              else remoteTraceEvents.push(event)
+            }
+          : undefined,
       )
       const choice = choiceFor(completion)
       const usage = openAIUsage(completion.usage)
@@ -1057,6 +1135,7 @@ remains.`
           choices: [{ index: 0, ...choice }],
           usage,
           ...(remoteSession ? { ai_remote_session: remoteSession } : {}),
+          ...(body.ai_remote_trace === true ? { ai_remote_trace: remoteTraceEvents } : {}),
           ...(completion.remoteContext
             ? { ai_remote_context: { content: completion.remoteContext } }
             : {}),

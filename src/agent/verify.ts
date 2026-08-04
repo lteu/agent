@@ -149,6 +149,7 @@ ${historyText}
         signal: deps.signal,
         onRequest: deps.onRequest,
         onUsage: deps.onUsage,
+        onRemoteTrace: deps.onRemoteTrace,
       },
     )
     return parseVerifyJSON(content)

@@ -31,6 +31,60 @@ test('工具输入在执行前校验并返回结构化错误', async () => {
   assert.equal(result.error?.userMessage, '工具参数无效')
 })
 
+test('图片不能被 read_file 当乱码读取，view_image 返回独立多模态内容', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-view-image-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'pixel.png')
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  )
+  writeFileSync(path, png)
+
+  const textRead = await runTool('read_file', { path }, context())
+  assert.equal(textRead.ok, false)
+  assert.equal(textRead.error?.code, 'image_requires_view_image')
+  assert.equal(textRead.output.includes('�PNG'), false)
+
+  const imageRead = await runTool('view_image', { path }, context())
+  assert.equal(imageRead.ok, true)
+  assert.equal(imageRead.evidence?.kind, 'image_read')
+  assert.equal(imageRead.modelContent?.[0].mediaType, 'image/png')
+  assert.equal(imageRead.modelContent?.[0].data, png.toString('base64'))
+  assert.equal(imageRead.output.includes(png.toString('base64')), false)
+})
+
+test('read_file 拒绝未知二进制内容', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-binary-read-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'sample.bin')
+  writeFileSync(path, Buffer.from([0, 1, 2, 0xff, 0xfe]))
+
+  const result = await runTool('read_file', { path }, context())
+  assert.equal(result.ok, false)
+  assert.equal(result.error?.code, 'binary_file')
+})
+
+test('看图任务在获得真实像素前阻止结构化文件修改', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-visual-evidence-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const imagePath = join(dir, 'pixel.png')
+  const outputPath = join(dir, 'result.txt')
+  writeFileSync(
+    imagePath,
+    Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+  )
+  const ctx = { ...context(), visualEvidence: { required: true, available: false } }
+
+  const blocked = await runTool('write_file', { path: outputPath, content: 'guess' }, ctx)
+  assert.equal(blocked.ok, false)
+  assert.equal(blocked.error?.code, 'visual_evidence_required')
+
+  assert.equal((await runTool('view_image', { path: imagePath }, ctx)).ok, true)
+  assert.equal(ctx.visualEvidence.available, true)
+  assert.equal((await runTool('write_file', { path: outputPath, content: 'evidence' }, ctx)).ok, true)
+})
+
 test('run_agent 暴露恢复 ID 和独立预算参数', () => {
   const schema = TOOL_SCHEMAS
     .find(tool => tool.function.name === 'run_agent')?.function.parameters as any

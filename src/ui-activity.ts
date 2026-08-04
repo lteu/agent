@@ -23,7 +23,7 @@ export function activityCategory(
 ): keyof ActivityCounts | 'remote-web' | 'subagent' {
   if (name === 'WebSearch' || name === 'WebFetch') return 'remote-web'
   if (name === 'run_agent') return 'subagent'
-  if (['read_file', 'excel_read', 'pdf_read', 'powerpoint_read', 'term_read'].includes(name)) {
+  if (['read_file', 'view_image', 'excel_read', 'pdf_read', 'powerpoint_read', 'term_read'].includes(name)) {
     return 'reads'
   }
   if (name === 'list_dir' || name === 'term_list') return 'directories'
@@ -77,7 +77,7 @@ export function activeToolPresentation(
       ...(detail?.trim() ? { detail: `$ ${detail.trim()}` } : {}),
     }
   }
-  if (['read_file', 'excel_read', 'pdf_read', 'powerpoint_read', 'term_read'].includes(name)) {
+  if (['read_file', 'view_image', 'excel_read', 'pdf_read', 'powerpoint_read', 'term_read'].includes(name)) {
     return { label: 'Reading 1 file…' }
   }
   return { label: summary }

@@ -4,13 +4,13 @@
 //
 // 默认关闭；设置 TRACE=1 后启用。完整日志可能包含文件内容、工具结果等敏感信息。
 
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync } from 'node:fs'
 import { appendFile, mkdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import type { ChatMessage } from '../llm.js'
-import type { LlmRequestSnapshot } from '../llm.js'
+import type { LlmRequestSnapshot, RemoteCommunicationTrace } from '../llm.js'
 
 export type HistoryTraceContext = {
   runId: string
@@ -231,6 +231,24 @@ function summarizeMessage(message: ChatMessage, index: number) {
   }
 }
 
+function messageForHistoryTrace(message: ChatMessage): Record<string, unknown> {
+  if (!message.ai_local_tool_content?.length) return message
+  return {
+    ...message,
+    ai_local_tool_content: message.ai_local_tool_content.map(block => ({
+      type: block.type,
+      mediaType: block.mediaType,
+      base64Characters: block.data.length,
+      data: '[omitted from repeated history snapshot; see llm-http-request/remote communication trace]',
+    })),
+  }
+}
+
+function appendSecureJsonl(path: string, value: unknown): void {
+  appendFileSync(path, JSON.stringify(value) + '\n', { encoding: 'utf8', mode: 0o600 })
+  chmodSync(path, 0o600)
+}
+
 /** 写入失败不能影响主对话；错误尽力另记到 history-trace-errors.log。 */
 export function traceHistory(
   context: HistoryTraceContext,
@@ -253,13 +271,13 @@ export function traceHistory(
 
   try {
     mkdirSync(logDir, { recursive: true })
-    appendFileSync(
+    appendSecureJsonl(
       join(logDir, 'history-trace-full.jsonl'),
-      JSON.stringify({ ...base, messages: history }) + '\n',
+      { ...base, messages: history.map(messageForHistoryTrace) },
     )
-    appendFileSync(
+    appendSecureJsonl(
       join(logDir, 'history-trace-summary.jsonl'),
-      JSON.stringify({
+      {
         ...base,
         estimatedCharacters: history.reduce((sum, message) => {
           const toolCharacters = (message.tool_calls ?? []).reduce(
@@ -269,7 +287,7 @@ export function traceHistory(
           return sum + (message.content?.length ?? 0) + toolCharacters
         }, 0),
         messages: history.map(summarizeMessage),
-      }) + '\n',
+      },
     )
   } catch (error) {
     try {
@@ -315,20 +333,20 @@ export function traceLlmRequest(
 
   try {
     mkdirSync(logDir, { recursive: true })
-    appendFileSync(
+    appendSecureJsonl(
       join(logDir, 'history-trace-full.jsonl'),
-      JSON.stringify({ ...base, request, parsedBody }) + '\n',
+      { ...base, request, parsedBody },
     )
-    appendFileSync(
+    appendSecureJsonl(
       join(logDir, 'history-trace-summary.jsonl'),
-      JSON.stringify({
+      {
         ...base,
         model: parsedBody.model,
         stream: parsedBody.stream,
         messageCount: messages.length,
         toolCount: tools.length,
         messageRoles: messages.map((message: any) => message?.role ?? 'unknown'),
-      }) + '\n',
+      },
     )
   } catch (error) {
     try {
@@ -336,6 +354,45 @@ export function traceLlmRequest(
       appendFileSync(
         join(logDir, 'history-trace-errors.log'),
         `[${new Date().toISOString()}] ${String(error)}\n`,
+      )
+    } catch {
+      // trace 永远不能打断用户任务
+    }
+  }
+}
+
+/**
+ * TRACE=1 专用：记录远端 gateway 与 Claude Code 之间的原始双向通信。
+ * 该文件可能包含完整 prompt、工具参数/结果和模型输出，禁止默认开启。
+ */
+export function traceRemoteCommunication(
+  context: HistoryTraceContext,
+  event: RemoteCommunicationTrace,
+): void {
+  if (process.env.TRACE !== '1') return
+  const logDir = getLogDir()
+  const logPath = join(logDir, 'remote-communication.jsonl')
+  try {
+    mkdirSync(logDir, { recursive: true })
+    appendFileSync(
+      logPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        time: new Date().toISOString(),
+        pid: process.pid,
+        ...context,
+        stage: 'remote-communication',
+        ...event,
+      }) + '\n',
+      { encoding: 'utf8', mode: 0o600 },
+    )
+    chmodSync(logPath, 0o600)
+  } catch (error) {
+    try {
+      mkdirSync(logDir, { recursive: true })
+      appendFileSync(
+        join(logDir, 'history-trace-errors.log'),
+        `[${new Date().toISOString()}] remote communication: ${String(error)}\n`,
       )
     } catch {
       // trace 永远不能打断用户任务

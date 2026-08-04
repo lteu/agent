@@ -124,56 +124,57 @@ lines.on('line', line => {
       })
       return
     }
-    emitText("I'll search for the exact source first.")
+    send({
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'thinking',
+            thinking: 'Compare both snapshots before choosing the next source.',
+          },
+          {
+            type: 'text',
+            text:
+              "I'll search for the exact source first. " +
+              'Found exact snapshots for both dates. Let me pull the menu content from each. ' +
+              'The source contains evidence that must remain visible before the next fetch. ' +
+              'x'.repeat(1_100) +
+              ' TAIL_FACT_MUST_REMAIN_VISIBLE',
+          },
+          {
+            type: 'tool_use',
+            id: 'remote_search_1',
+            name: 'WebSearch',
+            input: { query: 'test' },
+          },
+        ],
+      },
+    })
+    send({
+      type: 'stream_event',
+      event: {
+        type: 'message_delta',
+        delta: { stop_reason: 'tool_use' },
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    })
+    setTimeout(() => {
+      send({
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'remote_search_1',
+            content: 'REMOTE_RESULT_HEAD ' + 'r'.repeat(2_500) + ' REMOTE_RESULT_TAIL',
+          }],
+        },
+        tool_use_result: { searchCount: 1, durationSeconds: 1.2 },
+      })
+      emitText('STREAM_OK')
+    }, 1200)
     return
   }
-  send({
-    type: 'assistant',
-    message: {
-      content: [
-        {
-          type: 'thinking',
-          thinking: 'Compare both snapshots before choosing the next source.',
-        },
-        {
-          type: 'text',
-          text:
-            'Found exact snapshots for both dates. Let me pull the menu content from each. ' +
-            'The source contains evidence that must remain visible before the next fetch. ' +
-            'x'.repeat(1_100) +
-            ' TAIL_FACT_MUST_REMAIN_VISIBLE',
-        },
-        {
-          type: 'tool_use',
-          id: 'remote_search_1',
-          name: 'WebSearch',
-          input: { query: 'test' },
-        },
-      ],
-    },
-  })
-  send({
-    type: 'stream_event',
-    event: {
-      type: 'message_delta',
-      delta: { stop_reason: 'tool_use' },
-      usage: { input_tokens: 1, output_tokens: 1 },
-    },
-  })
-  setTimeout(() => {
-    send({
-      type: 'user',
-      message: {
-        content: [{
-          type: 'tool_result',
-          tool_use_id: 'remote_search_1',
-          content: 'REMOTE_RESULT_HEAD ' + 'r'.repeat(2_500) + ' REMOTE_RESULT_TAIL',
-        }],
-      },
-      tool_use_result: { searchCount: 1, durationSeconds: 1.2 },
-    })
-    emitText('<LOCAL_AGENT_FINAL>STREAM_OK')
-  }, 1200)
+  emitText('UNEXPECTED_EXTRA_TURN')
 })
 `,
   )
@@ -242,6 +243,7 @@ lines.on('line', line => {
   assert.match(payload, /Compare both snapshots before choosing the next source\./)
   assert.match(payload, /REMOTE_RESULT_HEAD/)
   assert.match(payload, /REMOTE_RESULT_TAIL/)
+  assert.doesNotMatch(payload, /UNEXPECTED_EXTRA_TURN/)
   assert.match(payload, /"usage":\{"prompt_tokens":/)
   assert.match(payload, /data: \[DONE\]/)
   const completedHealth: any = await fetch(`${origin}/health`).then(res => res.json())

@@ -18,6 +18,8 @@ export type CompactDeps = {
   onRequest?: StreamOptions['onRequest']
   /** 成功请求的 token 用量观察钩子。 */
   onUsage?: StreamOptions['onUsage']
+  /** TRACE=1 时接收 gateway ↔ Claude Code 原始通信。 */
+  onRemoteTrace?: StreamOptions['onRemoteTrace']
   /** 触发压缩的估算 token 阈值，默认 40000。 */
   compactThreshold?: number
   /** 压缩时保留的最近消息条数（不含 system），默认 12。 */
@@ -98,6 +100,7 @@ export async function compactInPlace(
         signal: deps.signal,
         onRequest: deps.onRequest,
         onUsage: deps.onUsage,
+        onRemoteTrace: deps.onRemoteTrace,
       },
     )
     summary = content.trim()

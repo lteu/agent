@@ -2,6 +2,7 @@
 // 模型通过 function calling 请求这些工具，由本进程在本地执行后把结果回传。
 
 import { execFile } from 'node:child_process'
+import { isUtf8 } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import {
   readFileSync,
@@ -11,7 +12,7 @@ import {
   statSync,
   type Dirent,
 } from 'node:fs'
-import { resolve, dirname, relative, sep } from 'node:path'
+import { resolve, dirname, relative, sep, basename } from 'node:path'
 import { loadSmtpConfig } from './config.js'
 import { writeToolDebugEvent } from './crashlog.js'
 import { sendMail, type Attachment } from './smtp.js'
@@ -33,6 +34,7 @@ import { interpretShellCommandResult } from './shell-command-semantics.js'
 import { classifyVerificationCommand, type VerificationCheckKind } from './agent/verification-policy.js'
 import { managedSubagents, type ManagedSubagentResult } from './agent/subagent-manager.js'
 import type { TokenUsage } from './token-usage.js'
+import type { LocalToolContentBlock } from './llm.js'
 import { compactUrlForDisplay } from './ui-format.js'
 import { PDFParse } from 'pdf-parse'
 import XLSX from 'xlsx'
@@ -55,6 +57,8 @@ export type ToolContext = {
   fileMutationLocks?: Map<string, Promise<void>>
   /** 单次执行的内部元数据容器；由结构化包装器创建，不在不同调用间共享。 */
   executionMeta?: ToolExecutionMeta
+  /** 看图任务的证据闸；成功 view_image 前禁止结构化文件修改。 */
+  visualEvidence?: { required: boolean; available: boolean }
 }
 
 export type FileReadSnapshot = {
@@ -78,7 +82,7 @@ type ToolExecutionMeta = {
 }
 
 export type ToolEvidence = {
-  kind: 'file_read' | 'file_write' | 'file_edit' | 'command' | 'test' | 'http' | 'legacy'
+  kind: 'file_read' | 'image_read' | 'file_write' | 'file_edit' | 'command' | 'test' | 'http' | 'legacy'
   path?: string
   bytes?: number
   replacements?: number
@@ -100,6 +104,8 @@ export type ToolResult = {
     userMessage?: string
   }
   evidence?: ToolEvidence
+  /** 只回灌给模型的非文本内容；普通 UI 永远不渲染其中的 base64。 */
+  modelContent?: LocalToolContentBlock[]
   durationMs: number
 }
 
@@ -123,6 +129,7 @@ const MIME_TYPES: Record<string, string> = {
 }
 
 const WEB_FETCH_MAX_ATTEMPTS = 3
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 const WEB_FETCH_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
 
 function fetchErrorDetails(error: unknown): { message: string; code?: string } {
@@ -157,6 +164,22 @@ function waitForWebFetchRetry(attempt: number): Promise<void> {
 function guessMime(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
   return MIME_TYPES[ext] ?? 'application/octet-stream'
+}
+
+function imageMime(buffer: Buffer): LocalToolContentBlock['mediaType'] | undefined {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png'
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (buffer.length >= 6 && (buffer.subarray(0, 6).toString('ascii') === 'GIF87a' || buffer.subarray(0, 6).toString('ascii') === 'GIF89a')) {
+    return 'image/gif'
+  }
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') {
+    return 'image/webp'
+  }
+  return undefined
 }
 
 /** 递归列出目录下所有文件的绝对路径（自动跳过 IGNORE_DIRS）。 */
@@ -224,11 +247,26 @@ export const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: '读取本地一个文本文件的内容。',
+      description: '读取本地一个文本文件的内容。图片必须改用 view_image；二进制文件会被拒绝，避免把乱码塞入模型上下文。',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: '文件路径' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'view_image',
+      description:
+        '查看并分析本地图片的真实像素内容（PNG/JPEG/GIF/WebP）。用户提到截图、图片或要求根据画面判断时必须使用；不要用 read_file 或 OCR 代替。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '图片文件路径' },
         },
         required: ['path'],
       },
@@ -1328,11 +1366,64 @@ export async function runTool(
   const executionContext = ctx ? { ...ctx, readSnapshots: snapshots, executionMeta: meta } : { readSnapshots: snapshots, executionMeta: meta }
 
   try {
+    if (name === 'view_image') {
+      const path = resolve(String(args.path))
+      const content = readFileSync(path)
+      const mediaType = imageMime(content)
+      if (!mediaType) {
+        return failedToolResult(
+          'unsupported_image',
+          `不支持的图片格式：${path}；仅支持 PNG/JPEG/GIF/WebP`,
+          startedAt,
+          '图片格式不受支持',
+        )
+      }
+      if (content.length > MAX_IMAGE_BYTES) {
+        return failedToolResult(
+          'image_too_large',
+          `图片大小 ${(content.length / 1024 / 1024).toFixed(1)} MB，超过 ${MAX_IMAGE_BYTES / 1024 / 1024} MB 上限；请先缩小图片`,
+          startedAt,
+          '图片过大，需要先缩小',
+        )
+      }
+      if (ctx?.visualEvidence) ctx.visualEvidence.available = true
+      return {
+        ok: true,
+        output: `已加载图片 ${basename(path)}（${mediaType}，${content.length} 字节）；请根据随工具结果传入的真实图片像素进行分析。`,
+        modelContent: [{ type: 'image', mediaType, data: content.toString('base64') }],
+        evidence: { kind: 'image_read', path, bytes: content.length },
+        durationMs: Date.now() - startedAt,
+      }
+    }
+
     if (name === 'read_file') {
       const path = resolve(String(args.path))
-      const output = await runToolText(name, args, executionContext)
-      const snapshot = meta.readSnapshot ?? fileSnapshot(path)
+      const content = readFileSync(path)
+      if (imageMime(content)) {
+        return failedToolResult(
+          'image_requires_view_image',
+          `read_file 只能读取文本；图片 ${path} 必须使用 view_image 才能把真实像素传给模型`,
+          startedAt,
+          '图片请使用 view_image',
+        )
+      }
+      if (!isUtf8(content) || content.includes(0)) {
+        return failedToolResult(
+          'binary_file',
+          `read_file 拒绝读取二进制文件：${path}；请使用对应的专用工具`,
+          startedAt,
+          '不能把二进制文件作为文本读取',
+        )
+      }
+      const stat = statSync(path)
+      const snapshot = {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        sha256: createHash('sha256').update(content).digest('hex'),
+      }
       snapshots.set(path, snapshot)
+      const text = content.toString('utf8')
+      const output = text.length > 20000 ? text.slice(0, 20000) + '\n…（已截断）' : text
       return {
         ok: true,
         output,
@@ -1343,6 +1434,14 @@ export async function runTool(
 
     if (name === 'write_file' || name === 'edit_file') {
       const path = resolve(String(args.path))
+      if (ctx?.visualEvidence?.required && !ctx.visualEvidence.available) {
+        return failedToolResult(
+          'visual_evidence_required',
+          '当前任务要求分析图片；必须先成功调用 view_image 查看真实像素，不能根据文件名或文字描述猜测后修改文件',
+          startedAt,
+          '需要先成功查看图片',
+        )
+      }
       return await withFileMutationLock(path, locks, async () => {
         let before: FileReadSnapshot | null = null
         try { before = fileSnapshot(path) } catch { /* 新文件 */ }
@@ -1568,6 +1667,8 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return `写文件 ${args.path}`
     case 'read_file':
       return `读文件 ${args.path}`
+    case 'view_image':
+      return `查看图片 ${args.path}`
     case 'excel_read':
       return `读表格 ${args.path}`
     case 'pdf_read':

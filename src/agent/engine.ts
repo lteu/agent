@@ -42,6 +42,7 @@ import {
   traceAgentEvent,
   traceHistory,
   traceLlmRequest,
+  traceRemoteCommunication,
   type HistoryTraceContext,
 } from './history-trace.js'
 import { verifyFinalResult, type VerifyResult } from './verify.js'
@@ -228,12 +229,24 @@ async function* runAgentCore(
 ): AsyncGenerator<AgentEvent, void, unknown> {
   const maxSteps = deps.maxSteps ?? 200
   const historyTrace = deps.historyTrace ?? createHistoryTraceContext('unknown', 'unknown')
+  const remoteTrace = process.env.TRACE === '1'
+    ? (event: Parameters<typeof traceRemoteCommunication>[1]) =>
+        traceRemoteCommunication(historyTrace, event)
+    : undefined
   const requestTracer = (requestKind: 'agent' | 'compact' | 'verify') =>
     (request: Parameters<typeof traceLlmRequest>[1]) =>
       traceLlmRequest(historyTrace, request, requestKind)
   traceHistory(historyTrace, 'run-agent-start', history)
   const extraNames = new Set((deps.extraTools?.schemas ?? []).map(s => s.function.name))
   const tools = [...TOOL_SCHEMAS, ...(deps.extraTools?.schemas ?? [])]
+
+  const latestUserMessage = [...history].reverse().find(message => message.role === 'user')?.content ?? ''
+  const visualEvidence = {
+    required:
+      /(?:看下|看看|查看|分析|检查|根据|参照).{0,24}(?:截图|图片|照片)|(?:screenshot|image).{0,24}(?:inspect|analy[sz]e|look at|review)|\.(?:png|jpe?g|gif|webp)\b/i
+        .test(latestUserMessage),
+    available: false,
+  }
 
   const toolCtx: ToolContext = {
     apiKey: deps.apiKey,
@@ -245,6 +258,7 @@ async function* runAgentCore(
     onUsage: deps.onUsage,
     readSnapshots: new Map(),
     fileMutationLocks: new Map(),
+    visualEvidence,
   }
 
   // 执行单个工具调用 → 结构化结果。异常转成失败结果回灌，绝不中断循环。
@@ -315,6 +329,7 @@ async function* runAgentCore(
     provider: deps.provider,
     signal: deps.signal,
     onRequest: requestTracer('verify'),
+    onRemoteTrace: remoteTrace,
   }
 
   // 确定性验证证据：按工具批次排序。同一批工具并发执行，因此同批测试不能证明同批编辑后的状态。
@@ -351,7 +366,11 @@ async function* runAgentCore(
     if (!deps.noCompact) {
       const historyLengthBeforeCompact = history.length
       try {
-        const compacted = await compactInPlace(history, { ...deps, onRequest: requestTracer('compact') })
+        const compacted = await compactInPlace(history, {
+          ...deps,
+          onRequest: requestTracer('compact'),
+          onRemoteTrace: remoteTrace,
+        })
         if (compacted) {
           if (remoteClaudeSession) resetRemoteClaudeSession(remoteClaudeSession)
           traceHistory(historyTrace, 'after-compact', history, {
@@ -377,6 +396,7 @@ async function* runAgentCore(
       onRequest: requestTracer('agent'),
       onUsage: deps.onUsage,
       remoteClaudeSession,
+      onRemoteTrace: remoteTrace,
     })
 
     // channel 不消费 delta，只消费 text，所以这里按「工具调用分隔出的文本段」缓存。
@@ -431,7 +451,7 @@ async function* runAgentCore(
         reactiveCompactAttempted = true
         const did = await compactInPlace(
           history,
-          { ...deps, onRequest: requestTracer('compact') },
+          { ...deps, onRequest: requestTracer('compact'), onRemoteTrace: remoteTrace },
           { force: true },
         ).catch(() => false)
         if (did) {
@@ -533,7 +553,14 @@ async function* runAgentCore(
         // ③ 回收并发执行的工具结果（按调用顺序回灌，满足 OpenAI 的配对要求）。
         for await (const { call, result } of executor.drain()) {
           const modelResult = formatToolResult(result)
-          history.push({ role: 'tool', tool_call_id: call.id, content: modelResult })
+          history.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: modelResult,
+            ...(result.modelContent?.length
+              ? { ai_local_tool_content: result.modelContent }
+              : {}),
+          })
           traceHistory(historyTrace, 'after-tool-result-push', history, {
             step,
             toolName: call.function.name,
