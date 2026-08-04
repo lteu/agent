@@ -5,6 +5,7 @@
 // 默认关闭；设置 TRACE=1 后启用。完整日志可能包含文件内容、工具结果等敏感信息。
 
 import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFile, mkdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -37,6 +38,103 @@ type AgentEventForLog = {
   steps?: number
 }
 
+type AgentEventPayload = Record<string, unknown>
+type StreamEventBatch = {
+  logPath: string
+  payload: AgentEventPayload
+  chunks: string[]
+  eventCount: number
+  contentLength: number
+}
+
+const AGENT_EVENT_FLUSH_MS = 100
+const DEFAULT_AGENT_EVENT_LOG_MAX_BYTES = 16 * 1024 * 1024
+const streamEventBatches = new Map<string, StreamEventBatch>()
+let queuedAgentEventLines = new Map<string, string[]>()
+let agentEventFlushTimer: ReturnType<typeof setTimeout> | null = null
+let agentEventWriteChain: Promise<void> = Promise.resolve()
+
+function agentEventLogMaxBytes(): number {
+  const configured = Number(process.env.AI_AGENT_EVENT_LOG_MAX_BYTES)
+  return Number.isFinite(configured) && configured >= 1_024
+    ? Math.floor(configured)
+    : DEFAULT_AGENT_EVENT_LOG_MAX_BYTES
+}
+
+function queueAgentEventLine(logPath: string, payload: AgentEventPayload): void {
+  const lines = queuedAgentEventLines.get(logPath) ?? []
+  lines.push(JSON.stringify(payload) + '\n')
+  queuedAgentEventLines.set(logPath, lines)
+}
+
+function materializeStreamBatch(key: string): void {
+  const batch = streamEventBatches.get(key)
+  if (!batch) return
+  streamEventBatches.delete(key)
+  const preview = batch.chunks.join('').slice(0, 1_000)
+  queueAgentEventLine(batch.logPath, {
+    ...batch.payload,
+    eventCount: batch.eventCount,
+    contentLength: batch.contentLength || undefined,
+    contentPreview: preview || undefined,
+  })
+}
+
+async function appendAgentEventLines(logPath: string, lines: string[]): Promise<void> {
+  const maxBytes = agentEventLogMaxBytes()
+  const data = lines.join('')
+  await mkdir(dirname(logPath), { recursive: true })
+  let currentBytes = 0
+  try {
+    currentBytes = (await stat(logPath)).size
+  } catch {
+    // A missing log starts at zero bytes.
+  }
+  if (currentBytes > 0 && currentBytes + Buffer.byteLength(data) > maxBytes) {
+    await rm(`${logPath}.1`, { force: true })
+    try {
+      await rename(logPath, `${logPath}.1`)
+    } catch {
+      // Another flush/process may already have moved the file.
+    }
+  }
+  await appendFile(logPath, data)
+}
+
+function drainAgentEventQueue(): void {
+  if (!queuedAgentEventLines.size) return
+  const queued = queuedAgentEventLines
+  queuedAgentEventLines = new Map()
+  agentEventWriteChain = agentEventWriteChain.then(async () => {
+    for (const [logPath, lines] of queued) {
+      try {
+        await appendAgentEventLines(logPath, lines)
+      } catch {
+        /* Diagnostics must never interrupt the agent. */
+      }
+    }
+  })
+}
+
+function scheduleAgentEventFlush(): void {
+  if (agentEventFlushTimer) return
+  agentEventFlushTimer = setTimeout(() => {
+    agentEventFlushTimer = null
+    for (const key of [...streamEventBatches.keys()]) materializeStreamBatch(key)
+    drainAgentEventQueue()
+  }, AGENT_EVENT_FLUSH_MS)
+  agentEventFlushTimer.unref?.()
+}
+
+/** Wait until all buffered lifecycle diagnostics have reached disk (primarily for tests). */
+export async function flushAgentEventLog(): Promise<void> {
+  if (agentEventFlushTimer) clearTimeout(agentEventFlushTimer)
+  agentEventFlushTimer = null
+  for (const key of [...streamEventBatches.keys()]) materializeStreamBatch(key)
+  drainAgentEventQueue()
+  await agentEventWriteChain
+}
+
 function getLogDir(): string {
   const configured = process.env.AI_LOG_DIR?.trim()
   if (configured) return resolve(configured)
@@ -67,9 +165,10 @@ export function traceAgentEvent(
   error?: unknown,
 ): void {
   const logDir = getLogDir()
+  const logPath = join(logDir, 'agent-events.jsonl')
   const content = event?.content ?? ''
   const detail = event?.detail ?? ''
-  const payload = {
+  const payload: AgentEventPayload = {
     schemaVersion: 1,
     time: new Date().toISOString(),
     pid: process.pid,
@@ -93,12 +192,26 @@ export function traceAgentEvent(
           ? { message: String(error) }
           : undefined,
   }
-  try {
-    mkdirSync(logDir, { recursive: true })
-    appendFileSync(join(logDir, 'agent-events.jsonl'), JSON.stringify(payload) + '\n')
-  } catch {
-    /* Diagnostics must never interrupt the agent. */
+  const streamKey = `${logPath}\0${context.runId}`
+  if (!error && (event?.type === 'thinking' || event?.type === 'delta')) {
+    const existing = streamEventBatches.get(streamKey)
+    if (existing && existing.payload.eventType !== event.type) materializeStreamBatch(streamKey)
+    const batch = streamEventBatches.get(streamKey) ?? {
+      logPath,
+      payload: { ...payload, contentLength: undefined, contentPreview: undefined },
+      chunks: [],
+      eventCount: 0,
+      contentLength: 0,
+    }
+    batch.chunks.push(content)
+    batch.eventCount += 1
+    batch.contentLength += content.length
+    streamEventBatches.set(streamKey, batch)
+  } else {
+    materializeStreamBatch(streamKey)
+    queueAgentEventLine(logPath, payload)
   }
+  scheduleAgentEventFlush()
 }
 
 function summarizeMessage(message: ChatMessage, index: number) {

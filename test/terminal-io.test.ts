@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { PassThrough } from 'node:stream'
 import {
+  createInkInputBridge,
   restoreTerminalModes,
   safeTerminalSize,
   TerminalInputDecoder,
 } from '../src/terminal-io.js'
+
+test('stdin EIO 由输入桥接器接管，不会变成未捕获异常', () => {
+  const source = new PassThrough() as unknown as NodeJS.ReadStream
+  let received: NodeJS.ErrnoException | undefined
+  const bridge = createInkInputBridge(source, { onEio: error => { received = error } })
+  const error = Object.assign(new Error('read EIO'), { code: 'EIO' })
+  source.emit('error', error)
+  assert.equal(received, error)
+  bridge.dispose()
+})
 
 test('终端输入分流保留普通键并移除完整鼠标报告', () => {
   const decoder = new TerminalInputDecoder()

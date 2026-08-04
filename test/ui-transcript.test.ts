@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   anchoredTranscriptOffset,
+  BufferedTranscriptLedger,
   cleanTranscriptText,
   isKeyTool,
   isPrimaryMousePress,
@@ -11,6 +12,24 @@ import {
   transcriptViewport,
   type TranscriptEvent,
 } from '../src/ui-transcript.js'
+
+test('高频流式片段在 ledger 中合并，不产生逐 token 事件数组', () => {
+  const ledger = new BufferedTranscriptLedger()
+  for (let index = 0; index < 10_000; index++) {
+    ledger.appendDelta(1, 'thinking', `${index},`)
+  }
+  const expectedThinking = Array.from({ length: 10_000 }, (_, index) => `${index},`).join('')
+  assert.deepEqual(ledger.snapshot().map(event => [event.kind, event.summary]), [
+    ['thinking', expectedThinking],
+  ])
+
+  for (let index = 0; index < 2_000; index++) ledger.appendDelta(1, 'assistant_text', 'x')
+  ledger.append({ turnId: 1, at: 2, kind: 'system', summary: 'done' })
+  const events = ledger.snapshot()
+  assert.equal(events.length, 3)
+  assert.equal(events[1].summary, 'x'.repeat(2_000))
+  assert.equal(events[2].summary, 'done')
+})
 
 test('raw 转录不截断工具输出', () => {
   const detail = Array.from({ length: 30 }, (_, i) => `line-${i}`).join('\n')

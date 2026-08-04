@@ -20,6 +20,69 @@ export type TranscriptEvent = {
   detail?: string
 }
 
+export type NewTranscriptEvent = Omit<TranscriptEvent, 'id'>
+
+type PendingTranscriptDelta = {
+  turnId: number
+  at: number
+  kind: 'assistant_text' | 'thinking'
+  chunks: string[]
+}
+
+/**
+ * Mutable transcript storage for hot streaming paths. Deltas collect as chunks and
+ * are joined only when the UI asks for a snapshot, avoiding a React update and an
+ * ever-growing string copy for every model token.
+ */
+export class BufferedTranscriptLedger {
+  private events: TranscriptEvent[] = []
+  private nextId = 0
+  private pending: PendingTranscriptDelta | null = null
+
+  append(event: NewTranscriptEvent): void {
+    this.flush()
+    this.events.push({ id: ++this.nextId, ...event })
+  }
+
+  appendDelta(
+    turnId: number,
+    kind: 'assistant_text' | 'thinking',
+    content: string,
+    at = Date.now(),
+  ): void {
+    if (!content) return
+    if (this.pending?.turnId !== turnId || this.pending.kind !== kind) {
+      this.flush()
+      this.pending = { turnId, at, kind, chunks: [] }
+    }
+    this.pending.chunks.push(content)
+  }
+
+  flush(): void {
+    const pending = this.pending
+    if (!pending) return
+    this.pending = null
+    const summary = pending.chunks.join('')
+    const last = this.events.at(-1)
+    if (last?.turnId === pending.turnId && last.kind === pending.kind) {
+      last.summary += summary
+      return
+    }
+    this.events.push({
+      id: ++this.nextId,
+      turnId: pending.turnId,
+      at: pending.at,
+      kind: pending.kind,
+      summary,
+    })
+  }
+
+  snapshot(): TranscriptEvent[] {
+    this.flush()
+    return this.events.slice()
+  }
+}
+
 export type TranscriptLine = {
   key: string
   text: string

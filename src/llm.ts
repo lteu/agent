@@ -10,6 +10,7 @@ import {
   tokenUsageFromOpenAI,
   type TokenUsage,
 } from './token-usage.js'
+import { randomUUID } from 'node:crypto'
 
 export type RawToolCall = {
   id: string
@@ -48,6 +49,75 @@ export type StreamOptions = {
   onRequest?: (request: LlmRequestSnapshot) => void
   /** 每次成功模型请求只调用一次；用于按 Claude Code 口径累计 token。 */
   onUsage?: (usage: TokenUsage) => void
+  /** Stateful Claude Code gateway session. Other OpenAI-compatible providers ignore this. */
+  remoteClaudeSession?: RemoteClaudeSession
+}
+
+export type RemoteClaudeSession = {
+  id: string
+  active: boolean
+  disabled: boolean
+  historyCursor: number
+  step: number
+}
+
+export function createRemoteClaudeSession(): RemoteClaudeSession {
+  return {
+    id: randomUUID(),
+    active: false,
+    disabled: false,
+    historyCursor: 0,
+    step: 0,
+  }
+}
+
+export function resetRemoteClaudeSession(session: RemoteClaudeSession): void {
+  session.id = randomUUID()
+  session.active = false
+  session.historyCursor = 0
+  session.step = 0
+}
+
+export function disableRemoteClaudeSession(session: RemoteClaudeSession): void {
+  session.disabled = true
+  resetRemoteClaudeSession(session)
+}
+
+export function isRemoteClaudeProvider(provider: string | undefined): boolean {
+  return /claude\s+via\s+remote/i.test(provider ?? '')
+}
+
+type RemoteSessionRequest = {
+  id: string
+  mode: 'start' | 'resume'
+  step: number
+}
+
+function prepareRemoteSessionRequest(
+  messages: ChatMessage[],
+  session: RemoteClaudeSession | undefined,
+): { request?: RemoteSessionRequest; messages: ChatMessage[] } {
+  if (!session || session.disabled) return { messages: messagesForRequest(messages) }
+  if (!session.active) {
+    return {
+      request: { id: session.id, mode: 'start', step: session.step },
+      messages: messagesForRequest(messages),
+    }
+  }
+  return {
+    request: { id: session.id, mode: 'resume', step: session.step },
+    messages: messagesForRequest(messages.slice(session.historyCursor)),
+  }
+}
+
+function commitRemoteSessionRequest(
+  session: RemoteClaudeSession | undefined,
+  historyLength: number,
+): void {
+  if (!session || session.disabled) return
+  session.active = true
+  session.historyCursor = historyLength
+  session.step += 1
 }
 
 export type LlmRequestSnapshot = {
@@ -274,7 +344,17 @@ async function* anthropicStreamCompletion(
 
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
-    throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
+    let code: string | undefined
+    try {
+      const parsed = JSON.parse(detail)
+      if (typeof parsed?.error?.code === 'string') code = parsed.error.code
+    } catch {
+      // Some compatible providers return plain text or HTML errors.
+    }
+    throw Object.assign(
+      new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`),
+      { code },
+    )
   }
 
   // 按 content block index 累积：text 块边到边吐 delta，tool_use 块攒够 input_json_delta
@@ -527,12 +607,14 @@ export async function* streamCompletion(
 
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const url = `${baseURL}/chat/completions`
+  const remoteSession = prepareRemoteSessionRequest(messages, opts.remoteClaudeSession)
   const body = {
     model: opts.model,
-    messages: messagesForRequest(messages),
+    messages: remoteSession.messages,
     stream: true,
     stream_options: { include_usage: true },
     ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
+    ...(remoteSession.request ? { ai_remote_session: remoteSession.request } : {}),
   }
   const headers = {
     'Content-Type': 'application/json',
@@ -566,7 +648,17 @@ export async function* streamCompletion(
 
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
-    throw new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`)
+    let code: string | undefined
+    try {
+      const parsed = JSON.parse(detail)
+      if (typeof parsed?.error?.code === 'string') code = parsed.error.code
+    } catch {
+      // Some compatible providers return plain text or HTML errors.
+    }
+    throw Object.assign(
+      new Error(`${errLabel(opts)} (HTTP ${res.status}): ${detail.slice(0, 300)}`),
+      { code },
+    )
   }
   yield { type: 'model', phase: 'waiting' }
 
@@ -579,6 +671,7 @@ export async function* streamCompletion(
   let usage = tokenUsageFromOpenAI(undefined)
   let reportedUsage = tokenUsageFromOpenAI(undefined)
   let remoteContext = ''
+  let remoteSessionAck: RemoteSessionRequest | undefined
 
   const reportCumulativeUsage = (next: TokenUsage) => {
     const delta: TokenUsage = {
@@ -655,6 +748,17 @@ export async function* streamCompletion(
               json.ai_remote_error.message
             }`
         throw Object.assign(new Error(message), { code })
+      }
+      if (json?.ai_remote_session) {
+        const ack = json.ai_remote_session
+        if (
+          typeof ack.id === 'string' &&
+          (ack.mode === 'start' || ack.mode === 'resume') &&
+          Number.isInteger(ack.step)
+        ) {
+          remoteSessionAck = { id: ack.id, mode: ack.mode, step: ack.step }
+        }
+        continue
       }
       if (typeof json?.ai_remote_context?.content === 'string') {
         remoteContext = json.ai_remote_context.content
@@ -733,6 +837,24 @@ export async function* streamCompletion(
       type: 'function',
       function: { name: t.name, arguments: t.args },
     }))
+  if (remoteSession.request) {
+    if (!remoteSessionAck) {
+      throw Object.assign(
+        new Error('Remote Claude gateway 不支持 session resume，已回退到兼容模式'),
+        { code: 'REMOTE_SESSION_UNSUPPORTED' },
+      )
+    }
+    if (
+      remoteSessionAck.id !== remoteSession.request.id ||
+      remoteSessionAck.mode !== remoteSession.request.mode ||
+      remoteSessionAck.step !== remoteSession.request.step
+    ) {
+      throw Object.assign(new Error('Remote Claude gateway 返回了不匹配的 session 确认'), {
+        code: 'REMOTE_SESSION_INVALID',
+      })
+    }
+    commitRemoteSessionRequest(opts.remoteClaudeSession, messages.length)
+  }
   return { content, toolCalls, finishReason, usage, remoteContext: remoteContext || undefined }
 }
 

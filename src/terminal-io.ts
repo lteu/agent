@@ -186,21 +186,37 @@ class InkInputBridge extends Transform {
   }
 }
 
-export function createInkInputBridge(source: NodeJS.ReadStream): {
+export function createInkInputBridge(
+  source: NodeJS.ReadStream,
+  options: { onEio?: (error: NodeJS.ErrnoException) => void } = {},
+): {
   stdin: NodeJS.ReadStream
   dispose: () => void
 } {
   const bridge = new InkInputBridge(source)
   let disposed = false
+  const dispose = () => {
+    if (disposed) return
+    disposed = true
+    source.off('error', onSourceError)
+    source.unpipe(bridge)
+    bridge.end()
+  }
+  const onSourceError = (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EIO') {
+      source.unpipe(bridge)
+      bridge.end()
+      options.onEio?.(error)
+      return
+    }
+    // Preserve the existing crash-report path for unexpected stdin failures.
+    queueMicrotask(() => { throw error })
+  }
+  source.on('error', onSourceError)
   source.pipe(bridge)
   return {
     stdin: bridge as unknown as NodeJS.ReadStream,
-    dispose: () => {
-      if (disposed) return
-      disposed = true
-      source.unpipe(bridge)
-      bridge.end()
-    },
+    dispose,
   }
 }
 

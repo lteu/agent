@@ -14,7 +14,16 @@
 //   2. 工具调用在流式阶段收集，待完整响应落入历史后再执行，避免流失败重试造成副作用重复；
 //   3. 每轮开头按需做上下文压缩 compactInPlace。
 
-import { streamCompletion, type ChatMessage, type RawToolCall, type Completion } from '../llm.js'
+import {
+  createRemoteClaudeSession,
+  disableRemoteClaudeSession,
+  isRemoteClaudeProvider,
+  resetRemoteClaudeSession,
+  streamCompletion,
+  type ChatMessage,
+  type RawToolCall,
+  type Completion,
+} from '../llm.js'
 import { writeToolDebugEvent } from '../crashlog.js'
 import {
   TOOL_SCHEMAS,
@@ -291,6 +300,9 @@ async function* runAgentCore(
   let emptyResponseRecovery = 0
   let reactiveCompactAttempted = false
   let networkRetry = 0
+  const remoteClaudeSession = isRemoteClaudeProvider(deps.provider)
+    ? createRemoteClaudeSession()
+    : undefined
 
   // 验证闸：级别 & 最终核验重试次数
   const verifyLevel = deps.verifyLevel ?? 0
@@ -341,6 +353,7 @@ async function* runAgentCore(
       try {
         const compacted = await compactInPlace(history, { ...deps, onRequest: requestTracer('compact') })
         if (compacted) {
+          if (remoteClaudeSession) resetRemoteClaudeSession(remoteClaudeSession)
           traceHistory(historyTrace, 'after-compact', history, {
             step,
             note: `historyLengthBefore=${historyLengthBeforeCompact}`,
@@ -363,6 +376,7 @@ async function* runAgentCore(
       tools,
       onRequest: requestTracer('agent'),
       onUsage: deps.onUsage,
+      remoteClaudeSession,
     })
 
     // channel 不消费 delta，只消费 text，所以这里按「工具调用分隔出的文本段」缓存。
@@ -421,16 +435,46 @@ async function* runAgentCore(
           { force: true },
         ).catch(() => false)
         if (did) {
+          if (remoteClaudeSession) resetRemoteClaudeSession(remoteClaudeSession)
           traceHistory(historyTrace, 'after-reactive-compact', history, { step })
           yield { type: 'tool', name: 'system', phase: 'info', summary: '⚠ 上下文超长，已自动压缩后重试' }
           continue
         }
+      }
+      if (remoteClaudeSession && e?.code === 'REMOTE_SESSION_UNSUPPORTED') {
+        disableRemoteClaudeSession(remoteClaudeSession)
+        yield {
+          type: 'tool',
+          name: 'system',
+          phase: 'info',
+          summary: '⚠ Remote gateway 尚不支持 session resume，已回退兼容模式',
+        }
+        continue
+      }
+      if (
+        remoteClaudeSession &&
+        networkRetry < MAX_NETWORK_RETRY &&
+        /^(REMOTE_SESSION_BUSY|REMOTE_SESSION_STALE|REMOTE_SESSION_INVALID|REMOTE_SESSION_UNAVAILABLE)$/.test(
+          String(e?.code ?? ''),
+        )
+      ) {
+        networkRetry++
+        resetRemoteClaudeSession(remoteClaudeSession)
+        yield {
+          type: 'tool',
+          name: 'system',
+          phase: 'info',
+          summary: `⚠ Remote session 状态失效，重建后重试（${networkRetry}/${MAX_NETWORK_RETRY}）…`,
+        }
+        await sleep(500 * networkRetry)
+        continue
       }
       // 网络类瞬时错误（长连接被服务端/代理中途掐断，Node fetch 典型报 "terminated"，
       // 也可能是 socket hang up / ECONNRESET 等）：退避后原样重试本轮请求，
       // 不把这类对用户毫无意义的英文底层错误直接甩出去。
       if (!deps.signal?.aborted && networkRetry < MAX_NETWORK_RETRY && isTransientNetworkError(e)) {
         networkRetry++
+        if (remoteClaudeSession) resetRemoteClaudeSession(remoteClaudeSession)
         yield {
           type: 'tool',
           name: 'system',

@@ -97,6 +97,7 @@ import {
 import { formatModelStatus, type ModelStatus } from './ui-model-status.js'
 import {
   anchoredTranscriptOffset,
+  BufferedTranscriptLedger,
   isKeyTool,
   parseSgrMouseEvents,
   transcriptLines,
@@ -1315,13 +1316,60 @@ function App() {
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 自增 id：给每条消息一个稳定 key，避免数组索引漂移引发不必要的重绘。
   const idRef = useRef(0)
-  const transcriptIdRef = useRef(0)
+  const transcriptLedgerRef = useRef<BufferedTranscriptLedger | null>(null)
+  if (!transcriptLedgerRef.current) transcriptLedgerRef.current = new BufferedTranscriptLedger()
+  const transcriptPublishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showTranscriptRef = useRef(false)
   const transcriptLineCountRef = useRef(0)
   const transcriptEntryMessageCountRef = useRef(0)
   const lastCopyableUrlRef = useRef<string | null>(null)
   // 流式「未完成的最后一行」。完整行随到随沉淀进上方 Static 历史，动态区只留这截尾巴，
   // 让底部输入框高度恒定、使用过程中不跳顶（对标 Claude Code）。ref 同步、避免批处理丢字。
   const streamTailRef = useRef('')
+
+  const publishTranscript = useCallback((immediate = false) => {
+    if (!showTranscriptRef.current) return
+    if (immediate) {
+      if (transcriptPublishTimerRef.current) clearTimeout(transcriptPublishTimerRef.current)
+      transcriptPublishTimerRef.current = null
+      setTranscriptEvents(transcriptLedgerRef.current!.snapshot())
+      return
+    }
+    if (transcriptPublishTimerRef.current) return
+    transcriptPublishTimerRef.current = setTimeout(() => {
+      transcriptPublishTimerRef.current = null
+      if (showTranscriptRef.current) {
+        setTranscriptEvents(transcriptLedgerRef.current!.snapshot())
+      }
+    }, 80)
+  }, [])
+
+  const recordTranscript = useCallback((event: Omit<TranscriptEvent, 'id'>) => {
+    transcriptLedgerRef.current!.append(event)
+    publishTranscript(true)
+  }, [publishTranscript])
+
+  const recordTranscriptDelta = useCallback((
+    turnId: number,
+    kind: 'assistant_text' | 'thinking',
+    content: string,
+  ) => {
+    transcriptLedgerRef.current!.appendDelta(turnId, kind, content)
+    publishTranscript(false)
+  }, [publishTranscript])
+
+  useEffect(() => {
+    showTranscriptRef.current = showTranscript
+    if (showTranscript) publishTranscript(true)
+    else if (transcriptPublishTimerRef.current) {
+      clearTimeout(transcriptPublishTimerRef.current)
+      transcriptPublishTimerRef.current = null
+    }
+  }, [showTranscript, publishTranscript])
+
+  useEffect(() => () => {
+    if (transcriptPublishTimerRef.current) clearTimeout(transcriptPublishTimerRef.current)
+  }, [])
 
   useEffect(() => {
     if (busyStartedAt === null) return
@@ -1630,16 +1678,7 @@ function App() {
       const uid = ++idRef.current
       setMessages(prev => [...prev, { id: uid, role: 'user', content: text }])
       const turnId = ++turnIdRef.current
-      setTranscriptEvents(prev => [
-        ...prev,
-        {
-          id: ++transcriptIdRef.current,
-          turnId,
-          at: Date.now(),
-          kind: 'user',
-          summary: text,
-        },
-      ])
+      recordTranscript({ turnId, at: Date.now(), kind: 'user', summary: text })
       setBusy(true)
       const startedAt = Date.now()
       setBusyStartedAt(startedAt)
@@ -1667,34 +1706,17 @@ function App() {
         summary: string,
         extra: Partial<Omit<TranscriptEvent, 'id' | 'turnId' | 'at' | 'kind' | 'summary'>> = {},
       ) => {
-        const event: TranscriptEvent = {
-          id: ++transcriptIdRef.current,
+        const event: Omit<TranscriptEvent, 'id'> = {
           turnId,
           at: Date.now(),
           kind,
           summary,
           ...extra,
         }
-        setTranscriptEvents(prev => [...prev, event])
+        recordTranscript(event)
       }
       const appendTranscriptDelta = (kind: 'assistant_text' | 'thinking', content: string) => {
-        if (!content) return
-        setTranscriptEvents(prev => {
-          const last = prev.at(-1)
-          if (last?.turnId === turnId && last.kind === kind) {
-            return [...prev.slice(0, -1), { ...last, summary: last.summary + content }]
-          }
-          return [
-            ...prev,
-            {
-              id: ++transcriptIdRef.current,
-              turnId,
-              at: Date.now(),
-              kind,
-              summary: content,
-            },
-          ]
-        })
+        recordTranscriptDelta(turnId, kind, content)
       }
 
       // 往 Static 历史追加一行（统一分配稳定 key）。
@@ -1737,16 +1759,9 @@ function App() {
                 content: prompt,
               })),
             ])
-            setTranscriptEvents(prev => [
-              ...prev,
-              ...prompts.map(prompt => ({
-                id: ++transcriptIdRef.current,
-                turnId,
-                at: Date.now(),
-                kind: 'user' as const,
-                summary: prompt,
-              })),
-            ])
+            for (const prompt of prompts) {
+              recordTranscript({ turnId, at: Date.now(), kind: 'user', summary: prompt })
+            }
             // runAgent appends the combined steering message immediately after this
             // callback returns. Refresh the stable side-question snapshot afterwards.
             queueMicrotask(() => {
@@ -2036,7 +2051,7 @@ function App() {
         }
       }
     },
-    [apiKey, modelConfig, askBtw],
+    [apiKey, modelConfig, askBtw, recordTranscript, recordTranscriptDelta],
   )
   sendRef.current = send
 
@@ -2383,27 +2398,46 @@ if (argv[0] === 'serve') {
   // raw-mode support detection only sees the decoder and some PTYs otherwise leave
   // VDISCARD (Ctrl+O) active, so the kernel consumes the shortcut before JavaScript.
   if (process.stdin.isTTY) process.stdin.setRawMode?.(true)
-  const inputBridge = createInkInputBridge(process.stdin)
   const inkStdout = createScrollbackPreservingStdout(process.stdout)
   const restoreTerminal = () => restoreTerminalModes(process.stdout)
+  let instance: ReturnType<typeof render> | undefined
+  let inputBridge: ReturnType<typeof createInkInputBridge> | undefined
+  let terminalInputClosed = false
+  inputBridge = createInkInputBridge(process.stdin, {
+    onEio: error => {
+      if (terminalInputClosed) return
+      terminalInputClosed = true
+      const logPath = writeCrash('terminal-input-eio', error)
+      restoreTerminal()
+      try {
+        instance?.unmount()
+      } catch {
+        /* Terminal restoration is already complete. */
+      }
+      inputBridge?.dispose()
+      console.error(`\nai 的终端输入连接已关闭，界面已安全退出。日志：${logPath}`)
+      process.exitCode = 1
+    },
+  })
   // Last-resort protection for uncaught errors and process.exit(): never return to
   // the user's shell while SGR mouse tracking is still enabled.
   process.once('exit', restoreTerminal)
-  const instance = render(<App />, {
+  instance = render(<App />, {
     exitOnCtrlC: false,
     stdin: inputBridge.stdin,
     stdout: inkStdout,
   })
+  const renderedInstance = instance
   // useApp().exit() unmounts Ink but does not know about our upstream pipe.
   // Dispose it as part of the same lifecycle so a clean exit cannot leave stdin alive.
-  void instance.waitUntilExit().then(
+  void renderedInstance.waitUntilExit().then(
     () => {
-      inputBridge.dispose()
+      inputBridge?.dispose()
       restoreTerminal()
       process.off('exit', restoreTerminal)
     },
     () => {
-      inputBridge.dispose()
+      inputBridge?.dispose()
       restoreTerminal()
       process.off('exit', restoreTerminal)
     },
@@ -2414,11 +2448,11 @@ if (argv[0] === 'serve') {
     // Do this before Ink.unmount(): the renderer itself may be the failing component.
     restoreTerminal()
     try {
-      instance.unmount()
+      renderedInstance.unmount()
     } catch {
       /* 卸载失败也要继续恢复终端 */
     }
-    inputBridge.dispose()
+    inputBridge?.dispose()
     console.error(`\nai 遇到了意外错误（${label}）。详细日志（含最近按键）已写入：`)
     console.error(`  ${logPath}`)
     console.error(err instanceof Error ? err.stack ?? err.message : String(err))
