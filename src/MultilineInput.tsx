@@ -2,6 +2,7 @@
 //   - 方向键移动光标（上下左右）
 //   - Backspace/Delete 删除
 //   - Ctrl+A / Ctrl+E 行首/行尾，Ctrl+U 删到行首
+//   - Cmd+Z / Cmd+Y 撤销/重做；Cmd+方向键按 macOS 文本编辑习惯跳转
 //   - Enter 发送；行尾以 "\" 结尾再按 Enter 则换行
 //   - 粘贴多行文本
 //   - Esc 清空
@@ -53,10 +54,31 @@ function lineColToOffset(value: string, line: number, col: number): number {
 }
 
 const DEFAULT_ACCENT = '#9A7418'
+// 见下方 useInput 内「跨多个完整 bracketed-paste 序列合并」的说明：合并静默窗口。
+// 这个项目还有一条远程中继链路（src/remote.ts / server.ts）：键盘数据要经网络转发，
+// 一次物理粘贴很容易被中继按网络包/网络延迟切成好几个完整的 \x1b[200~...\x1b[201~
+// 序列，相邻序列之间的间隔可能是几百毫秒甚至更久。之前用过 300ms / 1500ms，实测粘贴
+// 100 行代码仍会拆成 10 个片段——真正的根因其实不在这个「序列之间」的静默窗口，而在
+// 下面 pasteFlushTimerRef 那个「单个序列内部还没等到终止符」的兜底超时：一旦它先于真正
+// 的 \x1b[201~ 触发，就会把还没收完的半截内容错误地当成「完整一段」提前落地，
+// 之后姗姗来迟的剩余部分因为不再带 \x1b[200~ 起始标记，会被当成普通按键而不是粘贴续传，
+// 这才是片段被拆得比预期更多的主因。这里把两层超时都放宽到足以覆盖真实网络/终端延迟：
+// 真正决定何时把挂起的粘贴落地成一个占位符的，是「后面来了一个不属于粘贴序列的
+// 真实按键」（见下方 flushPendingPaste 的调用点），此定时器只是防止用户粘贴后完全不再
+// 操作时输入框一直空白的兜底，放宽不会拖慢“粘贴后立刻回车发送”的手感。
+const PASTE_COALESCE_MS = 4000
 type InputHistoryEntry = {
   display: string
   pastedContents: Map<number, string>
 }
+
+type EditorSnapshot = {
+  value: string
+  cursor: number
+  pastedContents: Map<number, string>
+}
+
+const MAX_UNDO_DEPTH = 200
 
 export default function MultilineInput({
   onSubmit,
@@ -71,6 +93,8 @@ export default function MultilineInput({
   const cursorRef = useRef(0)
   const pastedContentsRef = useRef(new Map<number, string>())
   const nextPasteIdRef = useRef(1)
+  const undoStackRef = useRef<EditorSnapshot[]>([])
+  const redoStackRef = useRef<EditorSnapshot[]>([])
   const [, bump] = useReducer((n: number) => n + 1, 0)
 
   // 跨多次 useInput 回调重组一次大段粘贴：见下方 useInput 内的说明。
@@ -98,6 +122,43 @@ export default function MultilineInput({
     cursorRef.current = Math.max(0, Math.min(cursor, value.length))
     pastedContentsRef.current = prunePastedTextRefs(value, pastedContents)
     bump()
+  }
+
+  const snapshot = (): EditorSnapshot => ({
+    value: valueRef.current,
+    cursor: cursorRef.current,
+    pastedContents: new Map(pastedContentsRef.current),
+  })
+
+  // 内容编辑才进入撤销栈；单纯移动光标、浏览命令历史不会制造撤销步骤。
+  const edit = (
+    value: string,
+    cursor: number,
+    pastedContents: ReadonlyMap<number, string> = pastedContentsRef.current,
+  ) => {
+    if (value === valueRef.current) {
+      set(value, cursor, pastedContents)
+      return
+    }
+    const undo = undoStackRef.current
+    undo.push(snapshot())
+    if (undo.length > MAX_UNDO_DEPTH) undo.shift()
+    redoStackRef.current = []
+    set(value, cursor, pastedContents)
+  }
+
+  const undo = () => {
+    const previous = undoStackRef.current.pop()
+    if (!previous) return
+    redoStackRef.current.push(snapshot())
+    set(previous.value, previous.cursor, previous.pastedContents)
+  }
+
+  const redo = () => {
+    const next = redoStackRef.current.pop()
+    if (!next) return
+    undoStackRef.current.push(snapshot())
+    set(next.value, next.cursor, next.pastedContents)
   }
 
   // 翻历史：dir = -1 往旧翻，+1 往新翻。返回 true 表示已处理。
@@ -131,16 +192,43 @@ export default function MultilineInput({
       const ref = formatPastedTextRef(id, pasted)
       const nextPastes = new Map(pastedContentsRef.current)
       nextPastes.set(id, pasted)
-      set(value.slice(0, cursor) + ref + value.slice(cursor), cursor + ref.length, nextPastes)
+      edit(value.slice(0, cursor) + ref + value.slice(cursor), cursor + ref.length, nextPastes)
     } else {
-      set(value.slice(0, cursor) + pasted + value.slice(cursor), cursor + pasted.length)
+      edit(value.slice(0, cursor) + pasted + value.slice(cursor), cursor + pasted.length)
     }
+  }
+
+  // —— 跨多个「完整 bracketed-paste 序列」合并 ——
+  // 上面的 pasteBufferRef 只能拼好「一个」\x1b[200~...\x1b[201~ 序列内被 stdin 拆开的分块；
+  // 但有些终端/复用器会把一次物理粘贴本身拆成好几个各自完整的 bracketed-paste 序列
+  // （典型症状：粘贴一段代码后出现 [Pasted text #21]...[Pasted text #30] 好几个片段，
+  // 而不是一个）。这里再加一层：每收全一个完整序列先攒进 pendingPasteRawRef，并重置一个
+  // 很短的静默定时器；只有连续 PASTE_COALESCE_MS 内没有新的序列到达，才真正落地成一个
+  // "[Pasted text #N +M lines]" 占位符。
+  const pendingPasteRawRef = useRef<string | null>(null)
+  const pendingPasteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const flushPendingPaste = () => {
+    if (pendingPasteTimerRef.current) {
+      clearTimeout(pendingPasteTimerRef.current)
+      pendingPasteTimerRef.current = null
+    }
+    const raw = pendingPasteRawRef.current
+    pendingPasteRawRef.current = null
+    if (raw) insertPastedText(raw)
+  }
+
+  const queuePendingPaste = (raw: string) => {
+    pendingPasteRawRef.current = (pendingPasteRawRef.current ?? '') + raw
+    if (pendingPasteTimerRef.current) clearTimeout(pendingPasteTimerRef.current)
+    pendingPasteTimerRef.current = setTimeout(flushPendingPaste, PASTE_COALESCE_MS)
   }
 
   // 组件卸载时清掉未触发的兜底定时器，避免悬空回调操作已卸载的 ref。
   useEffect(() => {
     return () => {
       if (pasteFlushTimerRef.current) clearTimeout(pasteFlushTimerRef.current)
+      if (pendingPasteTimerRef.current) clearTimeout(pendingPasteTimerRef.current)
     }
   }, [])
 
@@ -150,6 +238,22 @@ export default function MultilineInput({
       // 必须在粘贴/普通字符逻辑之前过滤，否则触控板滚动会写入“[<64;…M”。
       input = stripSgrMouseSequences(input)
 
+      // Ink 的 useInput 内部会把「以 ESC 开头」的 input 无条件砍掉那一个前导 ESC
+      // （node_modules/ink/build/hooks/use-input.js: input.startsWith('') 就
+      // slice(1)），这是它自己处理 meta/alt 组合键遗留的逻辑，跟 bracketed-paste 无关，
+      // 但副作用是：一次物理粘贴的起始块几乎总是独占一次 stdin 读取、天然以 ESC 打头，
+      // 于是 PASTE_START_MARKER（\x1b[200~）到我们这里时 ESC 已经没了，变成裸的
+      // "[200~"，下面的 includes(PASTE_START_MARKER) 永远匹配不上，整套分片重组/多序列
+      // 合并逻辑根本不会被触发——这才是"粘贴一次却出现好几个 [Pasted text #N]"的
+      // 真正根因（此前两版修复都建立在“标记本身能被识别”的假设上，从未验证过这个前提）。
+      // 只在 input 恰好整块都被吞掉这一个 ESC 时才补回来，避免误伤用户真的打出的
+      // "[200~" 之类字面文本（那种情况下 input 不会精确等于裸标记开头）。
+      if (!input.startsWith(PASTE_START_MARKER) && input.startsWith(PASTE_START_MARKER.slice(1))) {
+        input = PASTE_START_MARKER + input.slice(PASTE_START_MARKER.slice(1).length)
+      } else if (!input.startsWith(PASTE_END_MARKER) && input.startsWith(PASTE_END_MARKER.slice(1))) {
+        input = PASTE_END_MARKER + input.slice(PASTE_END_MARKER.slice(1).length)
+      }
+
       // —— 粘贴分片重组 ——
       // 大段粘贴常被 stdin 拆成多个数据块，每块各自触发一次 useInput；
       // 旧逻辑逐块处理，每一块只要够长/够多行就会各自生成一个
@@ -157,7 +261,15 @@ export default function MultilineInput({
       // 这正是本次要修的问题。这里以 bracketed-paste 的起止标记为界，把
       // 跨多次回调的分片先攒到 pasteBufferRef 里，收全后再当一次粘贴处理；
       // 少数终端不发终止符时用超时兜底，避免输入框卡死等不到收尾。
-      if (pasteBufferRef.current !== null || input.includes(PASTE_START_MARKER)) {
+      // 用 while 而非 if：一次 stdin 数据块里可能背靠背拼着两个甚至更多个完整的
+      // bracketed-paste 序列（\x1b[200~A\x1b[201~\x1b[200~B\x1b[201~）。之前用 if 只处理
+      // 第一个，剩下的 remainder 里第二段的 \x1b[200~ 不会被识别为新粘贴——ESC(0x1b) 还会被
+      // 后面过滤 C0 控制符的正则当垃圾吃掉，导致第二段粘贴既没被识别为粘贴、又污染了正文，
+      // 且会把此刻已排队的第一段提前 flush，破坏合并。循环到「既无残留 buffer 也无新
+      // START 标记」为止，才把剩下的部分交给下面的普通按键逻辑。
+      let handledBracketedPaste = false
+      while (pasteBufferRef.current !== null || input.includes(PASTE_START_MARKER)) {
+        handledBracketedPaste = true
         if (pasteFlushTimerRef.current) {
           clearTimeout(pasteFlushTimerRef.current)
           pasteFlushTimerRef.current = null
@@ -170,21 +282,35 @@ export default function MultilineInput({
         const endIdx = chunk.indexOf(PASTE_END_MARKER)
         if (endIdx === -1) {
           pasteBufferRef.current += chunk
-          // 200ms 内没等到终止符也不会一直卡住：兜底把已收到的内容当一次粘贴处理。
+          // 这是上面注释里点名的根因所在：只要还没等到本序列自己的终止符，就必须继续把
+          // 后续数据块当作同一序列的续传（哪怕它们不带 \x1b[200~）。之前这里只给 300ms，
+          // 网络/终端延迟一旦超过这个数，就会把半截内容误判成"终止符大概率不会来了"而提前
+          // 落地——真正的终止符和剩余内容随后到达时，因为找不到匹配的起始标记，会被当成
+          // 普通按键input直接污染正文。这个超时只应该在「terminal 真的坏了、永远不发终止符」
+          // 时才兜底触发，所以要给得足够久，正常粘贴不应该碰到它。
           pasteFlushTimerRef.current = setTimeout(() => {
             const buffered = pasteBufferRef.current
             pasteBufferRef.current = null
             pasteFlushTimerRef.current = null
-            if (buffered) insertPastedText(buffered)
-          }, 300)
+            if (buffered) queuePendingPaste(buffered)
+          }, 4000)
           return
         }
         const full = pasteBufferRef.current + chunk.slice(0, endIdx)
         pasteBufferRef.current = null
-        insertPastedText(full)
+        queuePendingPaste(full)
         input = chunk.slice(endIdx + PASTE_END_MARKER.length)
-        if (!input) return
       }
+      // Ink reports keys such as Backspace/Delete/arrows with an empty `input` and
+      // carries their identity only in `key`.  Returning for every empty input here
+      // therefore disables those keys.  Only stop when this callback actually
+      // consumed a complete bracketed-paste sequence and left no remainder.
+      if (handledBracketedPaste && !input) return
+
+      // 本次输入不是「未闭合的粘贴序列内部数据」：如果还有尚未合并完成的粘贴挂起
+      // （多段 bracketed-paste 序列之间的静默期还没到），先落地，保证显示顺序，
+      // 以及紧随其后的操作（比如粘贴完直接回车发送）都基于合并后的最新内容。
+      if (pendingPasteRawRef.current !== null) flushPendingPaste()
 
       // Ink may coalesce repeated control keys into one chunk and then fail to mark
       // key.ctrl. Never allow C0 controls (except tab/newline/return) into editable text.
@@ -195,11 +321,41 @@ export default function MultilineInput({
       const value = valueRef.current
       const cursor = cursorRef.current
 
+      // —— macOS 风格编辑快捷键 ——
+      // 终端把 Command/Meta 传给应用时，Ink 会标记为 key.meta。部分终端需要在
+      // profile 中把 Cmd 组合键配置为发送 Meta/Escape 序列。
+      if (key.meta && input.toLowerCase() === 'z') {
+        undo()
+        return
+      }
+      if (key.meta && input.toLowerCase() === 'y') {
+        redo()
+        return
+      }
+      if (key.meta && key.upArrow) {
+        set(value, 0)
+        return
+      }
+      if (key.meta && key.downArrow) {
+        set(value, value.length)
+        return
+      }
+      if (key.meta && key.leftArrow) {
+        const [line] = offsetToLineCol(value, cursor)
+        set(value, lineColToOffset(value, line, 0))
+        return
+      }
+      if (key.meta && key.rightArrow) {
+        const [line] = offsetToLineCol(value, cursor)
+        set(value, lineColToOffset(value, line, Infinity))
+        return
+      }
+
       // —— 提交 / 换行 ——
       if (key.return) {
         // 行尾反斜杠 => 换行而非发送
         if (value.slice(0, cursor).endsWith('\\')) {
-          set(value.slice(0, cursor - 1) + '\n' + value.slice(cursor), cursor) // 删 '\'(-1) 加 '\n'(+1)
+          edit(value.slice(0, cursor - 1) + '\n' + value.slice(cursor), cursor) // 删 '\'(-1) 加 '\n'(+1)
           return
         }
         if (value.trim().length === 0) return
@@ -214,6 +370,8 @@ export default function MultilineInput({
         histPosRef.current = history.length
         draftRef.current = { display: '', pastedContents: new Map() }
         const expanded = expandPastedTextRefs(value, pastedContentsRef.current)
+        undoStackRef.current = []
+        redoStackRef.current = []
         set('', 0, new Map())
         onSubmit(expanded)
         return
@@ -256,7 +414,7 @@ export default function MultilineInput({
       if (key.ctrl && input === 'u') {
         const [line] = offsetToLineCol(value, cursor)
         const start = lineColToOffset(value, line, 0)
-        set(value.slice(0, start) + value.slice(cursor), start)
+        edit(value.slice(0, start) + value.slice(cursor), start)
         return
       }
 
@@ -270,16 +428,16 @@ export default function MultilineInput({
             const start = cursor - ref.length
             const nextPastes = new Map(pastedContentsRef.current)
             nextPastes.delete(id)
-            set(value.slice(0, start) + value.slice(cursor), start, nextPastes)
+            edit(value.slice(0, start) + value.slice(cursor), start, nextPastes)
             return
           }
         }
-        set(value.slice(0, cursor - 1) + value.slice(cursor), cursor - 1)
+        edit(value.slice(0, cursor - 1) + value.slice(cursor), cursor - 1)
         return
       }
 
       if (key.escape) {
-        set('', 0, new Map())
+        edit('', 0, new Map())
         return
       }
 
