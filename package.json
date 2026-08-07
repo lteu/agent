@@ -6,15 +6,19 @@
   "bin": {
     "ai": "dist/cli.js",
     "ai-remote": "dist/remote.js",
-    "ai-claude": "dist/claude-remote.js"
+    "ai-claude": "dist/claude-remote.js",
+    "ai-cc": "dist/claude-code-container.js"
   },
   "files": [
     "dist/*.js",
-    "deploy/ai-claude-sandbox.Dockerfile"
+    "deploy/ai-claude-sandbox.Dockerfile",
+    "deploy/ai-cc.Dockerfile",
+    "deploy/ai-cc-proxy.sh",
+    "deploy/ai-cc-privoxy.conf"
   ],
   "scripts": {
     "build": "esbuild src/cli.tsx --bundle --platform=node --target=node20 --format=esm --packages=external --jsx=automatic --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli.js && npm run build:claude",
-    "build:claude": "esbuild src/claude-remote.ts --bundle --platform=node --target=node20 --format=esm --packages=external --banner:js=\"#!/usr/bin/env node\" --outfile=dist/claude-remote.js",
+    "build:claude": "esbuild src/claude-remote.ts --bundle --platform=node --target=node20 --format=esm --packages=external --banner:js=\"#!/usr/bin/env node\" --outfile=dist/claude-remote.js && esbuild src/claude-code-container.ts --bundle --platform=node --target=node20 --format=esm --packages=external --banner:js=\"#!/usr/bin/env node\" --outfile=dist/claude-code-container.js",
     "build:remote": "esbuild src/remote.ts --bundle --platform=node --target=node20 --format=esm --packages=external --banner:js=\"#!/usr/bin/env node\" --outfile=dist/remote.js && esbuild src/remote-cli.ts --bundle --platform=node --target=node20 --format=esm --packages=external --jsx=automatic --banner:js=\"#!/usr/bin/env node\" --outfile=dist/remote-cli.js && esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/server.js",
     "test": "tsx --test test/*.test.ts",
     "dev": "tsx src/cli.tsx",
