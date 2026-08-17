@@ -24,7 +24,7 @@ import { isStopCommand } from './stopwords.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { createHistoryTraceContext, traceHistory } from '../agent/history-trace.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
-import { loadConfig, loadWechatConfig } from '../config.js'
+import { loadConfig, loadWechatConfig, modelNeedsApiKey } from '../config.js'
 
 // —— 验签：sha1(sort(token,timestamp,nonce,data)) ——
 function signature(token: string, timestamp: string, nonce: string, data: string): string {
@@ -87,7 +87,7 @@ export function startWechat(): void {
   const cfg = loadConfig('wechat')
   const wx = loadWechatConfig()
 
-  if (!cfg.apiKey) {
+  if (modelNeedsApiKey(cfg) && !cfg.apiKey) {
     console.error('缺少 API key。先运行: ai --set-key <KEY>')
     process.exit(1)
   }
@@ -165,10 +165,10 @@ export function startWechat(): void {
     try {
       // 每条消息重新读取渠道模型绑定：切换企业微信模型无需重启守护进程。
       const modelConfig = loadConfig('wechat')
-      if (!modelConfig.apiKey) throw new Error('企业微信当前模型缺少 API key，请重新绑定带凭据的模型预设')
+      if (modelNeedsApiKey(modelConfig) && !modelConfig.apiKey) throw new Error('企业微信当前模型缺少 API key，请重新绑定带凭据的模型预设')
       let said = false
       const answers: string[] = []
-      for await (const out of runAgent(history, { apiKey: modelConfig.apiKey, model: modelConfig.model, baseURL: modelConfig.baseURL, provider: modelConfig.provider, signal: controller.signal, historyTrace })) {
+      for await (const out of runAgent(history, { apiKey: modelConfig.apiKey ?? '', model: modelConfig.model, baseURL: modelConfig.baseURL, provider: modelConfig.provider, signal: controller.signal, historyTrace })) {
         if (out.type === 'text' && out.content.trim()) {
           await sendText(fromUser, out.content)
           answers.push(out.content)

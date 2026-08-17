@@ -35,7 +35,7 @@ import { isStopCommand } from './stopwords.js'
 import { SessionStore, buildSystemPrompt } from '../agent/session.js'
 import { createHistoryTraceContext, traceHistory } from '../agent/history-trace.js'
 import { logChat, resetTopic, writeLogBanner } from '../agent/chatlog.js'
-import { loadConfig, loadWxConfig, saveWxConfig } from '../config.js'
+import { loadConfig, loadWxConfig, saveWxConfig, modelNeedsApiKey } from '../config.js'
 import { keepAwake } from '../keepawake.js'
 
 const DEFAULT_BASE_URL = 'https://ilinkai.weixin.qq.com'
@@ -186,7 +186,7 @@ export function startWx(): void {
   const cfg = loadConfig('wx')
   const wx = loadWxConfig()
 
-  if (!cfg.apiKey) {
+  if (modelNeedsApiKey(cfg) && !cfg.apiKey) {
     console.error('缺少 API key。先运行: ai --set-key <KEY>')
     process.exit(1)
   }
@@ -456,11 +456,11 @@ export function startWx(): void {
     try {
       // 每条消息重新读取渠道模型绑定：`ai --use-model ... --channel wx` 无需重启守护进程。
       const modelConfig = loadConfig('wx')
-      if (!modelConfig.apiKey) throw new Error('个人微信当前模型缺少 API key，请重新绑定带凭据的模型预设')
+      if (modelNeedsApiKey(modelConfig) && !modelConfig.apiKey) throw new Error('个人微信当前模型缺少 API key，请重新绑定带凭据的模型预设')
       let said = false
       const answers: string[] = []
       for await (const out of runAgent(history, {
-        apiKey: modelConfig.apiKey,
+        apiKey: modelConfig.apiKey ?? '',
         model: modelConfig.model,
         baseURL: modelConfig.baseURL,
         provider: modelConfig.provider,

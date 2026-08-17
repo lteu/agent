@@ -1,7 +1,10 @@
 # `ai-claude` 本地 Agent + Remote Claude 中转完整说明
 
-> 核对日期：2026-07-30  
-> 本地项目：`/Users/lteu/progetto/agent`  
+> 历史部署快照：本文记录 2026-07-30 当时的机器状态和实现细节。
+> 当前使用方式请以 [`docs/ai-claude.md`](../../docs/ai-claude.md) 为准。
+>
+> 核对日期：2026-07-30
+> 本地项目：`/Users/lteu/progetto/agent`
 > SSH 目标别名：`remote`
 
 ## 1. 最终目标和结论
@@ -55,8 +58,8 @@ c530df51cd4bb38027d393bcbcaa7a1784c50832606e12e2a3709f18991022ba  ai-claude-gate
 
 仓库对应源文件：
 
-- [`deploy/ai-claude-gateway.mjs`](deploy/ai-claude-gateway.mjs)
-- [`deploy/ai-claude-gateway.service`](deploy/ai-claude-gateway.service)
+- [`deploy/ai-claude-gateway.mjs`](../../deploy/ai-claude-gateway.mjs)
+- [`deploy/ai-claude-gateway.service`](../../deploy/ai-claude-gateway.service)
 
 ### 2.2 Remote 原有且被复用的内容
 
@@ -133,12 +136,12 @@ systemd 还设置了：
 
 | 本地文件 | 用途 |
 |---|---|
-| [`src/claude-remote.ts`](src/claude-remote.ts) | `ai-claude` 启动器源代码 |
+| [`src/claude-remote.ts`](../../src/claude-remote.ts) | `ai-claude` 启动器源代码 |
 | `dist/claude-remote.js` | 构建后的可执行入口 |
-| [`deploy/ai-claude-sandbox.Dockerfile`](deploy/ai-claude-sandbox.Dockerfile) | sandbox 镜像定义 |
-| [`.dockerignore`](.dockerignore) | 限制 Docker 构建上下文 |
-| [`deploy/ai-claude-gateway.mjs`](deploy/ai-claude-gateway.mjs) | 部署到 remote 的网关源文件 |
-| [`deploy/ai-claude-gateway.service`](deploy/ai-claude-gateway.service) | 部署到 remote 的 systemd 源文件 |
+| [`deploy/ai-claude-sandbox.Dockerfile`](../../deploy/ai-claude-sandbox.Dockerfile) | sandbox 镜像定义 |
+| [`.dockerignore`](../../.dockerignore) | 限制 Docker 构建上下文 |
+| [`deploy/ai-claude-gateway.mjs`](../../deploy/ai-claude-gateway.mjs) | 部署到 remote 的网关源文件 |
+| [`deploy/ai-claude-gateway.service`](../../deploy/ai-claude-gateway.service) | 部署到 remote 的 systemd 源文件 |
 
 `package.json` 注册了三个命令：
 

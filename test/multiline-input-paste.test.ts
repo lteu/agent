@@ -34,38 +34,7 @@ function makeStdout() {
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-test('一次物理粘贴被拆成多个各自完整的 bracketed-paste 序列、粘贴完直接回车发送，内容完整还原不丢失也不夹带标记', async () => {
-  const stdin = makeStdin()
-  const { stdout } = makeStdout()
-  let submitted: string | null = null
-  const app = render(
-    React.createElement(MultilineInput, { onSubmit: (value: string) => { submitted = value } }),
-    { stdin, stdout, exitOnCtrlC: false, patchConsole: false },
-  )
-
-  const chunkA = Array.from({ length: 12 }, (_, i) => `lineA${i}`).join('\n')
-  const chunkB = Array.from({ length: 12 }, (_, i) => `lineB${i}`).join('\n')
-  const chunkC = Array.from({ length: 6 }, (_, i) => `lineC${i}`).join('\n')
-
-  await wait(30)
-  // 三次各自独立、各自完整的 bracketed-paste 序列，模拟远程中继把一次粘贴按网络包切开
-  // （这正是截图里 [Pasted text #21]...[Pasted text #30] 复现出来的场景）。
-  stdin.write(PASTE_START_MARKER + chunkA + PASTE_END_MARKER)
-  await wait(80)
-  stdin.write(PASTE_START_MARKER + chunkB + PASTE_END_MARKER)
-  await wait(80)
-  stdin.write(PASTE_START_MARKER + chunkC + PASTE_END_MARKER)
-  await wait(80)
-  // 粘贴完直接回车发送，是最常见的实际操作：发送前会先 flush 挂起的粘贴合并，
-  // 保证 onSubmit 拿到的是合并后的完整内容，而不是三段夹着 \x1b[200~/[201~ 标记的碎片。
-  stdin.write('\r')
-  await wait(80)
-  app.unmount()
-
-  assert.equal(submitted, chunkA + chunkB + chunkC)
-})
-
-test('粘贴分片合并后，紧跟的普通按键也会正确触发落地（不必等到静默超时）', async () => {
+test('完整 bracketed paste 收尾后立即显示占位符，不等待兜底超时', async () => {
   const stdin = makeStdin()
   const { stdout, getFrame } = makeStdout()
   let submitted: string | null = null
@@ -74,15 +43,36 @@ test('粘贴分片合并后，紧跟的普通按键也会正确触发落地（�
     { stdin, stdout, exitOnCtrlC: false, patchConsole: false },
   )
 
-  const chunkA = Array.from({ length: 5 }, (_, i) => `a${i}`).join('\n')
-  const chunkB = Array.from({ length: 5 }, (_, i) => `b${i}`).join('\n')
+  const pasted = Array.from({ length: 30 }, (_, i) => `line${i}`).join('\n')
 
   await wait(30)
-  stdin.write(PASTE_START_MARKER + chunkA + PASTE_END_MARKER)
+  stdin.write(PASTE_START_MARKER + pasted + PASTE_END_MARKER)
   await wait(80)
-  stdin.write(PASTE_START_MARKER + chunkB + PASTE_END_MARKER)
+
+  const placeholders = [...new Set(getFrame().match(/\[Pasted text #\d+(?: \+\d+ lines)?\]/g) ?? [])]
+  assert.equal(placeholders.length, 1, `应立即出现一个粘贴占位符，实际: ${JSON.stringify(placeholders)}`)
+
+  stdin.write('\r')
   await wait(80)
-  // 粘贴后接着打字（而不是立刻回车），同样应该把挂起的分片合并成一个占位符。
+  app.unmount()
+
+  assert.equal(submitted, pasted)
+})
+
+test('完成粘贴后紧跟的普通按键保持正确顺序', async () => {
+  const stdin = makeStdin()
+  const { stdout, getFrame } = makeStdout()
+  let submitted: string | null = null
+  const app = render(
+    React.createElement(MultilineInput, { onSubmit: (value: string) => { submitted = value } }),
+    { stdin, stdout, exitOnCtrlC: false, patchConsole: false },
+  )
+
+  const pasted = Array.from({ length: 10 }, (_, i) => `line${i}`).join('\n')
+
+  await wait(30)
+  stdin.write(PASTE_START_MARKER + pasted + PASTE_END_MARKER)
+  await wait(80)
   stdin.write('x')
   await wait(80)
 
@@ -93,5 +83,35 @@ test('粘贴分片合并后，紧跟的普通按键也会正确触发落地（�
   await wait(80)
   app.unmount()
 
-  assert.equal(submitted, chunkA + chunkB + 'x')
+  assert.equal(submitted, pasted + 'x')
+})
+
+test('终端启用 bracketed paste 后，一个物理粘贴跨多个 stdin read 仍只提交一次完整内容', async () => {
+  const stdin = makeStdin()
+  const { stdout, getFrame } = makeStdout()
+  let submitted: string | null = null
+  const app = render(
+    React.createElement(MultilineInput, { onSubmit: (value: string) => { submitted = value } }),
+    { stdin, stdout, exitOnCtrlC: false, patchConsole: false },
+  )
+
+  const first = Array.from({ length: 20 }, (_, i) => `first${i}`).join('\n')
+  const middle = Array.from({ length: 20 }, (_, i) => `middle${i}`).join('\n')
+  const last = Array.from({ length: 20 }, (_, i) => `last${i}`).join('\n')
+
+  await wait(30)
+  // A real terminal emits one marker pair for the physical paste, while the OS may
+  // split the enclosed payload across any number of reads.
+  stdin.write(PASTE_START_MARKER + first)
+  await wait(80)
+  assert.match(getFrame(), /Pasting…/, '等待后续粘贴分片时应显示进度提示')
+  stdin.write(middle)
+  await wait(30)
+  stdin.write(last + PASTE_END_MARKER)
+  await wait(30)
+  stdin.write('\r')
+  await wait(80)
+  app.unmount()
+
+  assert.equal(submitted, first + middle + last)
 })

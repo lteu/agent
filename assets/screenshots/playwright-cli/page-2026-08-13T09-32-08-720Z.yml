@@ -1,0 +1,463 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]: M
+      - text: Studio / system note
+    - navigation "Page sections" [ref=e5]:
+      - link "Mental model" [ref=e6] [cursor=pointer]:
+        - /url: "#model"
+      - link "Files" [ref=e7] [cursor=pointer]:
+        - /url: "#anatomy"
+      - link "Lifecycle" [ref=e8] [cursor=pointer]:
+        - /url: "#lifecycle"
+      - link "ai-cc" [ref=e9] [cursor=pointer]:
+        - /url: "#ai-cc"
+      - link "Recommendation" [ref=e10] [cursor=pointer]:
+        - /url: "#recommendation"
+  - banner [ref=e11]:
+    - generic [ref=e12]:
+      - generic [ref=e13]: Claude Code persistence, decoded
+      - heading [level=1] [ref=e14]:
+        - text: Memory is
+        - emphasis [ref=e15]: not
+        - text: a cache.
+      - paragraph [ref=e16]:
+        - text: The directory
+        - code [ref=e17]: ~/.claude/projects
+        - text: contains resumable session records and, in some versions or feature configurations, durable project memory. Prompt caching is a separate, short-lived API optimization.
+    - complementary "Quick classification" [ref=e18]:
+      - generic [ref=e19]:
+        - generic [ref=e20]: What survives?
+        - generic [ref=e21]: local source audit
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - generic [ref=e24]: "01"
+          - generic [ref=e25]:
+            - strong [ref=e26]: Resume the same session
+            - generic [ref=e27]: JSONL reconstructs its message chain
+          - generic [ref=e28]: "yes"
+        - generic [ref=e29]:
+          - generic [ref=e30]: "02"
+          - generic [ref=e31]:
+            - strong [ref=e32]: Start a brand-new session
+            - generic [ref=e33]: Only instructions + curated memory cross over
+          - generic [ref=e34]: conditional
+        - generic [ref=e35]:
+          - generic [ref=e36]: "03"
+          - generic [ref=e37]:
+            - strong [ref=e38]: Reuse API prompt tokens
+            - generic [ref=e39]: Provider-side prefix cache; no durable knowledge
+          - generic [ref=e40]: temporary
+      - generic [ref=e41]: "For ai-cc: build persistence, but begin with exact session resume—not autonomous “remember everything.”"
+  - main [ref=e42]:
+    - generic [ref=e43]:
+      - generic [ref=e44]:
+        - generic [ref=e45]: 01 / MODEL
+        - heading "Four different mechanisms" [level=2] [ref=e46]
+        - paragraph [ref=e47]: The word “cache” hides important differences in lifetime and behavior.
+      - generic [ref=e48]:
+        - paragraph [ref=e49]:
+          - mark [ref=e50]:
+            - code [ref=e51]: ~/.claude/projects
+            - text: is a project-scoped persistence store
+          - text: ", not a single blob of learned understanding."
+        - paragraph [ref=e52]: Claude Code can continue work because it either reloads an existing conversation or injects deliberately saved context. Merely having old files on disk does not mean a new model call has read them.
+        - generic [ref=e53]:
+          - article [ref=e54]:
+            - text: Common mental model
+            - heading "“Claude cached my repository.”" [level=3] [ref=e55]
+            - paragraph [ref=e56]: Everything previously discovered is assumed to be silently available next time.
+          - generic [ref=e57]: →
+          - article [ref=e58]:
+            - text: Actual mental model
+            - heading "“Claude reloads selected artifacts.”" [level=3] [ref=e59]
+            - paragraph [ref=e60]: A transcript, instruction file, memory index, or retrieved topic must be placed back into context.
+        - generic [ref=e61]:
+          - tablist "Session scenarios" [ref=e62]:
+            - tab "Same running session" [selected] [ref=e63] [cursor=pointer]
+            - tab "Resume after restart" [ref=e64] [cursor=pointer]
+            - tab "Brand-new session" [ref=e65] [cursor=pointer]
+          - tabpanel "Same running session" [ref=e66]:
+            - generic [ref=e67]:
+              - heading "The live message array is the memory." [level=3] [ref=e68]
+              - paragraph [ref=e69]: Every turn sends the current conversation prefix, with compaction used when it grows too large. Provider prompt caching can make repeated prefixes cheaper.
+            - generic [ref=e70]:
+              - generic [ref=e71]:
+                - generic [ref=e72]: Current messages
+                - generic [ref=e73]: present
+              - generic [ref=e74]:
+                - generic [ref=e75]: Tool results
+                - generic [ref=e76]: present
+              - generic [ref=e77]:
+                - generic [ref=e78]: Other sessions
+                - generic [ref=e79]: not loaded
+    - generic [ref=e80]:
+      - generic [ref=e81]:
+        - generic [ref=e82]: 02 / FILES
+        - heading "Project-store anatomy" [level=2] [ref=e83]
+        - paragraph [ref=e84]: The exact subdirectories vary by version, active features, and what the session used.
+      - generic [ref=e85]:
+        - paragraph [ref=e86]:
+          - text: One sanitized project directory can hold
+          - mark [ref=e87]: session history and cross-session memory side by side
+          - text: .
+        - generic [ref=e88]:
+          - generic [ref=e89]:
+            - generic [ref=e94]: conceptual layout — names verified against studio/cc
+            - button "copy tree" [ref=e95] [cursor=pointer]
+          - generic [ref=e96]: "~/.claude/projects/ └── -Users-me-code-my-app/ ├── <session-id>.jsonl # append-only transcript ├── <session-id>/ │ ├── session-memory/summary.md # notes for this session │ ├── subagents/ # child-agent transcripts │ ├── remote-agents/ # resumable task metadata │ └── tool-results/ # offloaded large results └── memory/ ├── MEMORY.md # small durable index ├── feedback_testing.md # topic memory ├── project_deadline.md # topic memory └── reference_dashboards.md # topic memory"
+        - generic [ref=e97]:
+          - generic [ref=e98]: observed here
+          - paragraph [ref=e99]:
+            - text: For this repository,
+            - code [ref=e100]: ~/.claude/projects/-Users-lteu-progetto-agent
+            - text: currently contains one 666,475-byte JSONL transcript with 233 records, and no
+            - code [ref=e101]: memory/
+            - text: or
+            - code [ref=e102]: session-memory/
+            - text: directory. That proves session logging is active here; it does
+            - strong [ref=e103]: not
+            - text: prove cross-session auto-memory is active for this install/session.
+        - generic "Persistence mechanism comparison" [ref=e104]:
+          - generic [ref=e105]: Mechanism
+          - generic [ref=e106]: Stored in
+          - generic [ref=e107]: Survives restart
+          - generic [ref=e108]: New session sees it
+          - generic [ref=e109]: Real purpose
+          - strong [ref=e111]: Transcript
+          - generic [ref=e112]: Local JSONL
+          - generic [ref=e113]: "yes"
+          - generic [ref=e115]: only on resume
+          - generic [ref=e117]: Rebuild the exact conversation branch
+          - strong [ref=e119]: Session memory
+          - generic [ref=e120]:
+            - text: Per-session
+            - code [ref=e121]: summary.md
+          - generic [ref=e122]: "yes"
+          - generic [ref=e124]: same session
+          - generic [ref=e126]: Support long-context compaction
+          - strong [ref=e128]: CLAUDE.md
+          - generic [ref=e129]: User / repo files
+          - generic [ref=e130]: "yes"
+          - generic [ref=e132]: "yes"
+          - generic [ref=e134]: Deterministic rules and conventions
+          - strong [ref=e136]: Auto-memory
+          - generic [ref=e137]:
+            - text: Project
+            - code [ref=e138]: memory/
+          - generic [ref=e139]: "yes"
+          - generic [ref=e141]: selected
+          - generic [ref=e143]: Non-derivable durable context
+          - strong [ref=e145]: Prompt cache
+          - generic [ref=e146]: Model provider
+          - generic [ref=e147]: ephemeral
+          - generic [ref=e149]: no guarantee
+          - generic [ref=e151]: Lower latency and input-token cost
+    - generic [ref=e152]:
+      - generic [ref=e153]:
+        - generic [ref=e154]: 03 / FLOW
+        - heading "How continuity happens" [level=2] [ref=e155]
+        - paragraph [ref=e156]: A new turn only benefits from information that is explicitly selected and reintroduced.
+      - generic [ref=e157]:
+        - paragraph [ref=e158]:
+          - text: Persistence works as a
+          - mark [ref=e159]: write → select → inject
+          - text: pipeline.
+        - generic [ref=e160]:
+          - generic [ref=e161]:
+            - generic [ref=e162]: "01"
+            - generic [ref=e163]:
+              - heading "Map the working directory to a stable project key" [level=3] [ref=e164]
+              - paragraph [ref=e165]: The path is sanitized for the project-store folder. Auto-memory prefers the canonical Git root, so worktrees can share the same project memory.
+            - generic [ref=e166]: getProjectDir()getAutoMemBase()
+          - generic [ref=e167]:
+            - generic [ref=e168]: "02"
+            - generic [ref=e169]:
+              - heading "Load deterministic instructions at startup" [level=3] [ref=e170]
+              - paragraph [ref=e171]:
+                - text: Managed, user, project, rules, and local
+                - code [ref=e172]: CLAUDE.md
+                - text: layers are discovered. A small auto-memory index can join this context.
+            - generic [ref=e173]: getClaudeMds()MEMORY.md ≤ 200 lines / 25 KB
+          - generic [ref=e174]:
+            - generic [ref=e175]: "03"
+            - generic [ref=e176]:
+              - heading "Append the live conversation to JSONL" [level=3] [ref=e177]
+              - paragraph [ref=e178]: User, assistant, tool, summary, and metadata records are written with UUID and parent links. Those links preserve branches and identify the active leaf.
+            - generic [ref=e179]: recordTranscript()<session-id>.jsonl
+          - generic [ref=e180]:
+            - generic [ref=e181]: "04"
+            - generic [ref=e182]:
+              - heading "Extract only durable, non-obvious context" [level=3] [ref=e183]
+              - paragraph [ref=e184]: A feature-gated background fork can inspect recent messages and update typed topic files. Direct writes by the main agent suppress duplicate extraction.
+            - generic [ref=e185]: user · feedbackproject · reference
+          - generic [ref=e186]:
+            - generic [ref=e187]: "05"
+            - generic [ref=e188]:
+              - heading "Recall narrowly on a future query" [level=3] [ref=e189]
+              - paragraph [ref=e190]: The memory index is always available in one mode; another feature path scans descriptions and asks a small side query to choose up to five relevant files. Old transcripts are a last-resort search.
+            - generic [ref=e191]: findRelevantMemories()top ≤ 5
+          - generic [ref=e192]:
+            - generic [ref=e193]: "06"
+            - generic [ref=e194]:
+              - heading "Verify memory against current state" [level=3] [ref=e195]
+              - paragraph [ref=e196]: Saved facts may be stale. The prompt explicitly tells Claude to check files, functions, flags, and current repo state before making an actionable recommendation.
+            - generic [ref=e197]: memory = claimcurrent code = authority
+        - generic [ref=e198]:
+          - article [ref=e199]:
+            - heading "Good durable memory" [level=3] [ref=e200]
+            - list [ref=e201]:
+              - listitem [ref=e202]: + User role, goals, and useful expertise
+              - listitem [ref=e203]: + Corrections and validated collaboration preferences
+              - listitem [ref=e204]: + Project decisions, deadlines, and rationale not present in code
+              - listitem [ref=e205]: + Pointers to external sources of truth
+          - article [ref=e206]:
+            - heading "Keep out of durable memory" [level=3] [ref=e207]
+            - list [ref=e208]:
+              - listitem [ref=e209]: − Architecture, paths, and patterns derivable from current code
+              - listitem [ref=e210]: − Git history already available from Git
+              - listitem [ref=e211]: − Ephemeral task state and temporary worklogs
+              - listitem [ref=e212]: − Secrets, credentials, or unreviewed sensitive tool output
+    - generic [ref=e213]:
+      - generic [ref=e214]:
+        - generic [ref=e215]: 04 / COMPACT
+        - heading "Session notes are different" [level=2] [ref=e216]
+        - paragraph [ref=e217]: They protect continuity inside one long conversation; they are not the project’s long-term memory.
+      - generic [ref=e218]:
+        - paragraph [ref=e219]:
+          - text: A forked note-taker maintains
+          - mark [ref=e220]: one structured summary per session
+          - text: .
+        - paragraph [ref=e221]: In the inspected source, the default thresholds initialize session notes around 10,000 context tokens and update after roughly 5,000 more tokens, with a three-tool-call threshold. The feature is remotely gated and tied to auto-compaction, so these values describe this source snapshot—not a universal product contract.
+        - generic "Session memory defaults" [ref=e222]:
+          - generic [ref=e223]: Trigger
+          - generic [ref=e224]: Default
+          - generic [ref=e225]: Writes
+          - generic [ref=e226]: Budget
+          - generic [ref=e227]: Scope
+          - strong [ref=e229]: Initialize
+          - generic [ref=e230]: 10K context tokens
+          - code [ref=e232]: summary.md
+          - generic [ref=e233]: Structured sections
+          - generic [ref=e234]: Current session only
+          - strong [ref=e236]: Update
+          - generic [ref=e237]: +5K tokens
+          - generic [ref=e238]: Edit exact file
+          - generic [ref=e239]: ~2K / section
+          - generic [ref=e240]: Background fork
+          - strong [ref=e242]: Tool threshold
+          - generic [ref=e243]: 3 tool calls
+          - generic [ref=e244]: Latest facts
+          - generic [ref=e245]: ~12K total
+          - generic [ref=e246]: Feature-gated
+        - generic [ref=e247]:
+          - generic [ref=e248]: important
+          - paragraph [ref=e249]: A summary is lossy by design. Keep the raw transcript for exact resume and audit; use the summary to control context size. Do not let the summary become the only copy of the conversation.
+    - generic [ref=e250]:
+      - generic [ref=e251]:
+        - generic [ref=e252]: 05 / AI-CC
+        - heading "What your project has today" [level=2] [ref=e253]
+        - paragraph [ref=e254]: The current implementation has useful pieces, but restart continuity is not wired end to end.
+      - generic [ref=e255]:
+        - paragraph [ref=e256]:
+          - text: ai-cc currently has
+          - mark [ref=e257]: logging and in-process context
+          - text: ", not reopenable local sessions."
+        - generic [ref=e258]:
+          - article [ref=e259]:
+            - text: src/agent/session.ts
+            - heading "SessionStore is RAM-only" [level=3] [ref=e260]
+            - paragraph [ref=e261]:
+              - text: A
+              - code [ref=e262]: Map<string, ChatMessage[]>
+              - text: holds channel histories. Process exit discards the map, and startup does not hydrate it from disk.
+            - text: "1"
+          - article [ref=e263]:
+            - text: src/agent/chatlog.ts
+            - heading "Chat history is write-only" [level=3] [ref=e264]
+            - paragraph [ref=e265]:
+              - code [ref=e266]: chat-history.jsonl
+              - text: and Markdown are appended for audit and browsing, but no code reads them back into an active model context.
+            - text: "2"
+          - article [ref=e267]:
+            - text: src/agent/compact.ts
+            - heading "Compaction is not persisted" [level=3] [ref=e268]
+            - paragraph [ref=e269]:
+              - text: The model summary replaces older messages via
+              - code [ref=e270]: history.splice()
+              - text: . It helps the live process, then disappears with that in-memory history.
+            - text: "3"
+        - generic [ref=e271]:
+          - strong [ref=e272]: Result
+          - generic [ref=e273]:
+            - text: Remote Claude
+            - code [ref=e274]: start/resume
+            - text: reduces repeated history transfer during an active agent loop, but it does not make the local ai-cc conversation reopenable after the UI/process restarts.
+    - generic [ref=e275]:
+      - generic [ref=e276]:
+        - generic [ref=e277]: 06 / DECISION
+        - heading "What ai-cc should build" [level=2] [ref=e278]
+        - paragraph [ref=e279]: Implement progressively. Exact continuity has higher value and lower risk than automatic behavioral memory.
+      - generic [ref=e280]:
+        - generic [ref=e281]:
+          - text: Recommendation
+          - heading "Yes—add the capability, but copy the architecture’s separation of concerns, not its entire complexity." [level=3] [ref=e282]
+          - paragraph [ref=e283]: Start with per-project session persistence and exact resume. Add curated memory only after users can inspect, correct, forget, and disable it.
+          - text: "YES"
+        - generic [ref=e284]:
+          - article [ref=e285]:
+            - generic [ref=e286]:
+              - text: P0
+              - generic [ref=e287]: build now
+            - generic [ref=e288]:
+              - heading "Durable sessions + exact resume" [level=3] [ref=e289]
+              - paragraph [ref=e290]:
+                - text: Write canonical messages to one JSONL per session; persist session metadata and active leaf; repair or reject incomplete tool-call pairs; expose
+                - code [ref=e291]: "--continue"
+                - text: ","
+                - code [ref=e292]: "--resume <id>"
+                - text: ", and a session picker."
+            - generic [ref=e293]:
+              - generic [ref=e294]: highest value
+              - text: low judgment
+          - article [ref=e295]:
+            - generic [ref=e296]:
+              - text: P1
+              - generic [ref=e297]: build next
+            - generic [ref=e298]:
+              - heading "Deterministic project instructions" [level=3] [ref=e299]
+              - paragraph [ref=e300]: Load a checked-in project instruction file plus a private local override on every new session. This is the right home for stable commands, conventions, and safety rules.
+            - generic [ref=e301]:
+              - generic [ref=e302]: predictable
+              - text: team-friendly
+          - article [ref=e303]:
+            - generic [ref=e304]:
+              - text: P2
+              - generic [ref=e305]: then
+            - generic [ref=e306]:
+              - heading "Curated project memory" [level=3] [ref=e307]
+              - paragraph [ref=e308]: Use a small index plus typed topic files. Start with explicit “remember / forget” commands and keyword retrieval. Add a relevance model only when the corpus justifies it.
+            - generic [ref=e309]:
+              - generic [ref=e310]: cross-session
+              - text: reviewable
+          - article [ref=e311]:
+            - generic [ref=e312]:
+              - text: P3
+              - generic [ref=e313]: optional
+            - generic [ref=e314]:
+              - heading "Background extraction and consolidation" [level=3] [ref=e315]
+              - paragraph [ref=e316]: Run after a successful turn, never on partial tool state. Deduplicate, enforce budgets, surface what changed, and keep the extractor’s writes inside the memory directory.
+            - generic [ref=e317]:
+              - generic [ref=e318]: automation
+              - text: more risk
+        - generic [ref=e319]:
+          - generic [ref=e320]: Recommended minimum data path
+          - generic [ref=e321]:
+            - generic [ref=e322]:
+              - strong [ref=e323]: Startup
+              - generic [ref=e324]: canonical project keyload instructionschoose new or resume
+            - generic [ref=e325]: →
+            - generic [ref=e326]:
+              - strong [ref=e327]: Session engine
+              - generic [ref=e328]: append canonical messagesflush after each completed eventrebuild active chain on resume
+            - generic [ref=e329]: →
+            - generic [ref=e330]:
+              - strong [ref=e331]: Optional memory
+              - generic [ref=e332]: explicit save firstsmall index + topicsretrieve narrowly + verify
+        - generic [ref=e333]:
+          - generic [ref=e334]:
+            - generic [ref=e335]: "01"
+            - generic [ref=e336]:
+              - strong [ref=e337]: Store outside the repository by default
+              - generic [ref=e338]: User preferences and transcripts are private; only stable team instructions belong in Git.
+          - generic [ref=e339]:
+            - generic [ref=e340]: "02"
+            - generic [ref=e341]:
+              - strong [ref=e342]: Never inject every old transcript
+              - generic [ref=e343]: Resume one chain or retrieve small relevant excerpts. Full replay creates token and privacy problems.
+          - generic [ref=e344]:
+            - generic [ref=e345]: "03"
+            - generic [ref=e346]:
+              - strong [ref=e347]: Make memory inspectable
+              - generic [ref=e348]: Provide list, edit, forget, export, retention, and project-level disable controls.
+          - generic [ref=e349]:
+            - generic [ref=e350]: "04"
+            - generic [ref=e351]:
+              - strong [ref=e352]: Separate identity from path
+              - generic [ref=e353]: Use a canonical repo identity; define whether worktrees share memory and handle moved folders.
+          - generic [ref=e354]:
+            - generic [ref=e355]: "05"
+            - generic [ref=e356]:
+              - strong [ref=e357]: Treat recalled facts as stale claims
+              - generic [ref=e358]: Verify file/function/config claims against current state before acting.
+          - generic [ref=e359]:
+            - generic [ref=e360]: "06"
+            - generic [ref=e361]:
+              - strong [ref=e362]: Do not confuse cache with persistence
+              - generic [ref=e363]: Prompt-cache hits are a cost optimization. Correctness must never depend on them.
+        - generic [ref=e364]:
+          - article [ref=e365]:
+            - heading "Smallest useful first release" [level=3] [ref=e366]
+            - list [ref=e367]:
+              - listitem [ref=e368]:
+                - code [ref=e369]: sessions/<uuid>.jsonl
+                - text: with schema version and project ID.
+              - listitem [ref=e370]: Atomic append/flush after each completed message or tool result.
+              - listitem [ref=e371]: "Session index: title, timestamps, model, cwd, active leaf, compact boundary."
+              - listitem [ref=e372]:
+                - text: Startup picker plus
+                - code [ref=e373]: "--continue"
+                - text: and
+                - code [ref=e374]: "--resume"
+                - text: .
+              - listitem [ref=e375]: Persist compaction summaries as transcript events, never as a replacement for raw history.
+          - article [ref=e376]:
+            - heading "Do not build first" [level=3] [ref=e377]
+            - list [ref=e378]:
+              - listitem [ref=e379]: A vector database over every tool result.
+              - listitem [ref=e380]: Silent automatic user profiling.
+              - listitem [ref=e381]: Whole-history injection into every new session.
+              - listitem [ref=e382]: Unbounded memory files with no retention policy.
+              - listitem [ref=e383]: Cross-project memory sharing by raw filesystem prefix.
+    - generic [ref=e384]:
+      - generic [ref=e385]:
+        - generic [ref=e386]: 07 / EVIDENCE
+        - heading "Source map" [level=2] [ref=e387]
+        - paragraph [ref=e388]:
+          - text: Primary evidence is the local
+          - code [ref=e389]: studio/cc
+          - text: source snapshot and this repository’s current implementation.
+      - generic [ref=e390]:
+        - paragraph [ref=e391]:
+          - text: The explanation is tied to
+          - mark [ref=e392]: named implementation points
+          - text: ", not product folklore."
+        - generic [ref=e393]:
+          - generic [ref=e394]:
+            - strong [ref=e395]: Transcript layout + resume
+            - text: studio/cc/utils/sessionStorage.tsgetProjectDir · getTranscriptPath · recordTranscript · loadTranscriptFromFile
+          - generic [ref=e396]:
+            - strong [ref=e397]: Per-session summary
+            - text: studio/cc/utils/permissions/filesystem.tsstudio/cc/services/SessionMemory/sessionMemory.ts
+          - generic [ref=e398]:
+            - strong [ref=e399]: Cross-session auto-memory
+            - text: studio/cc/memdir/paths.tsstudio/cc/memdir/memdir.ts · memoryTypes.ts
+          - generic [ref=e400]:
+            - strong [ref=e401]: Extraction + recall
+            - text: studio/cc/services/extractMemories/extractMemories.tsstudio/cc/memdir/findRelevantMemories.ts
+          - generic [ref=e402]:
+            - strong [ref=e403]: Instruction injection
+            - text: studio/cc/utils/claudemd.tsgetClaudeMds · AutoMem entrypoint
+          - generic [ref=e404]:
+            - strong [ref=e405]: Prompt caching
+            - text: studio/cc/services/api/claude.tsaddCacheBreakpoints · buildSystemPromptBlocks
+          - generic [ref=e406]:
+            - strong [ref=e407]: ai-cc current session state
+            - text: src/agent/session.tsSessionStore
+          - generic [ref=e408]:
+            - strong [ref=e409]: ai-cc logs + compact
+            - text: src/agent/chatlog.tssrc/agent/compact.ts
+        - paragraph [ref=e410]: "Caveat: several Claude Code paths are build-feature or remotely feature-gated. Exact defaults can differ across product versions and accounts. The architecture and source behavior above describe the inspected snapshot; the observed local directory note describes this machine on 2026-08-13."
+  - contentinfo [ref=e411]:
+    - strong [ref=e412]: "Bottom line:"
+    - text: resume restores a conversation; memory informs a different conversation; prompt caching only makes a repeated prefix cheaper.

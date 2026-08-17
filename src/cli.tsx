@@ -41,6 +41,7 @@ import {
   CONFIG_PATH,
   DEFAULT_MODEL,
   DEFAULT_BASE_URL,
+  modelNeedsApiKey,
 } from './config.js'
 import { sendMail } from './smtp.js'
 import { getQuotes, formatQuote } from './stocks.js'
@@ -54,6 +55,10 @@ import { writeCrash } from './crashlog.js'
 import {
   createInkInputBridge,
   createScrollbackPreservingStdout,
+  clearTerminalAfterInk,
+  detectTerminalColorScheme,
+  enableBracketedPasteMode,
+  prepareTerminalForInk,
   restoreTerminalModes,
   safeTerminalSize,
   setTerminalAlternateScreenActive,
@@ -120,6 +125,18 @@ writeLogBanner('terminal', `ai 终端启动，工作目录: ${process.cwd()}`)
 
 const SYSTEM_PROMPT = buildSystemPrompt(process.cwd(), 'terminal')
 
+type UiTheme = {
+  scheme: 'dark' | 'light'
+  accent: string
+  cursorText: string
+}
+
+const UI_THEMES: Record<UiTheme['scheme'], UiTheme> = {
+  dark: { scheme: 'dark', accent: '#9A7418', cursorText: 'black' },
+  light: { scheme: 'light', accent: '#005FAF', cursorText: 'white' },
+}
+let activeUiTheme = UI_THEMES.dark
+
 // ———————————————————————————————————————————————
 // 命令行参数（在渲染界面之前处理）
 // ———————————————————————————————————————————————
@@ -155,10 +172,13 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai --set-provider <名称>  保存服务商显示名（仅用于界面/报错，如 OpenAI、通义千问）
   ai --add-model <名字> model=<模型名> baseURL=<地址> [apiKey=<key>] [provider=<服务商>]  保存一个模型预设（不传 apiKey 则切换时沿用当前已保存的 key）
   ai --list-models         列出已保存的模型预设，标注当前生效的那个
-  ai --models              --list-models 的别名
+  ai --models | --list | --l
+                           --list-models 的别名
   ai --model-list          --list-models 的别名
   ai --use-model <名字> [--channel qq|wx|wechat|all]
                            切换默认模型，或单独切换 QQ / 个人微信 / 企业微信（长驻服务无需重启）
+  ai --use <名字> | --u <名字>
+                           --use-model 的别名（同样支持 --channel）
   ai --rm-model <名字>     删除一个模型预设
   ai --set-qq-app <ID> <SECRET>  保存 QQ 机器人 AppID 和 AppSecret
   ai --qq-allow <openid>   往 QQ 白名单追加一个 openid（可多次；未授权用户发消息会回显其 openid）
@@ -222,7 +242,7 @@ if (argv[0] === '--config') {
   console.log(`  apiKey   = ${effective.apiKey ? '****' + effective.apiKey.slice(-4) : '(未设置)'}`)
   console.log(`  model    = ${effective.model}`)
   console.log(`  baseURL  = ${effective.baseURL}`)
-  const models = raw.models ?? []
+  const models = loadModels()
   if (models.length) {
     console.log('')
     console.log(`──────── 模型预设（${models.length} 个，activeModel = ${effective.activeModel || '(未设置)'}） ────────`)
@@ -263,7 +283,13 @@ if (argv[0] === '--add-model') {
   process.exit(0)
 }
 
-if (argv[0] === '--list-models' || argv[0] === '--models' || argv[0] === '--model-list') {
+if (
+  argv[0] === '--list-models' ||
+  argv[0] === '--models' ||
+  argv[0] === '--model-list' ||
+  argv[0] === '--list' ||
+  argv[0] === '--l'
+) {
   const list = loadModels()
   const effective = loadConfig()
   if (!list.length) {
@@ -283,7 +309,7 @@ if (argv[0] === '--list-models' || argv[0] === '--models' || argv[0] === '--mode
   process.exit(0)
 }
 
-if (argv[0] === '--use-model') {
+if (argv[0] === '--use-model' || argv[0] === '--use' || argv[0] === '--u') {
   const name = argv[1]
   if (!name) {
     console.error('用法: ai --use-model <名字> [--channel qq|wx|wechat|all]')
@@ -571,7 +597,7 @@ if (argv[0] === 'ask') {
   }
 
   const cfg = loadConfig()
-  if (!cfg.apiKey) {
+  if (modelNeedsApiKey(cfg) && !cfg.apiKey) {
     console.error('未配置 API key。先运行: ai --set-key <KEY>')
     process.exit(1)
   }
@@ -588,7 +614,7 @@ if (argv[0] === 'ask') {
   const startedAt = Date.now()
   try {
     for await (const ev of runAgent(history, {
-      apiKey: cfg.apiKey,
+      apiKey: cfg.apiKey ?? '',
       model: cfg.model,
       baseURL: cfg.baseURL,
       provider: cfg.provider,
@@ -888,7 +914,7 @@ function InlineMarkdown({ children }: { children: string }) {
           key={index}
           bold={segment.style === 'bold'}
           italic={segment.style === 'italic'}
-          color={segment.style === 'link' ? 'blue' : segment.style === 'code' ? 'cyan' : undefined}
+          color={segment.style === 'link' || segment.style === 'code' ? activeUiTheme.accent : undefined}
           underline={segment.style === 'link'}
         >
           {segment.style === 'link' && segment.href
@@ -982,6 +1008,22 @@ const MessageRow = memo(
     agentCard?: UIMessage['agentCard']
   }) => {
   if (role === 'user') {
+    if (activeUiTheme.scheme === 'light') {
+      return (
+        <Box
+          marginBottom={1}
+          borderStyle="single"
+          borderColor={activeUiTheme.accent}
+          borderTop={false}
+          borderRight={false}
+          borderBottom={false}
+          paddingLeft={1}
+          width={Math.max(20, (process.stdout.columns || 80) - 4)}
+        >
+          <Text>{content}</Text>
+        </Box>
+      )
+    }
     return (
       <Box marginBottom={1}>
         <Text backgroundColor="#3a3a3a" color="white">
@@ -1001,7 +1043,7 @@ const MessageRow = memo(
     return (
       <Box marginBottom={1}>
         <Text>
-          <Text color="white">●</Text>{' '}
+          <Text>●</Text>{' '}
           {content}
         </Text>
       </Box>
@@ -1103,13 +1145,13 @@ const MessageRow = memo(
 // 消息列表：整体 memo，只要 messages 引用不变就完全不重渲染。
 // 这样 Spinner tick 不会触发消息区的 reconciliation。
 // 头部信息：memo，只有 model/baseURL 变化才重绘（基本不会）。
-const TornadoIcon = memo(() => (
+const TornadoIcon = memo(({ color }: { color: string }) => (
   <Box flexDirection="column" marginRight={2}>
-    <Text color="#9A7418" bold>{'████████▄'}</Text>
-    <Text color="#9A7418" bold>{'  ▀█████'}</Text>
-    <Text color="#9A7418" bold>{'   ███▀'}</Text>
-    <Text color="#9A7418" bold>{'    ██'}</Text>
-    <Text color="#9A7418" bold>{'   ▀'}</Text>
+    <Text color={color} bold>{'████████▄'}</Text>
+    <Text color={color} bold>{'  ▀█████'}</Text>
+    <Text color={color} bold>{'   ███▀'}</Text>
+    <Text color={color} bold>{'    ██'}</Text>
+    <Text color={color} bold>{'   ▀'}</Text>
   </Box>
 ))
 
@@ -1121,34 +1163,57 @@ const Header = memo(({
   model: string
   baseURL: string
   columns: number
-}) => (
-  <Box
-    marginBottom={1}
-    width={Math.max(20, columns - 4)}
-    borderStyle="round"
-    borderColor="#9A7418"
-    paddingX={2}
-    paddingY={1}
-  >
-    <Box flexDirection="column" width="50%">
-      <Box>
-        <TornadoIcon />
-        <Box flexDirection="column">
-          <Text bold>Welcome back!</Text>
-          <Text color="#9A7418" bold>ai</Text>
-        </Box>
+}) => {
+  const theme = activeUiTheme
+  if (theme.scheme === 'light') {
+    return (
+      <Box
+        marginBottom={1}
+        width={Math.max(20, columns - 4)}
+        borderStyle="single"
+        borderColor={theme.accent}
+        paddingX={1}
+        flexDirection="column"
+      >
+        <Text>
+          <Text color={theme.accent} bold>{'◆ ai'}</Text>
+          <Text bold>{'  Welcome back'}</Text>
+          <Text dimColor>{`  ·  ${model}`}</Text>
+        </Text>
+        <Text dimColor wrap="truncate-middle">{process.cwd()}  ·  {baseURL}</Text>
+        <Text>Ask a question or describe a task. <Text dimColor>Ctrl+O: details</Text></Text>
       </Box>
-      <Text dimColor>{model}</Text>
-      <Text dimColor wrap="truncate-middle">Endpoint: {baseURL}</Text>
-      <Text dimColor wrap="truncate-middle">{process.cwd()}</Text>
+    )
+  }
+  return (
+    <Box
+      marginBottom={1}
+      width={Math.max(20, columns - 4)}
+      borderStyle="round"
+      borderColor={theme.accent}
+      paddingX={2}
+      paddingY={1}
+    >
+      <Box flexDirection="column" width="50%">
+        <Box>
+          <TornadoIcon color={theme.accent} />
+          <Box flexDirection="column">
+            <Text bold>Welcome back!</Text>
+            <Text color={theme.accent} bold>ai</Text>
+          </Box>
+        </Box>
+        <Text dimColor>{model}</Text>
+        <Text dimColor wrap="truncate-middle">Endpoint: {baseURL}</Text>
+        <Text dimColor wrap="truncate-middle">{process.cwd()}</Text>
+      </Box>
+      <Box flexDirection="column" width="50%" paddingLeft={2}>
+        <Text bold>Tips for getting started</Text>
+        <Text dimColor>Ask a question or describe a task.</Text>
+        <Text dimColor>Ctrl+O opens the complete tool transcript.</Text>
+      </Box>
     </Box>
-    <Box flexDirection="column" width="50%" paddingLeft={2}>
-      <Text bold>Tips for getting started</Text>
-      <Text dimColor>Ask a question or describe a task.</Text>
-      <Text dimColor>Ctrl+O opens the complete tool transcript.</Text>
-    </Box>
-  </Box>
-))
+  )
+})
 
 // Spinner：用 ref 代替 state 来跟踪帧索引，避免每 150ms 触发父组件重渲染。
 // 仅通过直接调度自身重渲染来更新画面。
@@ -1176,7 +1241,7 @@ const Spinner = memo(() => {
     const id = setInterval(() => setI(x => (x + 1) % SPINNER_FRAMES.length), 150)
     return () => clearInterval(id)
   }, [])
-  return <Text color="yellow">{ANIMATE_SPINNER ? SPINNER_FRAMES[i] : '●'}</Text>
+  return <Text color={activeUiTheme.accent}>{ANIMATE_SPINNER ? SPINNER_FRAMES[i] : '●'}</Text>
 })
 
 const BlinkingToolDot = memo(() => {
@@ -1186,7 +1251,7 @@ const BlinkingToolDot = memo(() => {
     const id = setInterval(() => setVisible(value => !value), 500)
     return () => clearInterval(id)
   }, [])
-  return <Text color="white">{!ANIMATE_SPINNER || visible ? '●' : ' '}</Text>
+  return <Text>{!ANIMATE_SPINNER || visible ? '●' : ' '}</Text>
 })
 
 const ActiveToolRow = memo(({ tool }: { tool: ActiveTool }) => {
@@ -1581,7 +1646,7 @@ function App() {
 
       try {
         const completion = await chatComplete(context, {
-          apiKey: apiKey!,
+          apiKey: apiKey ?? '',
           model: modelConfig.model,
           baseURL: modelConfig.baseURL,
           provider: modelConfig.provider,
@@ -1741,7 +1806,7 @@ function App() {
       streamTailRef.current = ''
       try {
         for await (const ev of runAgent(history, {
-          apiKey: apiKey!,
+          apiKey: apiKey ?? '',
           model: modelConfig.model,
           baseURL: modelConfig.baseURL,
           provider: modelConfig.provider,
@@ -2115,7 +2180,7 @@ function App() {
   )
 
   // 缺少 key：启动时引导用户输入并保存
-  if (!apiKey) {
+  if (!apiKey && modelNeedsApiKey(modelConfig)) {
     return (
       <KeyPrompt
         onSave={k => {
@@ -2152,7 +2217,7 @@ function App() {
         <TranscriptAlternateScreen rows={termRows} onRestored={finishTranscriptRestore}>
           <Box flexDirection="column" height={Math.max(3, termRows - 1)} overflow="hidden" flexShrink={0}>
         <Box marginBottom={1}>
-          <Text color="cyan" bold>完整转录</Text>
+          <Text color={activeUiTheme.accent} bold>完整转录</Text>
           <Text dimColor>
             {' '}· {transcriptShowRaw ? 'raw' : 'expanded'} · events {transcriptEvents.length} · lines {projectedTranscriptLines.length
               ? `${transcriptWindow.start + 1}-${transcriptWindow.end}/${projectedTranscriptLines.length}`
@@ -2231,7 +2296,7 @@ function App() {
       {busy && (
         <Box marginBottom={streaming ? 0 : 1}>
           <Text>
-            <Text color="yellow"><Spinner /></Text>{' '}
+            <Text color={activeUiTheme.accent}><Spinner /></Text>{' '}
             <Text>
               {modelStatus
                 ? formatModelStatus(modelStatus, Date.now(), modelConfig.model)
@@ -2267,17 +2332,17 @@ function App() {
         <Box
           flexDirection="column"
           borderStyle="round"
-          borderColor="yellow"
+          borderColor={activeUiTheme.accent}
           paddingX={1}
           marginBottom={1}
         >
           <Text>
-            <Text color="yellow" bold>/btw </Text>
+            <Text color={activeUiTheme.accent} bold>/btw </Text>
             <Text dimColor>{btw.question}</Text>
           </Text>
           <Box marginTop={1}>
             {btw.status === 'loading' ? (
-              <Text color="yellow"><Spinner /> 正在旁路回答…</Text>
+              <Text color={activeUiTheme.accent}><Spinner /> 正在旁路回答…</Text>
             ) : (
               <Text color={btw.status === 'error' ? 'red' : undefined}>{btw.answer}</Text>
             )}
@@ -2295,6 +2360,9 @@ function App() {
               ? `${queuedPrompts.length} queued · /btw 可旁问`
               : `${formatTokenCount(tokenUsage.totalTokens)} tokens`
           }
+          accentColor={activeUiTheme.accent}
+          cursorColor={activeUiTheme.cursorText}
+          compact={activeUiTheme.scheme === 'light'}
           width={Math.max(20, terminalSize.columns - 4)}
         />
       )}
@@ -2332,7 +2400,7 @@ function KeyPrompt({ onSave }: { onSave: (key: string) => void }) {
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box marginBottom={1} flexDirection="column">
-        <Text color="cyan" bold>
+        <Text color={activeUiTheme.accent} bold>
           ✦ ai · 首次设置
         </Text>
         <Text dimColor>没有检测到 API key，先把它填进来吧。</Text>
@@ -2358,8 +2426,14 @@ function KeyPrompt({ onSave }: { onSave: (key: string) => void }) {
       )}
 
       <Box>
-        <Text color="cyan">key › </Text>
-        <MultilineInput onSubmit={submit} placeholder="粘贴 API key…" />
+        <Text color={activeUiTheme.accent}>key › </Text>
+        <MultilineInput
+          onSubmit={submit}
+          placeholder="粘贴 API key…"
+          accentColor={activeUiTheme.accent}
+          cursorColor={activeUiTheme.cursorText}
+          compact={activeUiTheme.scheme === 'light'}
+        />
       </Box>
     </Box>
   )
@@ -2399,6 +2473,19 @@ if (argv[0] === 'serve') {
   // raw-mode support detection only sees the decoder and some PTYs otherwise leave
   // VDISCARD (Ctrl+O) active, so the kernel consumes the shortcut before JavaScript.
   if (process.stdin.isTTY) process.stdin.setRawMode?.(true)
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    activeUiTheme = UI_THEMES[await detectTerminalColorScheme(process.stdin, process.stdout)]
+  }
+  // Like Claude Code, explicitly request bracketed-paste markers from the terminal.
+  // Raw mode alone does not enable them; without CSI ? 2004 h a large physical paste
+  // is indistinguishable from several ordinary stdin reads and gets collapsed once
+  // per read. restoreTerminalModes() sends CSI ? 2004 l on every exit path.
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    // Normalize the initial cursor position before Ink paints a full-width frame.
+    // This is required by some Debian SSH PTYs even when stty reports onlcr.
+    prepareTerminalForInk(process.stdout)
+    enableBracketedPasteMode(process.stdout)
+  }
   const inkStdout = createScrollbackPreservingStdout(process.stdout)
   const restoreTerminal = () => restoreTerminalModes(process.stdout)
   let instance: ReturnType<typeof render> | undefined
@@ -2431,10 +2518,13 @@ if (argv[0] === 'serve') {
   const renderedInstance = instance
   // useApp().exit() unmounts Ink but does not know about our upstream pipe.
   // Dispose it as part of the same lifecycle so a clean exit cannot leave stdin alive.
+  // Ink intentionally leaves <Static> output behind; clear the visible frame after
+  // restoring terminal modes so the next shell prompt cannot overwrite that output.
   void renderedInstance.waitUntilExit().then(
     () => {
       inputBridge?.dispose()
       restoreTerminal()
+      clearTerminalAfterInk(process.stdout)
       process.off('exit', restoreTerminal)
     },
     () => {

@@ -11,6 +11,8 @@ import {
   type TokenUsage,
 } from './token-usage.js'
 import { randomUUID } from 'node:crypto'
+import { isCodexSubscriptionProvider } from './config.js'
+import { runCodexExec } from './codex-exec.js'
 
 export type RawToolCall = {
   id: string
@@ -534,6 +536,12 @@ export async function chatComplete(
   messages: ChatMessage[],
   opts: StreamOptions & { tools?: readonly unknown[] },
 ): Promise<Completion> {
+  if (isCodexSubscriptionProvider(opts.provider, opts.baseURL)) {
+    const stream = codexStreamCompletion(messages, opts)
+    let result = await stream.next()
+    while (!result.done) result = await stream.next()
+    return result.value
+  }
   if (isAnthropic(opts)) return anthropicChatComplete(messages, opts)
 
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
@@ -598,6 +606,39 @@ export type StreamPart =
       }
     }
 
+async function* codexStreamCompletion(
+  messages: ChatMessage[],
+  opts: StreamOptions,
+): AsyncGenerator<StreamPart, Completion, unknown> {
+  let content = ''
+  let usage = tokenUsageFromOpenAI(undefined)
+  let receiving = false
+  yield { type: 'model', phase: 'waiting' }
+
+  for await (const event of runCodexExec(messages, {
+    model: opts.model,
+    signal: opts.signal,
+  })) {
+    if (!receiving) {
+      receiving = true
+      yield { type: 'model', phase: 'receiving' }
+    }
+    if (event.type === 'text') {
+      content += event.content
+      yield { type: 'text', delta: event.content }
+    } else if (event.type === 'thinking') {
+      yield { type: 'thinking', delta: event.content }
+    } else if (event.type === 'progress') {
+      yield { type: 'progress', progress: event }
+    } else {
+      usage = event.usage
+      opts.onUsage?.(usage)
+    }
+  }
+
+  return { content, toolCalls: [], finishReason: 'stop', usage }
+}
+
 function positiveEnvMs(name: string, fallback: number): number {
   const value = Number(process.env[name])
   return Number.isFinite(value) && value > 0 ? value : fallback
@@ -639,6 +680,9 @@ export async function* streamCompletion(
   opts: StreamOptions & { tools?: readonly unknown[] },
 ): AsyncGenerator<StreamPart, Completion, unknown> {
   yield { type: 'model', phase: 'connecting' }
+  if (isCodexSubscriptionProvider(opts.provider, opts.baseURL)) {
+    return yield* codexStreamCompletion(messages, opts)
+  }
   if (isAnthropic(opts)) {
     const stream = anthropicStreamCompletion(messages, opts)
     let firstPart = true
@@ -924,6 +968,15 @@ export async function* streamChat(
   messages: ChatMessage[],
   opts: StreamOptions,
 ): AsyncGenerator<string, void, unknown> {
+  if (isCodexSubscriptionProvider(opts.provider, opts.baseURL)) {
+    const stream = codexStreamCompletion(messages, opts)
+    let result = await stream.next()
+    while (!result.done) {
+      if (result.value.type === 'text') yield result.value.delta
+      result = await stream.next()
+    }
+    return
+  }
   if (isAnthropic(opts)) return yield* anthropicStreamChat(messages, opts)
 
   const baseURL = (opts.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '')

@@ -1,3 +1,7 @@
+# 开发与排障笔记（归档）
+
+> 这是历史工作笔记，包含特定机器路径和当时的部署状态，不作为当前使用文档。
+
 ## Remote Claude 快速排障索引
 
 当出现“长时间只显示思考中”“Remote 已完成但本地没有结果”“网络连接中断重试”
@@ -133,7 +137,7 @@ test/token-usage.test.ts
 
 agent loop
 
-Q：你刚刚写的agent loop都能解决什么问题？据点例子啊                                                                      
+Q：你刚刚写的agent loop都能解决什么问题？据点例子啊
 
 ⏺ 核心区别：以前模型只能说，现在它能说一句→动一下→看结果→再决定。这个循环解锁的是"需要多步、要看现状、要验证"的任务。按
   你 AGENT-LEVELS.md 的分级举具体例子：
@@ -147,7 +151,7 @@ Q：你刚刚写的agent loop都能解决什么问题？据点例子啊
   以前这些它全部回"我没权限"。
 
   L1 看一眼再写
-  
+
   - 「这个项目用的什么 Node 版本？」→ read_file package.json 看完回答，而不是瞎猜。
   - 「列一下 src/ 里有哪些文件」→ list_dir，给你真实清单。
 
@@ -167,17 +171,17 @@ Q：你刚刚写的agent loop都能解决什么问题？据点例子啊
   比如「修个 bug」：模型第一次不知道 bug 在哪 → 先 run_bash 复现报错 → 根据报错 read_file 定位 → 改 →
   再跑一次确认修好了。这中间它要根据每一步的真实结果调整计划。没有 loop，它最多只能盲调一次工具就停；有了
   loop，它能像你刚才看到的 L0 测试那样：mkdir →（看到成功）→ write_file →（确认）→ 才说"做完了"。
-  
+
   ---
   一句话总结它解决的问题：把"会聊建文件的助手"变成"真能建文件、还会自己跑起来验证的 agent"——你那张能力表从 L0 到 L4
   的题，技术通道现在都通了（L4 打包那种还得配合你已有的 make-pkg.sh）。
-  
+
   想看的话，我可以直接拿表里某道题（比如 L2「给 CLI 加 --version」或 L3「加 /clear 命令」）用这个 ai
   实跑一遍，看它自己读代码、改、验证的全过程。
 
 
   Q:
-  where has claude code specified its agent loop ?                                                                      
+  where has claude code specified its agent loop ?
 
   A:
   ⏺ Bash(cd /Users/lteu/progetto/agent/claudecode && ls -la | head -60)
@@ -230,7 +234,7 @@ Q：你刚刚写的agent loop都能解决什么问题？据点例子啊
   Note the checkpoint name at query.ts:1714 — 'query_recursive_call'. Historically this was a literal recursive
   generator (yield* query(...)); they since flattened it into an explicit while(true) + state reassignment to avoid
   blowing the stack on long turns. Same shape, different control flow.
-  
+
   Side-by-side with what I wrote
 
   ┌───────────────────────────────────────┬───────────────────────────────────────────────────────────────────┐
@@ -250,7 +254,7 @@ Q：你刚刚写的agent loop都能解决什么问题？据点例子啊
   So conceptually mine is the same loop. The 1500 lines around it are the production concerns I skipped: context
   compaction (the autoCompact/microcompact logic), token budgets, stop-hooks, max-turns, abort handling, fallback
   models, streaming tool execution, and per-turn telemetry.
-  
+
   Want me to walk through any one of those — e.g. how toolOrchestration.runTools decides permissions and runs tools in
   parallel (that's the piece my single-threaded for (const tc of toolCalls) skips)?
 
@@ -258,9 +262,9 @@ Q：你刚刚写的agent loop都能解决什么问题？据点例子啊
   =====
   ## 接入IM
 
-  我想为项目 ai 加入 qq 可以原创对话，操控agent的功能。可以参考                 
-  openclaw-2026.3.23，有什么实现想法吗？                                        
-  
+  我想为项目 ai 加入 qq 可以原创对话，操控agent的功能。可以参考
+  openclaw-2026.3.23，有什么实现想法吗？
+
 ⏺ 先看一下你的项目结构，了解现有 agent 的实现方式，再给你具体的实现思路。
 
 ⏺ Bash(ls -la && echo "---" && git log --oneline -5)
@@ -304,30 +308,30 @@ Q：你刚刚写的agent loop都能解决什么问题？据点例子啊
   Listed 1 directory (ctrl+o to expand)
 
 ⏺ 我把你的 ai 项目和 openclaw 都看过了，给你一套可落地的思路。
-     
+
   现状判断
-  
-  你的 ai 现在是单进程、UI 和 agent 
+
+  你的 ai 现在是单进程、UI 和 agent
   循环绑死的结构：核心的「模型↔工具反复调用」循环写在 cli.tsx 的 send()
   里（104–144 行），它直接 setMessages 更新 Ink 界面。而真正可复用的是三块：
-  
+
   - deepseek.ts — 模型客户端（纯函数，无 UI 依赖）✅
   - tools.ts — 本地工具（纯函数）✅
   - agent 循环 — 目前被困在 React 组件里，这是要接 QQ 必须先解开的结。
 
   openclaw 给的关键启发
 
-  openclaw 没有 QQ，但它的 src/channels/ 架构正是你要的模式：core 与 channel 
+  openclaw 没有 QQ，但它的 src/channels/ 架构正是你要的模式：core 与 channel
   解耦。它把每个平台（imessage / signal / slack / whatsapp / discord，见
   src/channels/plugins/）抽象成一个 channel plugin，每个插件只做两件事：
-  
+
   - inbound（归一化）：把平台消息转成统一的内部消息格式
   - outbound（动作）：把 agent 的回复/动作发回平台
 
   agent 核心完全不知道消息来自终端还是
   QQ。这就是你该照搬的核心思路：把终端当成"第一个 channel"，QQ 当成"第二个
   channel"，二者共用同一个 agent 引擎。
-  
+
   QQ 接入的技术选型
   src/channels/plugins/）抽象成一个 channel plugin，每个插件只做两件事：
 
@@ -383,7 +387,7 @@ Q：你刚刚写的agent loop都能解决什么问题？据点例子啊
   ③ QQ channel src/channels/qq.ts — 通过 OneBot v11 正向 WebSocket（推荐 NapCat）接 QQ，零新依赖（用 Node v24 自带的全局 WebSocket）。含：强制白名单、群里需 @、/clear
   /help 命令、同会话防并发、断线指数退避重连。
 
-  ④ 配置与入口 — config.ts 加了 QQ 配置（OneBot 地址/token/白名单，写入仅自己可读的 ~/.ai/config.json），新增 ai --set-qq-url / --set-qq-token / --qq-allow 和 ai 
+  ④ 配置与入口 — config.ts 加了 QQ 配置（OneBot 地址/token/白名单，写入仅自己可读的 ~/.ai/config.json），新增 ai --set-qq-url / --set-qq-token / --qq-allow 和 ai
   serve。
 
   验证

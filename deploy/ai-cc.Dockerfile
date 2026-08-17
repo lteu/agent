@@ -1,42 +1,19 @@
 FROM node:22-bookworm-slim
 
 ARG CLAUDE_CODE_VERSION=latest
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+COPY deploy/ai-cc-apt-packages.txt /tmp/ai-cc-apt-packages.txt
+COPY deploy/ai-cc-python-packages.txt /tmp/ai-cc-python-packages.txt
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        git \
-        openssh-client \
-        privoxy \
-        python3 \
-        python3-pip \
-        python3-venv \
-        python-is-python3 \
-        ripgrep \
-        vim-tiny \
-    && python3 -m pip install --no-cache-dir --break-system-packages \
-        beautifulsoup4 \
-        httpx \
-        ipython \
-        lxml \
-        matplotlib \
-        numpy \
-        openpyxl \
-        pandas \
-        pillow \
-        pytest \
-        python-dotenv \
-        pyyaml \
-        requests \
-        scikit-learn \
-        scipy \
-        seaborn \
-        tqdm \
-        xlsxwriter \
+    && xargs -r apt-get install -y --no-install-recommends < /tmp/ai-cc-apt-packages.txt \
+    && xargs -r python3 -m pip install --no-cache-dir --break-system-packages < /tmp/ai-cc-python-packages.txt \
+    && python3 -m playwright install --with-deps chromium \
+    && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}" \
     && npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force \
-    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/lib/apt/lists/* /tmp/ai-cc-apt-packages.txt /tmp/ai-cc-python-packages.txt \
     && groupadd --gid 10001 agent \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/agent agent
 

@@ -1,5 +1,8 @@
 # AI vs. Claude Code: Agent Performance Review
 
+> Point-in-time review archived for reference. Some findings may already be implemented
+> or no longer match the current source tree.
+
 ## Executive summary
 
 The `ai/` implementation has a solid compact core, but its biggest performance limitations are execution correctness, weak verification, and missing project context—not model quality.

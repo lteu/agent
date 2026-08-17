@@ -13,7 +13,7 @@
 // 状态计算，导致后写覆盖前写——字符丢失、光标错位。ref 是同步的，每次回调都
 // 能拿到上一次的结果，从根上消除这个竞态。
 
-import { useEffect, useRef, useReducer } from 'react'
+import { memo, useEffect, useRef, useReducer } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { recordInput } from './crashlog.js'
 import {
@@ -33,6 +33,8 @@ type Props = {
   placeholder?: string
   topRightLabel?: string
   accentColor?: string
+  cursorColor?: string
+  compact?: boolean
   width?: number
 }
 
@@ -54,19 +56,29 @@ function lineColToOffset(value: string, line: number, col: number): number {
 }
 
 const DEFAULT_ACCENT = '#9A7418'
-// 见下方 useInput 内「跨多个完整 bracketed-paste 序列合并」的说明：合并静默窗口。
-// 这个项目还有一条远程中继链路（src/remote.ts / server.ts）：键盘数据要经网络转发，
-// 一次物理粘贴很容易被中继按网络包/网络延迟切成好几个完整的 \x1b[200~...\x1b[201~
-// 序列，相邻序列之间的间隔可能是几百毫秒甚至更久。之前用过 300ms / 1500ms，实测粘贴
-// 100 行代码仍会拆成 10 个片段——真正的根因其实不在这个「序列之间」的静默窗口，而在
-// 下面 pasteFlushTimerRef 那个「单个序列内部还没等到终止符」的兜底超时：一旦它先于真正
-// 的 \x1b[201~ 触发，就会把还没收完的半截内容错误地当成「完整一段」提前落地，
-// 之后姗姗来迟的剩余部分因为不再带 \x1b[200~ 起始标记，会被当成普通按键而不是粘贴续传，
-// 这才是片段被拆得比预期更多的主因。这里把两层超时都放宽到足以覆盖真实网络/终端延迟：
-// 真正决定何时把挂起的粘贴落地成一个占位符的，是「后面来了一个不属于粘贴序列的
-// 真实按键」（见下方 flushPendingPaste 的调用点），此定时器只是防止用户粘贴后完全不再
-// 操作时输入框一直空白的兜底，放宽不会拖慢“粘贴后立刻回车发送”的手感。
-const PASTE_COALESCE_MS = 4000
+const PASTE_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+const ANIMATE_PASTE_SPINNER =
+  process.env.AI_SPINNER === '1' ||
+  (process.env.AI_SPINNER !== '0' &&
+    process.stdout.isTTY === true &&
+    process.env.TERM !== 'dumb' &&
+    !process.env.SSH_TTY &&
+    !process.env.SSH_CONNECTION)
+
+const PasteSpinner = memo(({ accentColor }: { accentColor: string }) => {
+  const [frame, advance] = useReducer(index => (index + 1) % PASTE_SPINNER_FRAMES.length, 0)
+  useEffect(() => {
+    if (!ANIMATE_PASTE_SPINNER) return
+    const timer = setInterval(advance, 150)
+    return () => clearInterval(timer)
+  }, [])
+  return (
+    <Text color={accentColor}>
+      {ANIMATE_PASTE_SPINNER ? PASTE_SPINNER_FRAMES[frame] : '●'} Pasting…
+    </Text>
+  )
+})
+
 type InputHistoryEntry = {
   display: string
   pastedContents: Map<number, string>
@@ -86,6 +98,8 @@ export default function MultilineInput({
   placeholder,
   topRightLabel,
   accentColor = DEFAULT_ACCENT,
+  cursorColor = 'black',
+  compact = false,
   width,
 }: Props) {
   // ref 是同步的「真相源」，state 仅用来触发重渲染。
@@ -198,37 +212,10 @@ export default function MultilineInput({
     }
   }
 
-  // —— 跨多个「完整 bracketed-paste 序列」合并 ——
-  // 上面的 pasteBufferRef 只能拼好「一个」\x1b[200~...\x1b[201~ 序列内被 stdin 拆开的分块；
-  // 但有些终端/复用器会把一次物理粘贴本身拆成好几个各自完整的 bracketed-paste 序列
-  // （典型症状：粘贴一段代码后出现 [Pasted text #21]...[Pasted text #30] 好几个片段，
-  // 而不是一个）。这里再加一层：每收全一个完整序列先攒进 pendingPasteRawRef，并重置一个
-  // 很短的静默定时器；只有连续 PASTE_COALESCE_MS 内没有新的序列到达，才真正落地成一个
-  // "[Pasted text #N +M lines]" 占位符。
-  const pendingPasteRawRef = useRef<string | null>(null)
-  const pendingPasteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const flushPendingPaste = () => {
-    if (pendingPasteTimerRef.current) {
-      clearTimeout(pendingPasteTimerRef.current)
-      pendingPasteTimerRef.current = null
-    }
-    const raw = pendingPasteRawRef.current
-    pendingPasteRawRef.current = null
-    if (raw) insertPastedText(raw)
-  }
-
-  const queuePendingPaste = (raw: string) => {
-    pendingPasteRawRef.current = (pendingPasteRawRef.current ?? '') + raw
-    if (pendingPasteTimerRef.current) clearTimeout(pendingPasteTimerRef.current)
-    pendingPasteTimerRef.current = setTimeout(flushPendingPaste, PASTE_COALESCE_MS)
-  }
-
   // 组件卸载时清掉未触发的兜底定时器，避免悬空回调操作已卸载的 ref。
   useEffect(() => {
     return () => {
       if (pasteFlushTimerRef.current) clearTimeout(pasteFlushTimerRef.current)
-      if (pendingPasteTimerRef.current) clearTimeout(pendingPasteTimerRef.current)
     }
   }, [])
 
@@ -244,7 +231,7 @@ export default function MultilineInput({
       // 但副作用是：一次物理粘贴的起始块几乎总是独占一次 stdin 读取、天然以 ESC 打头，
       // 于是 PASTE_START_MARKER（\x1b[200~）到我们这里时 ESC 已经没了，变成裸的
       // "[200~"，下面的 includes(PASTE_START_MARKER) 永远匹配不上，整套分片重组/多序列
-      // 合并逻辑根本不会被触发——这才是"粘贴一次却出现好几个 [Pasted text #N]"的
+      // 分片重组逻辑根本不会被触发——这才是"粘贴一次却出现好几个 [Pasted text #N]"的
       // 真正根因（此前两版修复都建立在“标记本身能被识别”的假设上，从未验证过这个前提）。
       // 只在 input 恰好整块都被吞掉这一个 ESC 时才补回来，避免误伤用户真的打出的
       // "[200~" 之类字面文本（那种情况下 input 不会精确等于裸标记开头）。
@@ -265,7 +252,7 @@ export default function MultilineInput({
       // bracketed-paste 序列（\x1b[200~A\x1b[201~\x1b[200~B\x1b[201~）。之前用 if 只处理
       // 第一个，剩下的 remainder 里第二段的 \x1b[200~ 不会被识别为新粘贴——ESC(0x1b) 还会被
       // 后面过滤 C0 控制符的正则当垃圾吃掉，导致第二段粘贴既没被识别为粘贴、又污染了正文，
-      // 且会把此刻已排队的第一段提前 flush，破坏合并。循环到「既无残留 buffer 也无新
+      // 并污染正文。循环到「既无残留 buffer 也无新
       // START 标记」为止，才把剩下的部分交给下面的普通按键逻辑。
       let handledBracketedPaste = false
       while (pasteBufferRef.current !== null || input.includes(PASTE_START_MARKER)) {
@@ -275,7 +262,8 @@ export default function MultilineInput({
           pasteFlushTimerRef.current = null
         }
         let chunk = input
-        if (pasteBufferRef.current === null) {
+        const startedPaste = pasteBufferRef.current === null
+        if (startedPaste) {
           pasteBufferRef.current = ''
           chunk = chunk.slice(chunk.indexOf(PASTE_START_MARKER) + PASTE_START_MARKER.length)
         }
@@ -292,13 +280,19 @@ export default function MultilineInput({
             const buffered = pasteBufferRef.current
             pasteBufferRef.current = null
             pasteFlushTimerRef.current = null
-            if (buffered) queuePendingPaste(buffered)
+            if (buffered) insertPastedText(buffered)
+            else bump()
           }, 4000)
+          // Only rerender on the transition into paste mode. The spinner owns its
+          // animation, so incoming payload chunks do not repaint the entire editor.
+          if (startedPaste) bump()
           return
         }
         const full = pasteBufferRef.current + chunk.slice(0, endIdx)
         pasteBufferRef.current = null
-        queuePendingPaste(full)
+        // CSI 201~ is the authoritative end of one physical paste. Finalize it now,
+        // as Claude Code does, rather than adding a visible multi-second delay.
+        insertPastedText(full)
         input = chunk.slice(endIdx + PASTE_END_MARKER.length)
       }
       // Ink reports keys such as Backspace/Delete/arrows with an empty `input` and
@@ -306,11 +300,6 @@ export default function MultilineInput({
       // therefore disables those keys.  Only stop when this callback actually
       // consumed a complete bracketed-paste sequence and left no remainder.
       if (handledBracketedPaste && !input) return
-
-      // 本次输入不是「未闭合的粘贴序列内部数据」：如果还有尚未合并完成的粘贴挂起
-      // （多段 bracketed-paste 序列之间的静默期还没到），先落地，保证显示顺序，
-      // 以及紧随其后的操作（比如粘贴完直接回车发送）都基于合并后的最新内容。
-      if (pendingPasteRawRef.current !== null) flushPendingPaste()
 
       // Ink may coalesce repeated control keys into one chunk and then fail to mark
       // key.ctrl. Never allow C0 controls (except tab/newline/return) into editable text.
@@ -451,6 +440,7 @@ export default function MultilineInput({
 
   const value = valueRef.current
   const cursor = cursorRef.current
+  const isReceivingPaste = pasteBufferRef.current !== null
   // 显式锁定宽度，避免 topRightLabel 的右对齐布局与输入行 flexGrow 在 Ink
   // 启动阶段互相反馈，连续算出不同宽度并把多套边框残留在终端上。
   // 预留 4 列也避免右端正好顶到终端最后一列触发自动换行。
@@ -468,13 +458,20 @@ export default function MultilineInput({
         borderColor={disabled ? 'gray' : accentColor}
         borderLeft={false}
         borderRight={false}
+        borderTop={!compact}
         paddingX={0}
       >
         <Text color={disabled ? 'gray' : accentColor} bold>{'› '}</Text>
         <Box flexGrow={1}>
-          {value.length === 0 && !disabled ? (
+          {isReceivingPaste ? (
             <Text>
-              <Text backgroundColor={accentColor} color="black"> </Text>
+              {value}
+              {value ? ' ' : ''}
+              <PasteSpinner accentColor={accentColor} />
+            </Text>
+          ) : value.length === 0 && !disabled ? (
+            <Text>
+              <Text backgroundColor={accentColor} color={cursorColor}> </Text>
               <Text dimColor>{placeholder ?? ''}</Text>
             </Text>
           ) : (
@@ -483,6 +480,7 @@ export default function MultilineInput({
               cursor={cursor}
               showCursor={!disabled}
               accentColor={accentColor}
+              cursorColor={cursorColor}
             />
           )}
         </Box>
@@ -496,11 +494,13 @@ function CursorText({
   cursor,
   showCursor,
   accentColor,
+  cursorColor,
 }: {
   value: string
   cursor: number
   showCursor: boolean
   accentColor: string
+  cursorColor: string
 }) {
   if (!showCursor) return <Text>{value}</Text>
 
@@ -512,7 +512,7 @@ function CursorText({
     return (
       <Text>
         {before}
-        <Text backgroundColor={accentColor} color="black"> </Text>
+        <Text backgroundColor={accentColor} color={cursorColor}> </Text>
       </Text>
     )
   }
@@ -520,7 +520,7 @@ function CursorText({
     return (
       <Text>
         {before}
-        <Text backgroundColor={accentColor} color="black"> </Text>
+        <Text backgroundColor={accentColor} color={cursorColor}> </Text>
         {'\n'}
         {after}
       </Text>
@@ -529,7 +529,7 @@ function CursorText({
   return (
     <Text>
       {before}
-      <Text backgroundColor={accentColor} color="black">{ch}</Text>
+      <Text backgroundColor={accentColor} color={cursorColor}>{ch}</Text>
       {after}
     </Text>
   )

@@ -1,3 +1,7 @@
+# 历史安装终端记录
+
+> 原始会话归档，仅用于追溯旧环境问题；当前安装方式以根目录 README 为准。
+
 j-liutong3-jk@pboc-risk-yushu-dev01:~/convert/test$ export NVM_NODEJS_ORG_MIRROR=https://unofficial-builds.nodejs.org/download/release
 j-liutong3-jk@pboc-risk-yushu-dev01:~/convert/test$ nvm install 20.20.1   # 本项目 pdf-parse 要求 Node >=20.16.0
 bash: nvm: command not found
@@ -5,7 +9,7 @@ j-liutong3-jk@pboc-risk-yushu-dev01:~/convert/test$ nvm use 20.20.1
 bash: nvm: command not found
 j-liutong3-jk@pboc-risk-yushu-dev01:~/convert/test$ node -v                # 正常打印版本号，不报 GLIBC 错误 即可
 v16.20.2
-j-liutong3-jk@pboc-risk-yushu-dev01:~/convert/test$ nvm install 20.20.1 
+j-liutong3-jk@pboc-risk-yushu-dev01:~/convert/test$ nvm install 20.20.1
 bash: nvm: command not found
 j-liutong3-jk@pboc-risk-yushu-dev01:~/convert/test$ cd ..
 j-liutong3-jk@pboc-risk-yushu-dev01:~/convert$ cd ..
@@ -13,7 +17,7 @@ j-liutong3-jk@pboc-risk-yushu-dev01:~$ cd agent/
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ ls
 Archive.zip  __MACOSX      node-v20.20.1-linux-x64-glibc-217.tar.xz  package.json       README.md  src
 dist         node_modules  note.md                                   package-lock.json  scripts
-j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ npm install 
+j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ npm install
 npm WARN EBADENGINE Unsupported engine {
 npm WARN EBADENGINE   package: 'ansi-escapes@7.3.0',
 npm WARN EBADENGINE   required: { node: '>=18' },
@@ -195,7 +199,7 @@ npm WARN EBADENGINE }
 ^C(##########⠂⠂⠂⠂⠂⠂⠂⠂) ⠴ reify:@napi-rs/canvas-android-arm64: timing reifyNode:node_modules/@napi-rs/canvas-d
 
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ ^C
-j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ 
+j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ which node; which npm
 /usr/bin/node
 /usr/bin/npm
@@ -209,8 +213,8 @@ j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ echo $PATH                         
 /data/oceanus_ctr/j-liutong3-jk/.local/bin:/root/miniconda3/bin:/command:/root/miniconda3/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/etc/alternatives/java_sdk:/usr/hdp/3.1.4.0-315/hadoop//bin:/usr/hdp/3.1.4.0-315/spark3.3.2//bin:/usr/hdp/3.1.4.0-315/hive//bin:/etc/alternatives/java_sdk
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ grep node20 ~/.bashrc                 # did the export line actually get saved?
 export PATH=$HOME/node20/bin:$PATH
-j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ 
-j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$  source ~/.bashrc 
+j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$
+j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$  source ~/.bashrc
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ npm ci --omit=dev
 ⠹^C
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ npm install
@@ -296,13 +300,13 @@ j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$  cat <<'EOF'
 > rm -rf node_modules __MACOSX dist
 > ls -la          # sanity check: node_modules/__MACOSX/dist gone, package.json/src/ still there
 > npm ci --omit=dev
-> 
-> 
+>
+>
 > ^C
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ ^C
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$  rm -rf node_modules __MACOSX dist
 
-j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ 
+j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$  ls -la
 total 468781
 drwxrwxr-x  4 j-liutong3-jk j-liutong3-jk         8 Jul  9 17:49 .
@@ -322,31 +326,31 @@ bash: syntax error near unexpected token `echo'
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$   cat <<'EOF'
 >   # 1. confirm the registry setting actually stuck
 >   npm config get registry
-> 
+>
 >   # 2. any proxy config that could be interfering (internal mirror often needs NO proxy,
 >   #    but a leftover corporate proxy var could break it, or vice versa)
 >   npm config get proxy
 >   npm config get https-proxy
 >   env | grep -i proxy
-> 
+>
 >   # 3. test the mirror against a REAL package, not just the base URL (metadata fetch)
 >   curl -sS --max-time 15 http://repo.geelib.qihoo.net:8360/nexus/repository/npm-mirrors-public/ink | head -c 300
 >   echo
-> 
+>
 >   # 4. test fetching an actual tarball through it (this is what was probably hanging)
 >   curl -sS --max-time 20 -o /dev/null -w "http_code=%{http_code} time_total=%{time_total}\n" \
 >     http://repo.geelib.qihoo.net:8360/nexus/repository/npm-mirrors-public/ink/-/ink-5.1.0.tgz
-> 
+>
 >   # 5. re-run with verbose logging so we can see exactly which request it's stuck on;
 >   #    let it run ~30s then Ctrl+C and paste the last ~30 lines
 >   npm ci --omit=dev --loglevel=verbose 2>&1 | tee /tmp/npm-verbose.log
 >   EOF)
-> 
+>
 > '
 > >
-> 
+>
 > ?
-> 
+>
 > ^C
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ npm config get registry
 http://repo.geelib.qihoo.net:8360/nexus/repository/npm-mirrors-public/
@@ -411,7 +415,7 @@ j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ npm run build
   dist/cli.js  197.5kb
 
 ⚡ Done in 37ms
-j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ npm link 
+j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ npm link
 
 added 1 package in 692ms
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ ai
@@ -444,7 +448,7 @@ j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ ai --add-model
 例:   ai --add-model qwen model=qwen-plus baseURL=https://dashscope.aliyuncs.com/compatible-mode/v1 apiKey=sk-xxx provider=通义千问
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$  ai --add-model doubao model=doubao-seed-2.1-turbo baseURL=https://llm-api-endpoint.oceanus.qihoo.net/v1 apiKey=sk-NmvwfgBkoBSfll2pNGTBW6b92mzecUUA5gm9SEf2094aygbV provider=qihoo
 ✓ 已保存模型「doubao」。当前共 1 个预设，用 ai --use-model doubao（或对话框内 /models）切换。
-j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ 
+j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ ai --use-model doubao
 ✓ 已切换到「doubao」：doubao-seed-2.1-turbo @ https://llm-api-endpoint.oceanus.qihoo.net/v1
 j-liutong3-jk@pboc-risk-yushu-dev01:~/agent$ ai

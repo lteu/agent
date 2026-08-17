@@ -121,6 +121,27 @@ export type ModelProfile = {
   provider?: string
 }
 
+export const CODEX_SUBSCRIPTION_PROVIDER = 'Codex Subscription'
+export const CODEX_SUBSCRIPTION_BASE_URL = 'codex://chatgpt-subscription'
+
+/** Built-in profiles are always available and do not need an API key. */
+export const BUILTIN_MODEL_PROFILES: readonly ModelProfile[] = [
+  {
+    name: '5.6-sol',
+    model: 'gpt-5.6-sol',
+    baseURL: CODEX_SUBSCRIPTION_BASE_URL,
+    provider: CODEX_SUBSCRIPTION_PROVIDER,
+  },
+]
+
+export function isCodexSubscriptionProvider(provider?: string, baseURL?: string): boolean {
+  return provider === CODEX_SUBSCRIPTION_PROVIDER || baseURL === CODEX_SUBSCRIPTION_BASE_URL
+}
+
+export function modelNeedsApiKey(config: Pick<EffectiveModelConfig, 'provider' | 'baseURL'>): boolean {
+  return !isCodexSubscriptionProvider(config.provider, config.baseURL)
+}
+
 export type ModelChannel = 'qq' | 'wx' | 'wechat'
 
 export type Config = {
@@ -217,7 +238,7 @@ export function loadConfig(channel?: ModelChannel): EffectiveModelConfig {
   const envPrefix = `AI_${channel.toUpperCase()}_`
   const profileName = file.channelModels?.[channel]
   const profile = profileName
-    ? (file.models ?? []).find(m => m.name.toLowerCase() === profileName.toLowerCase())
+    ? findModelProfile(file, profileName)
     : undefined
 
   return {
@@ -255,7 +276,20 @@ export function saveProvider(provider: string): void {
 
 /** 读取所有已保存的模型预设。 */
 export function loadModels(): ModelProfile[] {
-  return readFile().models ?? []
+  const saved = readFile().models ?? []
+  const builtInNames = new Set(BUILTIN_MODEL_PROFILES.map(model => model.name.toLowerCase()))
+  return [
+    ...BUILTIN_MODEL_PROFILES,
+    ...saved.filter(model => !builtInNames.has(model.name.toLowerCase())),
+  ]
+}
+
+function findModelProfile(config: Config, name: string): ModelProfile | undefined {
+  const normalized = name.toLowerCase()
+  return (
+    BUILTIN_MODEL_PROFILES.find(model => model.name.toLowerCase() === normalized) ??
+    (config.models ?? []).find(model => model.name.toLowerCase() === normalized)
+  )
 }
 
 /** 新增或更新一个模型预设（按 name 大小写不敏感去重，字段增量合并）。 */
@@ -271,6 +305,9 @@ export function saveModelProfile(profile: ModelProfile): ModelProfile[] {
 
 /** 删除一个模型预设，返回更新后的列表。 */
 export function removeModelProfile(name: string): ModelProfile[] {
+  if (BUILTIN_MODEL_PROFILES.some(model => model.name.toLowerCase() === name.toLowerCase())) {
+    return loadModels()
+  }
   const current = readFile()
   const list = (current.models ?? []).filter(m => m.name.toLowerCase() !== name.toLowerCase())
   const channelModels = { ...current.channelModels }
@@ -288,7 +325,7 @@ export function removeModelProfile(name: string): ModelProfile[] {
  */
 export function switchModel(name: string, channel?: ModelChannel): ModelProfile | undefined {
   const current = readFile()
-  const profile = (current.models ?? []).find(m => m.name.toLowerCase() === name.toLowerCase())
+  const profile = findModelProfile(current, name)
   if (!profile) return undefined
   if (channel) {
     writeConfig({
@@ -311,7 +348,7 @@ export function switchModel(name: string, channel?: ModelChannel): ModelProfile 
 /** 将同一个预设绑定到全部长驻消息渠道。 */
 export function switchAllChannelModels(name: string): ModelProfile | undefined {
   const current = readFile()
-  const profile = (current.models ?? []).find(m => m.name.toLowerCase() === name.toLowerCase())
+  const profile = findModelProfile(current, name)
   if (!profile) return undefined
   writeConfig({
     ...current,

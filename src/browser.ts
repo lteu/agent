@@ -8,7 +8,33 @@
 //   · 会话只存在于当前进程内存里（Map），随 ai 进程退出而结束，不做跨进程持久化
 //     （浏览器没有 tmux 那种轻量的跨进程复用方式，硬做反而是过度设计）。
 
-import { chromium, type Browser, type Page } from 'playwright'
+type BrowserLocator = {
+  scrollIntoViewIfNeeded(options: { timeout: number }): Promise<unknown>
+  click(options: { timeout: number }): Promise<unknown>
+  fill(value: string, options: { timeout: number }): Promise<unknown>
+  selectOption(value: string | { label: string }, options: { timeout: number }): Promise<unknown>
+  press(key: string, options: { timeout: number }): Promise<unknown>
+}
+
+type Page = {
+  evaluate(script: string): Promise<unknown>
+  title(): Promise<string>
+  url(): string
+  goto(url: string, options: { waitUntil: 'domcontentloaded'; timeout: number }): Promise<unknown>
+  locator(selector: string): BrowserLocator
+  waitForLoadState(state: 'domcontentloaded', options: { timeout: number }): Promise<unknown>
+  keyboard: { press(key: string): Promise<unknown> }
+  screenshot(options: { path: string }): Promise<unknown>
+}
+
+type Browser = {
+  newPage(): Promise<Page>
+  close(): Promise<unknown>
+}
+
+type BrowserType = {
+  launch(options: { headless: boolean }): Promise<Browser>
+}
 
 type Session = { browser: Browser; page: Page }
 const sessions = new Map<string, Session>()
@@ -18,6 +44,20 @@ function displayName(name: string): string {
 }
 
 const NEED_CHROMIUM = '本机未下载 Chromium（浏览器自动化依赖它）。请先运行：npx playwright install chromium'
+const NEED_PLAYWRIGHT = 'Playwright 是可选的浏览器自动化依赖，当前未安装。如需使用，请先运行：npm install playwright && npx playwright install chromium'
+const PLAYWRIGHT_PACKAGE = 'playwright'
+
+let chromiumPromise: Promise<BrowserType> | undefined
+
+/** Playwright 只在真正打开浏览器时加载，不让可选功能阻断 ai 启动。 */
+function loadChromium(): Promise<BrowserType> {
+  chromiumPromise ??= import(PLAYWRIGHT_PACKAGE).then(module => module.chromium as BrowserType)
+  return chromiumPromise
+}
+
+function isMissingPlaywright(e: any): boolean {
+  return e?.code === 'ERR_MODULE_NOT_FOUND' && /(?:package\s+['"]playwright['"]|playwright)/i.test(String(e?.message ?? e))
+}
 
 function isMissingBrowser(e: any): boolean {
   return /Executable doesn't exist/i.test(String(e?.message ?? e))
@@ -134,8 +174,10 @@ export async function browserOpen(name: string, url?: string): Promise<string> {
   }
   let browser: Browser
   try {
+    const chromium = await loadChromium()
     browser = await chromium.launch({ headless: false })
   } catch (e: any) {
+    if (isMissingPlaywright(e)) return NEED_PLAYWRIGHT
     return isMissingBrowser(e) ? NEED_CHROMIUM : `打开浏览器失败：${e?.message ?? String(e)}`
   }
   const page = await browser.newPage()
