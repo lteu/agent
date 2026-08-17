@@ -2,14 +2,16 @@
 
 `ai` 是一个本地优先的终端 Agent：在终端里提供可编辑的交互界面，并让模型通过工具读取文件、修改代码、执行命令、查看图片和操作浏览器。
 
-模型层支持任意 OpenAI 兼容 API，也可以通过已登录的 Codex CLI 使用订阅模型。终端、QQ、个人微信和企业微信共用同一套 Agent 引擎，但可以分别绑定模型。
+模型层默认接入 DeepSeek API。终端、QQ 和个人微信共用同一套 Agent 引擎，但可以分别绑定模型。
+
+![ai 终端界面样例](assets/example.png)
 
 ## 主要能力
 
 - 交互对话与 `ai ask` 单轮调用，支持流式输出、上下文压缩、任务队列、旁问和 Token 统计。
 - 文件、Shell、图片、PDF、Excel、PowerPoint、网页抓取、浏览器自动化和子 Agent 等本地工具。
 - 命名模型预设，可为终端和各消息渠道独立切换。
-- QQ、个人微信、企业微信入口，以及邮件和美股/港股行情监控。
+- QQ、个人微信入口，以及邮件和美股/港股行情监控。
 - Skills 渐进式加载：只在相关任务中把完整操作说明交给模型。
 
 > `ai` 会在本机执行模型请求的文件和 Shell 操作，默认没有沙箱。只使用可信模型、提示词和 Skills，并在含敏感文件的目录中谨慎运行。
@@ -25,35 +27,79 @@ npm run build
 npm link
 ```
 
-构建后会注册 `ai`、`ai-claude`、`ai-cc` 和 `ai-remote` 四个命令；`ai-remote` 还需要单独运行一次 `npm run build:remote` 才会生成其客户端和服务端产物。
+构建后即可使用 `ai`。如果还需要托管密钥版本 `ai-remote`，请单独运行一次 `npm run build:remote` 生成其客户端和服务端产物。
 
-### 选择模型后端
+### 获取并配置 DeepSeek API Key
 
-项目内置 `5.6-sol` 预设。机器上已有已登录的 `codex` 命令时，可以直接使用：
-
-```bash
-ai --use 5.6-sol
-```
-
-使用 OpenAI 兼容 API 时，设置 API 根地址、模型和 Key。`baseURL` 不要包含最终的 `/chat/completions`：
+1. 打开 [DeepSeek 开放平台](https://platform.deepseek.com/)，注册或登录账号。
+2. 进入控制台的 API Keys 页面，创建一个新的 API Key。
+3. 复制生成的 Key，并用下面的命令保存：
 
 ```bash
-ai --set-base-url <API 根地址>
-ai --set-model <模型名>
-ai --set-provider <显示名称>
-ai --set-key <API Key>
+ai --set-key <你的 DeepSeek API Key>
+ai --set-base-url https://api.deepseek.com
+ai --set-model deepseek-v4-flash
+ai --set-provider DeepSeek
 ```
 
-未设置时仍以 DeepSeek 的 `deepseek-chat` 和 `https://api.deepseek.com` 作为默认值。通用环境变量为：
+API Key 会保存到 `~/.ai/config.json`，文件权限会被设置为仅当前用户可读写。不要把真实 Key 写入项目文件、提交到 Git 或发送给他人。模型名称如有变化，以 [DeepSeek API 文档](https://api-docs.deepseek.com/zh-cn/) 为准。
+
+也可以使用环境变量临时覆盖配置：
 
 ```bash
-export AI_API_KEY=<API Key>
-export AI_MODEL=<模型名>
-export AI_BASE_URL=<API 根地址>
-export AI_PROVIDER=<显示名称>
+export AI_API_KEY=<你的 DeepSeek API Key>
+export AI_MODEL=deepseek-v4-flash
+export AI_BASE_URL=https://api.deepseek.com
+export AI_PROVIDER=DeepSeek
 ```
 
-配置优先级是环境变量、`~/.ai/config.json`、代码默认值。旧的 `DEEPSEEK_API_KEY` 和 `DEEPSEEK_BASE_URL` 仍作为兼容后备，但新配置应使用 `AI_*`。运行 `ai --config` 可查看生效配置，其中 Key 会被遮盖。
+配置优先级是环境变量、`~/.ai/config.json`、代码默认值。运行 `ai --config` 可查看生效配置，其中 API Key 会被遮盖。
+
+### 配置文件结构
+
+`~/.ai/config.json` 由 `ai --set-*`、`ai --add-model` 和 `ai --use-model` 等命令自动维护。一个包含模型预设和渠道绑定的配置示例如下：
+
+```json
+{
+  "apiKey": "sk-请替换为你的真实Key",
+  "model": "deepseek-v4-flash",
+  "baseURL": "https://api.deepseek.com",
+  "provider": "DeepSeek",
+  "activeModel": "deepseek-flash",
+  "models": [
+    {
+      "name": "deepseek-flash",
+      "model": "deepseek-v4-flash",
+      "baseURL": "https://api.deepseek.com",
+      "provider": "DeepSeek"
+    },
+    {
+      "name": "deepseek-pro",
+      "model": "deepseek-v4-pro",
+      "baseURL": "https://api.deepseek.com",
+      "provider": "DeepSeek"
+    }
+  ],
+  "channelModels": {
+    "qq": "deepseek-flash",
+    "wx": "deepseek-pro"
+  }
+}
+```
+
+主要字段：
+
+| 字段 | 作用 |
+| --- | --- |
+| `apiKey` | 默认 DeepSeek API Key |
+| `model` | 当前默认模型 |
+| `baseURL` | DeepSeek API 根地址，不包含 `/chat/completions` |
+| `provider` | 界面和错误信息中显示的服务商名称 |
+| `models` | 可按名字切换的模型预设列表 |
+| `activeModel` | 当前默认预设的名字 |
+| `channelModels` | QQ 和个人微信各自绑定的预设；未设置时继承默认模型 |
+
+QQ、微信、SMTP 和行情监控等功能启用后，也会在同一个文件中增加各自的配置段。
 
 ### 开始使用
 
@@ -70,12 +116,12 @@ ai ask --file question.txt
 经常切换服务商时，可以保存命名预设：
 
 ```bash
-ai --add-model deepseek model=deepseek-chat baseURL=https://api.deepseek.com apiKey=<key> provider=DeepSeek
-ai --add-model internal model=<模型名> baseURL=<API 根地址> apiKey=<key> provider=<名称>
+ai --add-model deepseek-flash model=deepseek-v4-flash baseURL=https://api.deepseek.com provider=DeepSeek
+ai --add-model deepseek-pro model=deepseek-v4-pro baseURL=https://api.deepseek.com provider=DeepSeek
 
 ai --list-models
-ai --use-model internal
-ai --rm-model internal
+ai --use-model deepseek-flash
+ai --rm-model deepseek-pro
 ```
 
 `model` 和 `baseURL` 必填；`apiKey` 和 `provider` 可省略。未提供 `apiKey` 时，切换预设会沿用当前全局 Key。
@@ -83,13 +129,11 @@ ai --rm-model internal
 消息渠道可以独立绑定预设，长驻进程会在下一条消息时重新读取配置，无需重启：
 
 ```bash
-ai --use-model deepseek --channel qq
-ai --use-model internal --channel wx
-ai --use-model 5.6-sol --channel wechat
-ai --use-model deepseek --channel all
+ai --use-model deepseek-flash --channel qq
+ai --use-model deepseek-pro --channel wx
 ```
 
-`qq`、`wx`、`wechat` 分别表示 QQ、个人微信和企业微信。未绑定的渠道继承默认模型。也可以用 `AI_QQ_*`、`AI_WX_*`、`AI_WECHAT_*` 环境变量单独覆盖 `API_KEY`、`MODEL`、`BASE_URL` 和 `PROVIDER`。
+`qq` 和 `wx` 分别表示 QQ 和个人微信。未绑定的渠道继承默认模型。也可以用 `AI_QQ_*`、`AI_WX_*` 环境变量单独覆盖 `API_KEY`、`MODEL`、`BASE_URL` 和 `PROVIDER`。
 
 ## 交互界面
 
@@ -164,16 +208,7 @@ ai --wx-allow <ilink_user_id>
 
 `wx-login` 扫码绑定后，绑定账号本人默认进入白名单。凭据保存在 `~/.ai/config.json`。
 
-企业微信：
-
-```bash
-ai --set-wechat <CorpID> <AgentId> <Secret> <Token> <EncodingAESKey>
-ai wechat
-```
-
-企业微信使用本地回调服务，默认监听 `8788`，需要通过反向隧道提供公网回调地址。白名单为空时会允许企业内所有成员；需要限制时设置逗号分隔的 `AI_WECHAT_WHITELIST`。
-
-在 macOS 上让 `serve`、`wx`、`wechat` 或 `watch` 登录后常驻，参见[通用 LaunchAgent 指南](docs/macos-launch-agent.md)。
+在 macOS 上让 `serve`、`wx` 或 `watch` 登录后常驻，参见[通用 LaunchAgent 指南](docs/macos-launch-agent.md)。
 
 ### 邮件与行情监控
 
@@ -195,7 +230,7 @@ ai watch
 ```bash
 npm run dev          # 直接运行源码
 npm test             # 全部测试
-npm run build        # 构建 ai、ai-claude、ai-cc
+npm run build        # 构建 ai
 npm run build:remote # 构建 ai-remote 客户端与服务端
 npm run pkg          # 生成 macOS .pkg
 npm run dmg          # 生成 macOS .dmg
@@ -205,10 +240,10 @@ npm run dmg          # 生成 macOS .dmg
 
 ```text
 src/agent/        Agent 循环、会话、压缩、验证和子 Agent
-src/channels/     QQ、个人微信、企业微信和行情监控
+src/channels/     QQ、个人微信和行情监控
 src/cli.tsx       ai 命令与终端界面
 src/tools.ts      本地工具定义与执行
-src/llm.ts        OpenAI 兼容、Remote Claude 与 Codex 后端适配
+src/llm.ts        DeepSeek 模型请求与流式响应
 src/remote*.ts    ai-remote 客户端与服务端
 deploy/           Docker、systemd 和远端网关配置
 test/             自动化测试
