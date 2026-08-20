@@ -229,6 +229,8 @@ async function main(): Promise<void> {
       '--env', 'http_proxy=http://egress-proxy:8118',
       '--env', 'https_proxy=http://egress-proxy:8118',
       '--env', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1',
+      '--env', 'CLAUDE_CODE_MAX_RETRIES=3',
+      '--env', 'CLAUDE_ENABLE_STREAM_WATCHDOG=1',
       '--env', 'DISABLE_TELEMETRY=1', '--env', 'DISABLE_ERROR_REPORTING=1',
       '--env', 'DISABLE_BUG_COMMAND=1', '--env', 'DISABLE_AUTOUPDATER=1',
     ]

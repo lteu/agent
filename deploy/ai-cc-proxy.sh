@@ -6,8 +6,10 @@ ssh \
   -o IgnoreUnknown=UseKeychain \
   -o ExitOnForwardFailure=yes \
   -o ForwardAgent=no \
-  -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 \
+  -o TCPKeepAlive=yes \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=2 \
+  -o ConnectTimeout=15 \
   -N \
   -D 127.0.0.1:1080 \
   "$@" &

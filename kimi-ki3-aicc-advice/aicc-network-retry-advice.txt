@@ -1,0 +1,180 @@
+ai-cc "Waiting for API response · will retry in 2m 28s · check your network" 诊断与优化建议
+================================================================================
+
+结论
+----
+这条消息不是 ai-cc 自己产生的，而是来自 Docker 容器里运行的 Anthropic 官方 Claude Code CLI。
+
+触发机制：
+- API 流式响应 20 秒没有收到任何 chunk，界面就会显示该 banner。
+- 然后 Claude Code 按指数退避重试，所以你会看到 2m 28s、2m 35s 这类时间。
+
+ai-cc 的网络路径：
+    Claude Code 容器
+      -> HTTP_PROXY http://egress-proxy:8118  (privoxy)
+      -> 127.0.0.1:1080                         (SSH 动态转发 / SOCKS5)
+      -> SSH remote 主机
+      -> Anthropic API
+
+近期 GitHub 上大量相同反馈（anthropics/claude-code#82155 等），很多人测出来到 api.anthropic.com 的 RTT 只有 30ms，网络没问题。因此相当一部分情况是 Anthropic 后端过载/排队/限流，不是你的链路问题。但 ai-cc 的 SSH -> SOCKS -> privoxy 隧道如果配置保守，也会放大或伪装成同样症状。
+
+
+一、先确认是不是 Anthropic 后端问题
+----------------------------------
+这是目前最常见的原因，优先排除：
+
+1. 查看 Anthropic Status 或社区（Twitter/X、GitHub Issues）是否有大规模报告。
+2. 同一时段用其他客户端（Claude Web、Claude Desktop、curl 调 API）对比。
+   如果也慢/失败，就是后端问题。
+3. 症状特点：
+   - 每次重试最后往往能成功，但会卡 1-3 分钟。
+   - 简单 prompt 也卡。
+   - 换模型（如从 Opus 换 Sonnet）明显好转。
+
+如果是后端问题，ai-cc 配置改不出花来，主要靠使用侧规避（见第四节）。
+
+
+二、确认 ai-cc 隧道链路是否正常
+--------------------------------
+排查命令：
+
+    # 1. 看 ai-cc 基础探针是否通过
+    ai-cc --probe
+
+    # 2. 启动 ai-cc 后，在另一个终端找到代理容器，直接测出口
+    docker ps --filter "label=ai-cc.managed=true"
+    docker exec ai-cc-proxy-xxx /bin/sh -lc \
+      'curl -4fsS --max-time 10 -w "@curl-format.txt" https://api.anthropic.com/v1/messages'
+
+    # 3. 在 Claude 容器内测（需要容器正在运行）
+    docker exec -it ai-cc-xxx /bin/sh -lc \
+      'curl -4fsS --max-time 10 -o /dev/null -w "%{http_code} %{time_namelookup} %{time_connect} %{time_total}\n" https://api.anthropic.com/v1/messages'
+
+    # 4. 看代理容器日志
+    docker logs ai-cc-proxy-xxx
+
+重点指标：
+
+    time_namelookup   正常 < 1s   高 = SOCKS 远程 DNS 慢
+    time_connect      正常 < 1s   高 = SSH 隧道延迟高
+    time_total        正常 < 3s   高 = 远端出网或 Anthropic 慢
+    direct_egress     必须 blocked  否则隔离失效
+
+
+三、优化点 A：收紧 SSH 隧道，避免"静默断开"
+---------------------------------------------
+当前 deploy/ai-cc-proxy.sh 配置：
+
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+
+这表示 30 秒发一次心跳，丢 3 个才认为断开，最长 90 秒才能发现隧道已死。
+期间 Claude Code 请求会挂住，然后触发重试。
+
+建议改成：
+
+    -o TCPKeepAlive=yes \
+    -o ServerAliveInterval=15 \
+    -o ServerAliveCountMax=2 \
+    -o ConnectTimeout=15 \
+
+这样 30 秒内就能发现断线，Claude Code 更快拿到明确错误。
+
+同时在 SSH 远端服务器的 /etc/ssh/sshd_config 里加上：
+
+    ClientAliveInterval 15
+    ClientAliveCountMax 2
+    TCPKeepAlive yes
+
+然后执行：
+
+    systemctl reload sshd
+
+
+四、优化点 B：Privoxy 调参
+--------------------------
+当前 deploy/ai-cc-privoxy.conf 中 buffer-limit 为 4096（约 4MB）。
+Claude Code 的 SSE 流是长连接，Privoxy 默认单线程，处理大响应或并发请求时容易成为瓶颈。
+
+建议改为：
+
+    listen-address  0.0.0.0:8118
+    logdir  /tmp
+    logfile  privoxy.log
+    toggle  1
+    enable-remote-toggle  0
+    enable-edit-actions  0
+    accept-intercepted-requests  0
+    buffer-limit  8192
+    keep-alive-timeout  300
+    socket-timeout      300
+    default-server-timeout 300
+    forward-socks5t  /  127.0.0.1:1080  .
+
+作用：
+- buffer-limit 8192：增大缓冲区，减少大响应被截断或慢的情况。
+- keep-alive-timeout / socket-timeout / default-server-timeout：让 Privoxy 对空闲/异常连接更敏感，避免挂死。
+
+如果调参后仍频繁卡死，可以考虑把 Privoxy 换成支持并发更高的 HTTP->SOCKS 代理（如 dante + tinyproxy，或直接用 redsocks），改动较大。
+
+
+五、优化点 C：给 Claude Code 设置更合理的环境变量
+-------------------------------------------------
+在 src/claude-code-container.ts 的 common 环境变量列表里，可以加入：
+
+    '--env', 'CLAUDE_CODE_MAX_RETRIES=3',
+    '--env', 'CLAUDE_STREAM_IDLE_TIMEOUT_MS=90000',
+    '--env', 'CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=60000',
+    '--env', 'CLAUDE_ENABLE_STREAM_WATCHDOG=1',
+
+含义：
+- CLAUDE_CODE_MAX_RETRIES=3：限制内置重试次数，避免指数退避拖到过久。
+- CLAUDE_STREAM_IDLE_TIMEOUT_MS：流空闲多久后触发 fallback/重试。
+- CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS：字节级空闲 watchdog。
+- CLAUDE_ENABLE_STREAM_WATCHDOG=1：强制启用流健康监控。
+
+注意：如果主要是 Anthropic 后端过载，过短的 timeout 可能导致"没等到模型开始就 fallback"，反而更抖。建议先保持 60-90s，观察后再收紧。
+
+
+六、优化点 D：减少触发长时间等待的请求
+---------------------------------------
+很多"等待 API 响应"其实是因为上下文太长、模型处理久，或触发 backend 限流：
+
+1. 控制上下文长度：Claude Code 会话历史会累积，长会话更容易触发 20s+ 首 token 延迟。
+   定期 /clear 或开新会话。
+2. 避免超大文件一次性读取：大文件/大目录会让请求体膨胀，模型处理时间变长。
+3. 错峰使用 / 换模型：Opus 类模型高峰时段更容易排队；Sonnet 通常响应更快、更稳定。
+4. 关掉非必要流量：ai-cc 已默认设置 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 等，手动传参时注意不要打开 telemetry。
+
+
+七、快速判断公式
+----------------
+出现 banner 时，按这个顺序定位：
+
+1. banner 出现后最终能成功，且同网络下 Web/Desktop 也卡
+   -> Anthropic 后端问题，等或换模型。
+
+2. banner 出现后一直失败，或代理容器日志有 SSH 断开/reconnect
+   -> SSH 隧道不稳定，按第三节优化 keepalive。
+
+3. ai-cc --probe 本身就很慢，或 time_namelookup 高
+   -> DNS 或 remote 出网差，按第二节排查。
+
+4. 简单 prompt 也频繁卡，但直连 remote 服务器调 API 很快
+   -> Privoxy 瓶颈，按第四节调参或换代理。
+
+
+八、可直接修改的文件
+--------------------
+如果需要把上述优化写进项目配置，可修改：
+
+- deploy/ai-cc-proxy.sh        -> 收紧 SSH keepalive
+- deploy/ai-cc-privoxy.conf    -> 增大 buffer、加 timeout
+- src/claude-code-container.ts -> 注入 Claude Code 环境变量
+
+修改后执行：
+
+    npm run build
+    AI_CC_REBUILD=1 ai-cc --probe
+
+重新构建镜像并验证。
