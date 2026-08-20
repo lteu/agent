@@ -507,7 +507,7 @@ async function* runAgentCore(
       throw e // 不可恢复（含用户 abort）→ 抛给上层显示/反馈
     }
 
-    const { content, toolCalls, finishReason, remoteContext } = completion
+    const { content, toolCalls, reasoningContent, finishReason, remoteContext } = completion
     reactiveCompactAttempted = false // 本轮模型成功应答 → 重置被动压缩闸
     networkRetry = 0 // 本轮模型成功应答 → 重置网络重试闸
 
@@ -525,6 +525,7 @@ async function* runAgentCore(
         role: 'assistant',
         content: assistantContent,
         tool_calls: toolCalls.length ? toolCalls : undefined,
+        reasoning_content: reasoningContent,
       })
       traceHistory(historyTrace, 'after-assistant-push', history, { step })
     } else {

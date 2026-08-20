@@ -33,6 +33,8 @@ export type ChatMessage = {
   // assistant 想调用工具时带上；tool 角色回结果时带 tool_call_id
   tool_calls?: RawToolCall[]
   tool_call_id?: string
+  /** DeepSeek 等 thinking 模型要求在后续工具轮次原样回传。 */
+  reasoning_content?: string
   /** 不属于 OpenAI 标准字段；仅发给受控 remote Claude gateway。 */
   ai_local_tool_content?: LocalToolContentBlock[]
 }
@@ -187,6 +189,8 @@ function isAnthropic(opts: StreamOptions): boolean {
 export type Completion = {
   content: string
   toolCalls: RawToolCall[]
+  /** OpenAI 兼容 thinking 模型返回的完整推理内容，仅用于协议回传。 */
+  reasoningContent?: string
   finishReason?: string
   usage?: TokenUsage
   /** Remote 内置 Web 工具的结果，只进入后续模型历史，不作为正文显示。 */
@@ -583,6 +587,12 @@ export async function chatComplete(
   return {
     content: typeof msg.content === 'string' ? msg.content : '',
     toolCalls: Array.isArray(msg.tool_calls) ? msg.tool_calls : [],
+    reasoningContent:
+      typeof msg.reasoning_content === 'string'
+        ? msg.reasoning_content
+        : typeof msg.reasoning === 'string'
+          ? msg.reasoning
+          : undefined,
     usage,
   }
 }
@@ -765,6 +775,7 @@ export async function* streamCompletion(
   const emitted = new Set<number>()
   let maxIndex = -1
   let content = ''
+  let reasoningContent = ''
   let finishReason: string | undefined
   let usage = tokenUsageFromOpenAI(undefined)
   let reportedUsage = tokenUsageFromOpenAI(undefined)
@@ -909,7 +920,10 @@ export async function* streamCompletion(
           : typeof delta.reasoning === 'string'
             ? delta.reasoning
             : ''
-      if (reasoningDelta) yield { type: 'thinking', delta: reasoningDelta }
+      if (reasoningDelta) {
+        reasoningContent += reasoningDelta
+        yield { type: 'thinking', delta: reasoningDelta }
+      }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) {
           const idx: number = tc.index ?? 0
@@ -957,7 +971,14 @@ export async function* streamCompletion(
     }
     commitRemoteSessionRequest(opts.remoteClaudeSession, messages.length)
   }
-  return { content, toolCalls, finishReason, usage, remoteContext: remoteContext || undefined }
+  return {
+    content,
+    toolCalls,
+    reasoningContent: reasoningContent || undefined,
+    finishReason,
+    usage,
+    remoteContext: remoteContext || undefined,
+  }
 }
 
 /**

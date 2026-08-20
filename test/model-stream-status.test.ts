@@ -123,6 +123,7 @@ test('OpenAI 兼容 reasoning_content 作为 thinking 事件透传且不混入�
   assert.deepEqual(thinking, ['inspect evidence'])
   assert.deepEqual(text, ['final'])
   assert.equal(result.value.content, 'final')
+  assert.equal(result.value.reasoningContent, 'inspect evidence')
 })
 
 test('Anthropic thinking_delta 作为独立事件透传', async t => {
