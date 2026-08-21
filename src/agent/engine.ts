@@ -36,6 +36,7 @@ import {
   type ToolContext,
   type ToolResult,
 } from '../tools.js'
+import { createMcpRuntime } from '../mcp.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
 import {
   createHistoryTraceContext,
@@ -102,7 +103,13 @@ export class AgentTerminationError extends Error {
 /** 由具体 channel 注入的额外工具（如 QQ 的 send_image），与内置工具合并提供给模型。 */
 export type ExtraTools = {
   schemas: readonly { function: { name: string } }[]
-  run: (name: string, args: Record<string, any>, signal?: AbortSignal) => Promise<string> | string
+  refresh?: () => Promise<void>
+  getSchemas?: () => readonly { function: { name: string } }[]
+  run: (
+    name: string,
+    args: Record<string, any>,
+    signal?: AbortSignal,
+  ) => Promise<string | ToolResult> | string | ToolResult
 }
 
 export type EngineDeps = CompactDeps & {
@@ -131,6 +138,8 @@ export type EngineDeps = CompactDeps & {
    * loop boundary, never between an assistant tool call and its tool results.
    */
   drainQueuedPrompts?: () => string[]
+  /** Disable automatic MCP config loading for an isolated run (enabled by default). */
+  mcp?: boolean
 }
 
 export function queuedPromptMessage(prompts: string[]): string {
@@ -212,14 +221,83 @@ export async function* runAgent(
   deps: EngineDeps,
 ): AsyncGenerator<AgentEvent, void, unknown> {
   const historyTrace = deps.historyTrace ?? createHistoryTraceContext('unknown', 'unknown')
+  const mcp = deps.mcp === false ? undefined : await createMcpRuntime()
+  const existingExtraNames = new Set(deps.extraTools?.schemas.map(schema => schema.function.name) ?? [])
+  const mcpSchemas = (mcp?.schemas ?? []).filter(schema => !existingExtraNames.has(schema.function.name))
+  const mcpCollisionFailures = (mcp?.schemas ?? [])
+    .filter(schema => existingExtraNames.has(schema.function.name))
+    .map(schema => `工具名 ${schema.function.name} 与 channel 工具冲突，已保留 channel 工具`)
+  const extraTools: ExtraTools | undefined = mcp || deps.extraTools
+    ? {
+        schemas: [...(deps.extraTools?.schemas ?? []), ...mcpSchemas],
+        refresh: async () => {
+          const tasks: Promise<void>[] = []
+          if (deps.extraTools?.refresh) tasks.push(deps.extraTools.refresh())
+          if (mcp) tasks.push(mcp.refresh())
+          await Promise.all(tasks)
+        },
+        getSchemas: () => {
+          const channelSchemas = deps.extraTools?.getSchemas?.() ?? deps.extraTools?.schemas ?? []
+          const channelNames = new Set(channelSchemas.map(schema => schema.function.name))
+          return [
+            ...channelSchemas,
+            ...(mcp?.getSchemas() ?? []).filter(schema => !channelNames.has(schema.function.name)),
+          ]
+        },
+        run: (name, args, signal) => {
+          const channelSchemas = deps.extraTools?.getSchemas?.() ?? deps.extraTools?.schemas ?? []
+          if (channelSchemas.some(schema => schema.function.name === name)) {
+            return deps.extraTools!.run(name, args, signal)
+          }
+          if (mcp) return mcp.run(name, args, signal)
+          throw new Error(`未知扩展工具: ${name}`)
+        },
+      }
+    : undefined
+  let originalSystemMessage: ChatMessage | undefined
+  let injectedSystemMessage: ChatMessage | undefined
+  if (mcp?.instructions) {
+    const systemIndex = history.findIndex(message => message.role === 'system')
+    if (systemIndex >= 0) {
+      originalSystemMessage = history[systemIndex]
+      injectedSystemMessage = {
+        ...originalSystemMessage,
+        content: [originalSystemMessage.content, mcp.instructions].filter(Boolean).join('\n\n'),
+      }
+      history[systemIndex] = injectedSystemMessage
+    } else {
+      injectedSystemMessage = { role: 'system', content: mcp.instructions }
+      history.unshift(injectedSystemMessage)
+    }
+  }
   try {
-    for await (const event of runAgentCore(history, { ...deps, historyTrace })) {
+    for (const failure of [...(mcp?.failures ?? []), ...mcpCollisionFailures]) {
+      const event: AgentEvent = {
+        type: 'tool',
+        name: 'mcp',
+        summary: `MCP 连接失败：${failure}`,
+        detail: failure,
+        phase: 'failure',
+      }
+      traceAgentEvent(historyTrace, event)
+      yield event
+    }
+    for await (const event of runAgentCore(history, { ...deps, extraTools, historyTrace })) {
       traceAgentEvent(historyTrace, event)
       yield event
     }
   } catch (error) {
     traceAgentEvent(historyTrace, null, error)
     throw error
+  } finally {
+    if (injectedSystemMessage) {
+      const index = history.indexOf(injectedSystemMessage)
+      if (index >= 0) {
+        if (originalSystemMessage) history[index] = originalSystemMessage
+        else history.splice(index, 1)
+      }
+    }
+    await mcp?.close()
   }
 }
 
@@ -237,8 +315,7 @@ async function* runAgentCore(
     (request: Parameters<typeof traceLlmRequest>[1]) =>
       traceLlmRequest(historyTrace, request, requestKind)
   traceHistory(historyTrace, 'run-agent-start', history)
-  const extraNames = new Set((deps.extraTools?.schemas ?? []).map(s => s.function.name))
-  const tools = [...TOOL_SCHEMAS, ...(deps.extraTools?.schemas ?? [])]
+  const currentExtraSchemas = () => deps.extraTools?.getSchemas?.() ?? deps.extraTools?.schemas ?? []
 
   const latestUserMessage = [...history].reverse().find(message => message.role === 'user')?.content ?? ''
   const visualEvidence = {
@@ -283,10 +360,11 @@ async function* runAgentCore(
       }
     }
     try {
-      if (!extraNames.has(call.function.name)) {
+      if (!currentExtraSchemas().some(schema => schema.function.name === call.function.name)) {
         return await runTool(call.function.name, args, { ...toolCtx, signal })
       }
       const output = await deps.extraTools!.run(call.function.name, args, signal)
+      if (typeof output !== 'string') return output
       const failure = summarizeToolFailure(call.function.name, output)
       return {
         ok: failure === null,
@@ -348,6 +426,10 @@ async function* runAgentCore(
   for (let step = 0; step < maxSteps; step++) {
     // ⓪ 用户已中断（Esc/Ctrl+C）：立刻收手，别再压缩历史或发起下一次模型调用。
     if (deps.signal?.aborted) throw new DOMException('已中断', 'AbortError')
+
+    // Refresh dynamic MCP discovery between model turns, matching CC's behavior.
+    await deps.extraTools?.refresh?.().catch(() => undefined)
+    const tools = [...TOOL_SCHEMAS, ...currentExtraSchemas()]
 
     // Claude Code drains queued prompts between loop iterations: at this point the
     // previous assistant tool calls (if any) already have all matching tool results.

@@ -22,7 +22,7 @@
     "build": "esbuild src/cli.tsx --bundle --platform=node --target=node20 --format=esm --packages=external --jsx=automatic --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli.js && npm run build:claude",
     "build:claude": "esbuild src/claude-remote.ts --bundle --platform=node --target=node20 --format=esm --packages=external --banner:js=\"#!/usr/bin/env node\" --outfile=dist/claude-remote.js && esbuild src/claude-code-container.ts --bundle --platform=node --target=node20 --format=esm --packages=external --banner:js=\"#!/usr/bin/env node\" --outfile=dist/claude-code-container.js",
     "build:remote": "esbuild src/remote.ts --bundle --platform=node --target=node20 --format=esm --packages=external --banner:js=\"#!/usr/bin/env node\" --outfile=dist/remote.js && esbuild src/remote-cli.ts --bundle --platform=node --target=node20 --format=esm --packages=external --jsx=automatic --banner:js=\"#!/usr/bin/env node\" --outfile=dist/remote-cli.js && esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/server.js",
-    "test": "tsx --test test/*.test.ts",
+    "test": "npm run build && tsx --test test/*.test.ts",
     "dev": "tsx src/cli.tsx",
     "start": "node dist/cli.js",
     "start:server": "node dist/server.js",
@@ -30,14 +30,17 @@
     "pkg": "bash scripts/make-pkg.sh"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "ink": "^5.1.0",
     "jszip": "^3.10.1",
     "pdf-parse": "^2.4.5",
     "qrcode-terminal": "^0.12.0",
     "react": "^18.3.1",
+    "ws": "^8.21.3",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1",
     "tsx": "^4.19.0"
   },

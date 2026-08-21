@@ -1745,7 +1745,15 @@ export function describeToolCall(name: string, args: Record<string, any>): strin
       return '列出浏览器会话'
     case 'browser_close':
       return `关闭浏览器 ${args.name}`
+    case 'list_mcp_resources':
+      return args.server ? `列 MCP resources · ${args.server}` : '列 MCP resources'
+    case 'read_mcp_resource':
+      return `读 MCP resource · ${args.server ?? ''} ${args.uri ?? ''}`.trim()
     default:
+      if (name.startsWith('mcp__')) {
+        const [, server = '', ...toolParts] = name.split('__')
+        return `MCP ${server} · ${toolParts.join('__') || name}`
+      }
       return name
   }
 }

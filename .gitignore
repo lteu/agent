@@ -6,6 +6,13 @@ log/
 .playwright-cli/
 assets/debug/
 test/
+!test/
+test/*
+!test/mcp.test.ts
+!test/cli-entry.test.ts
+!test/fixtures/
+test/fixtures/*
+!test/fixtures/mcp-echo-server.mjs
 log/
 
 # studio 下外部参考仓库（体积太大，不纳入本仓库）

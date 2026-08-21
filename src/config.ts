@@ -121,6 +121,50 @@ export type ModelProfile = {
   provider?: string
 }
 
+/** MCP stdio server. Omitting type is accepted for Claude Code compatibility. */
+export type McpStdioServerConfig = {
+  type?: 'stdio'
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+  /** Working directory for the spawned server; relative paths resolve from the active project. */
+  cwd?: string
+  disabled?: boolean
+}
+
+/** Remote MCP server using Streamable HTTP or the legacy SSE transport. */
+export type McpOAuthConfig = {
+  /** Pre-registered OAuth client ID. Omit to use Dynamic Client Registration. */
+  clientId?: string
+  /** Fixed localhost callback port for providers with a pre-registered redirect URI. */
+  callbackPort?: number
+  /** Optional authorization-server metadata endpoint override. */
+  authServerMetadataUrl?: string
+}
+
+export type McpRemoteServerConfig = {
+  type: 'http' | 'sse'
+  url: string
+  headers?: Record<string, string>
+  /** Shell command returning a JSON object of dynamic request headers. */
+  headersHelper?: string
+  /** OAuth Authorization Code + PKCE settings. OAuth also works via discovery when omitted. */
+  oauth?: McpOAuthConfig
+  disabled?: boolean
+}
+
+/** Remote MCP server using JSON-RPC messages over WebSocket. */
+export type McpWebSocketServerConfig = {
+  type: 'ws'
+  url: string
+  headers?: Record<string, string>
+  /** Shell command returning a JSON object of dynamic connection headers. */
+  headersHelper?: string
+  disabled?: boolean
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpRemoteServerConfig | McpWebSocketServerConfig
+
 export const CODEX_SUBSCRIPTION_PROVIDER = 'Codex Subscription'
 export const CODEX_SUBSCRIPTION_BASE_URL = 'codex://chatgpt-subscription'
 
@@ -162,6 +206,10 @@ export type Config = {
   smtp?: SmtpConfig
   stocks?: StocksConfig
   doubaoTts?: DoubaoTtsConfig
+  /** User-wide MCP servers. Project .mcp.json entries override servers with the same name. */
+  mcpServers?: Record<string, McpServerConfig>
+  /** Machine-local MCP overrides keyed by canonical project root; never written to .mcp.json. */
+  mcpProjects?: Record<string, { mcpServers?: Record<string, McpServerConfig> }>
 }
 
 const CONFIG_DIR = join(homedir(), '.ai')
@@ -268,6 +316,23 @@ export function saveBaseURL(baseURL: string): void {
 
 export function saveProvider(provider: string): void {
   writeConfig({ ...readFile(), provider })
+}
+
+/** Replace the user-wide MCP server map while preserving every other config section. */
+export function saveUserMcpServers(mcpServers: Record<string, McpServerConfig>): void {
+  writeConfig({ ...readFile(), mcpServers })
+}
+
+/** Replace one project's machine-local MCP map while preserving global configuration. */
+export function saveLocalMcpServers(projectRoot: string, mcpServers: Record<string, McpServerConfig>): void {
+  const current = readFile()
+  writeConfig({
+    ...current,
+    mcpProjects: {
+      ...(current.mcpProjects ?? {}),
+      [projectRoot]: { mcpServers },
+    },
+  })
 }
 
 // ———————————————————————————————————————————————

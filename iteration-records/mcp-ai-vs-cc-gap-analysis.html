@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP 能力盘点：ai vs Studio/CC</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0c1015;--panel:#151c24;--panel2:#1b2530;--line:#2b3846;--text:#e8edf3;--muted:#9eabba;--ai:#59c98e;--cc:#e38a68;--ok:#7eafff;--part:#e7bd63;--gap:#ef7887;--code:#090d12}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 10% 0,rgba(89,201,142,.11),transparent 30rem),radial-gradient(circle at 90% 5%,rgba(227,138,104,.1),transparent 32rem),var(--bg);color:var(--text);font:15px/1.72 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .page{max-width:1160px;margin:auto;padding:50px 24px 80px}.hero{padding:34px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(145deg,rgba(27,37,48,.97),rgba(13,18,24,.97));box-shadow:0 18px 48px rgba(0,0,0,.25)}
+    .eyebrow{color:var(--ai);font:700 12px/1.4 ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase}h1{max-width:900px;margin:10px 0 9px;font-size:clamp(30px,5vw,48px);line-height:1.16;letter-spacing:-.035em}.lead{max-width:900px;margin:0;color:#c1ccd7;font-size:17px}.meta{margin-top:18px;color:var(--muted);font-size:13px}
+    .verdict{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:25px}.metric{padding:15px 17px;border:1px solid var(--line);border-radius:11px;background:rgba(7,11,16,.45)}.metric b{display:block;margin-bottom:4px;font-size:16px}.metric span{color:var(--muted);font-size:13px}.ok b,.same{color:var(--ok)}.part b,.partial{color:var(--part)}.gap b,.missing{color:var(--gap)}
+    nav{position:sticky;z-index:2;top:0;display:flex;gap:8px;overflow:auto;margin-top:20px;padding:10px 0;background:rgba(12,16,21,.92);backdrop-filter:blur(12px)}nav a{flex:none;padding:6px 11px;border:1px solid var(--line);border-radius:999px;color:var(--muted);text-decoration:none;font-size:13px}nav a:hover{color:var(--text)}
+    section{scroll-margin-top:68px;margin-top:48px}h2{margin:0 0 8px;font-size:25px;letter-spacing:-.02em}h3{margin:0;font-size:17px}.intro{max-width:900px;margin:0 0 19px;color:var(--muted)}.callout{margin:18px 0;padding:15px 18px;border-left:3px solid var(--part);border-radius:0 9px 9px 0;background:#121820}.callout strong{color:var(--part)}
+    code{padding:.1rem .36rem;border:1px solid var(--line);border-radius:5px;background:var(--code);color:#dbe6f1;font:.88em ui-monospace,SFMono-Regular,Consolas,monospace}pre{padding:14px 16px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--code);color:#dbe6f1;font:12.5px/1.65 ui-monospace,monospace}
+    .legend{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.pill{display:inline-flex;padding:3px 9px;border:1px solid var(--line);border-radius:999px;font-size:12px;font-weight:750}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 38px rgba(0,0,0,.2)}table{width:100%;min-width:860px;border-collapse:collapse;background:var(--panel)}th,td{padding:11px 13px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--panel2);color:#d0dae4;font-size:13px}tr:last-child td{border-bottom:0}td:first-child{width:19%;font-weight:650}.state{font-weight:800;white-space:nowrap}
+    .cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{display:flex;flex-direction:column;padding:20px;border:1px solid var(--line);border-top:3px solid var(--gap);border-radius:13px;background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 14px 38px rgba(0,0,0,.18)}.card-head{display:flex;justify-content:space-between;gap:12px}.card p{margin:9px 0}.what{color:#ccd5df}.why{color:var(--muted)}.example{margin-top:auto!important;padding-top:8px}.example strong{color:var(--ai)}.impact{padding:9px 11px;border-radius:8px;background:rgba(239,120,135,.07);color:#d8c1c5;font-size:13px}.source-list{display:grid;gap:10px}.source{padding:13px 15px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}.source b{display:inline-block;min-width:140px}.source a{color:#9fc6ff;text-decoration:none}.foot{margin-top:44px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+    @media(max-width:820px){.page{padding:28px 15px 60px}.hero{padding:24px 20px}.verdict,.cards{grid-template-columns:1fr}}@media print{:root{color-scheme:light;--bg:#fff;--panel:#fff;--panel2:#f3f5f7;--line:#ccd2d8;--text:#15191e;--muted:#52606d;--code:#f1f3f5}body{background:#fff}.page{max-width:none;padding:0}nav{display:none}.hero,.card,.table-wrap{box-shadow:none}.card{break-inside:avoid}}
+  </style>
+</head>
+<body>
+<main class="page">
+  <header class="hero">
+    <div class="eyebrow">Iteration record · MCP capability review</div>
+    <h1><span style="color:var(--ai)">ai</span> 与 <span style="color:var(--cc)">Studio/CC</span> 的 MCP 能力盘点</h1>
+    <p class="lead">本轮已把公开 MCP 核心链路补齐，并以 Qihoo MCPHub 完成真实 OAuth、工具发现和下游调用。剩余差异集中在 Studio/CC 的权限 UI、企业策略和私有宿主集成，不再是“普通 MCP server 无法使用”。</p>
+    <div class="meta">更新日期：2026-08-21 · 配置与认证都属于当前 <code>ai</code>，没有借用 Codex/CC 的 MCP</div>
+    <div class="verdict">
+      <div class="metric ok"><b>公开协议核心：已覆盖</b><span>4 transports、tools、resources、prompts、notifications</span></div>
+      <div class="metric ok"><b>远端认证：已实测</b><span>OAuth PKCE、DCR、缓存、刷新、logout</span></div>
+      <div class="metric part"><b>产品层：仍有差异</b><span>审批 UI、managed policy、私有 in-process 集成</span></div>
+    </div>
+  </header>
+
+  <nav aria-label="章节导航">
+    <a href="#summary">总览</a><a href="#matrix">能力矩阵</a><a href="#live">真实验收</a><a href="#gaps">剩余差异</a><a href="#evidence">实现依据</a>
+  </nav>
+
+  <section id="summary">
+    <h2>一、结论</h2>
+    <p class="intro"><code>ai</code> 与 Studio/CC 现在都能作为独立 MCP client 完成配置、传输、认证、发现、调用和会话清理。两者不会源码级完全相同：Studio/CC 还有自己的 IDE、企业和插件宿主能力；这些不是 MCP 公共协议的必要组成。</p>
+    <div class="callout"><strong>本轮纠正：</strong>早期报告把 OAuth、Prompts、WebSocket、动态通知和大结果落盘列成 ai 不支持，这是过时结论；相关能力现已实现并加入测试。</div>
+  </section>
+
+  <section id="matrix">
+    <h2>二、当前能力矩阵</h2>
+    <div class="legend"><span class="pill same">已基本一致</span><span class="pill partial">产品实现不同</span><span class="pill missing">仍未覆盖</span></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>能力</th><th>ai</th><th>Studio/CC</th><th>判断</th></tr></thead>
+      <tbody>
+        <tr><td>SDK 与命名</td><td>官方 SDK；<code>mcp__server__tool</code>；超长名称稳定哈希</td><td>同一 SDK 与命名约定</td><td class="state same">一致</td></tr>
+        <tr><td>Transport</td><td>stdio、Streamable HTTP、SSE、WebSocket</td><td>公开 transport 相同；另有私有 in-process/IDE 类型</td><td class="state same">公开协议一致</td></tr>
+        <tr><td>配置 scope</td><td>local、user、project；逐级读取 <code>.mcp.json</code></td><td>另有 managed、enterprise、plugin、claude.ai 来源</td><td class="state partial">核心一致</td></tr>
+        <tr><td>环境与 Header</td><td><code>${VAR}</code>、默认值、静态 Header、动态 headers helper</td><td>同类能力</td><td class="state same">一致</td></tr>
+        <tr><td>Tools</td><td>分页发现、schema 映射、调用、取消、超时、错误保真、动态刷新</td><td>同类能力</td><td class="state same">一致</td></tr>
+        <tr><td>Resources</td><td>列举、读取、图片回灌、二进制落盘、动态刷新</td><td>同类能力</td><td class="state same">一致</td></tr>
+        <tr><td>Prompts</td><td><code>prompts/list</code>、<code>prompts/get</code>、CLI/Agent 入口、动态刷新</td><td>发现并转换为命令入口</td><td class="state same">协议一致</td></tr>
+        <tr><td>Instructions / Roots</td><td>限长注入 system prompt；响应 roots 请求</td><td>同类能力并深度集成 UI</td><td class="state same">协议一致</td></tr>
+        <tr><td>远端认证</td><td>OAuth Code + PKCE、DCR、刷新、缓存、logout</td><td>另有 OS Keychain、XAA/step-up、企业登录集成</td><td class="state partial">标准 OAuth 一致</td></tr>
+        <tr><td>连接生命周期</td><td>会话内复用、HTTP 重连、失效后单次重试、关闭清理</td><td>另有完整状态面板与宿主级缓存</td><td class="state same">核心一致</td></tr>
+        <tr><td>大结果与媒体</td><td>超长文本、音频、二进制和不支持回灌的图片安全落盘</td><td>同类落盘与截断</td><td class="state same">一致</td></tr>
+        <tr><td>权限审批</td><td>沿用 ai 整体信任边界</td><td>server 审批、逐工具 allow/deny/ask</td><td class="state missing">产品层差异</td></tr>
+        <tr><td>管理入口</td><td><code>ai mcp</code> CLI：add/list/get/test/auth/login/logout/prompts/remove</td><td>CLI 加完整 TUI 面板</td><td class="state partial">功能有、UI 不同</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="live">
+    <h2>三、Qihoo MCPHub 真实验收</h2>
+    <p class="intro">目标项目：<code>/Users/lteu/progetto/codex-ontology</code>。配置使用 local scope 写入 <code>~/.ai/config.json</code>，认证由 <code>ai</code> 自己完成。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>验收项</th><th>结果</th><th>证据</th></tr></thead>
+      <tbody>
+        <tr><td>安装</td><td class="state same">通过</td><td><code>qihoo</code> → <code>https://mcphub.daikuan.qihoo.net/mcp/$smart</code>，local scope</td></tr>
+        <tr><td>OAuth</td><td class="state same">通过</td><td>浏览器 PKCE 回调成功；凭据由 ai 独立保存；二次连接复用缓存</td></tr>
+        <tr><td>代理安全兼容</td><td class="state same">通过</td><td>只升级同 hostname 的内部 HTTP 元数据；跨 host 仍拒绝</td></tr>
+        <tr><td>工具发现</td><td class="state same">通过</td><td>发现 <code>search_tools</code>、<code>call_tool</code>，识别 resources/prompts capabilities</td></tr>
+        <tr><td>实际 tools/call</td><td class="state same">通过</td><td><code>search_tools</code> 返回 JSON；<code>call_tool</code> 路由到 <code>dcpv2-getTableColumns</code> 并取得下游参数校验结果</td></tr>
+      </tbody>
+    </table></div>
+    <pre>ai mcp test qihoo
+✓ qihoo 连接成功，发现 2 个工具
+  - mcp__qihoo__search_tools
+  - mcp__qihoo__call_tool
+  capabilities: resources
+  capabilities: prompts</pre>
+  </section>
+
+  <section id="gaps">
+    <h2>四、仍由 Studio/CC 提供的产品层能力</h2>
+    <p class="intro">下面保留“是什么、例子和影响”，但不再把已经完成的标准 MCP 能力误列为缺失。</p>
+    <div class="cards">
+      <article class="card"><div class="card-head"><h3>逐 Server / 逐工具权限审批</h3><span class="pill missing">安全</span></div><p class="what"><b>是什么：</b>首次启用项目 server 时确认信任；每个工具配置 allow、deny 或 ask。</p><p class="why"><b>CC：</b>项目审批和工具权限接入统一安全系统。ai 当前把用户已配置或项目声明的 server 视为可信。</p><p class="example"><strong>例子：</strong>仓库声明未知 npm server，或数据库 MCP 暴露 <code>drop_database</code>；CC 可在启动和调用两层拦截。</p><div class="impact">影响：共享仓库和生产写操作仍需人工审查。</div></article>
+      <article class="card"><div class="card-head"><h3>完整 Elicitation UI</h3><span class="pill partial">交互</span></div><p class="what"><b>是什么：</b>server 在执行中要求用户填表、确认或访问 URL，再继续调用。</p><p class="why"><b>CC：</b>表单、URL、hooks 和对话框完整串联。ai 已注册 handler，但当前安全返回 cancel。</p><p class="example"><strong>例子：</strong>部署工具询问目标环境和生产确认；CC 展示表单，ai 当前取消该 elicitation。</p><div class="impact">影响：需要人在环补充信息的 server 无法完成整条流程。</div></article>
+      <article class="card"><div class="card-head"><h3>Managed / Enterprise / Plugin 策略</h3><span class="pill partial">企业</span></div><p class="what"><b>是什么：</b>组织下发/锁定 MCP，插件声明 server，并按来源和签名去重。</p><p class="why"><b>CC：</b>具有 managed、enterprise、plugin、claude.ai 等来源；ai 当前只有 local、user、project。</p><p class="example"><strong>例子：</strong>组织和插件同时下发 Slack MCP，CC 自动保留优先级更高的一份。</p><div class="impact">影响：个人使用不受阻，企业规模治理仍有差距。</div></article>
+      <article class="card"><div class="card-head"><h3>私有 In-process / IDE Transport</h3><span class="pill partial">宿主</span></div><p class="what"><b>是什么：</b>把 IDE、浏览器或 Computer Use server 作为宿主内部对象挂载，而非走公开 transport。</p><p class="why"><b>CC：</b>这些 transport 与自身应用生命周期绑定，不是可复制的通用 endpoint。</p><p class="example"><strong>例子：</strong>CC 把编辑器选区以内存对象方式暴露给内置 server；ai 可连 WS，但不能加载 CC 私有对象。</p><div class="impact">影响：只影响 Studio/CC 内建集成，不影响第三方标准 MCP。</div></article>
+      <article class="card"><div class="card-head"><h3>完整管理面板与 OS Keychain</h3><span class="pill partial">体验</span></div><p class="what"><b>是什么：</b>TUI 内展示状态、认证、工具和开关，并把 token 放进系统凭据库。</p><p class="why"><b>CC：</b>有完整面板与 OS 凭据集成。ai 提供 CLI，凭据以独立 <code>0600</code> JSON 保存。</p><p class="example"><strong>例子：</strong>CC 可点击重连；ai 使用 <code>test</code>、<code>auth</code>、<code>logout</code>。</p><div class="impact">影响：主要是可发现性和本机凭据防护层级。</div></article>
+    </div>
+  </section>
+
+  <section id="evidence">
+    <h2>五、代码与测试依据</h2>
+    <p class="intro">只把已落到当前工作区并经过测试的能力记为“支持”。</p>
+    <div class="source-list">
+      <div class="source"><b>MCP 核心</b><a href="../src/mcp.ts"><code>src/mcp.ts</code></a>：配置、连接、tools/resources/prompts、刷新、结果落盘和清理。</div>
+      <div class="source"><b>OAuth</b><a href="../src/mcp-auth.ts"><code>src/mcp-auth.ts</code></a>：PKCE、DCR、callback、缓存、logout 与 HTTPS 代理保护。</div>
+      <div class="source"><b>WebSocket</b><a href="../src/mcp-websocket.ts"><code>src/mcp-websocket.ts</code></a>：JSON-RPC WebSocket transport。</div>
+      <div class="source"><b>Agent 接入</b><a href="../src/agent/engine.ts"><code>src/agent/engine.ts</code></a>：动态工具合并、instructions、失败事件和生命周期。</div>
+      <div class="source"><b>管理命令</b><a href="../src/mcp-cli.ts"><code>src/mcp-cli.ts</code></a>：add/list/get/test/auth/login/logout/prompts/remove。</div>
+      <div class="source"><b>协议测试</b><a href="../test/mcp.test.ts"><code>test/mcp.test.ts</code></a>：stdio、HTTP、WS、OAuth、resources、prompts、动态工具和大结果。</div>
+      <div class="source"><b>CLI 回归</b><a href="../test/cli-entry.test.ts"><code>test/cli-entry.test.ts</code></a>：<code>--version</code> 非 TUI 与 local scope 全链路。</div>
+    </div>
+  </section>
+
+  <footer class="foot"><p>盘点口径：标准 MCP 能力与 Studio/CC 私有产品能力分开判断；不再用私有 UI 或企业治理差异否定 ai 的 MCP 协议支持。</p></footer>
+</main>
+</body>
+</html>

@@ -9,7 +9,7 @@
 ## 主要能力
 
 - 交互对话与 `ai ask` 单轮调用，支持流式输出、上下文压缩、任务队列、旁问和 Token 统计。
-- 文件、Shell、图片、PDF、Excel、PowerPoint、网页抓取、浏览器自动化和子 Agent 等本地工具。
+- 文件、Shell、图片、PDF、Excel、PowerPoint、网页抓取、浏览器自动化、MCP 和子 Agent 等工具。
 - 命名模型预设，可为终端和各消息渠道独立切换。
 - QQ、个人微信入口，以及邮件和美股/港股行情监控。
 - Skills 渐进式加载：只在相关任务中把完整操作说明交给模型。
@@ -145,6 +145,7 @@ ai --use-model deepseek-pro --channel wx
 | `/btw <问题>` | 发起不打断主任务、无工具且不写入主历史的旁问 |
 | `/usage` | 查看当前会话 Token 明细 |
 | `/usage reset` | 清零当前会话计数 |
+| `/mcp` | 查看当前目录生效的 MCP servers |
 | `Ctrl+O` | 打开完整工具转录 |
 | `Esc` | 生成中中断任务；编辑时清空输入 |
 | `Ctrl+C` | 生成中中断；空闲时连续按两次退出 |
@@ -183,6 +184,69 @@ ai --skill-new <name>
 ```
 
 Skill 正文和附带脚本都会成为模型可执行的操作依据。安装第三方 Skill 前应完整审查其 `SKILL.md`、脚本、外部下载、密钥读取和持久化操作。
+
+### MCP
+
+`ai` 可以作为原生 MCP client 连接外部工具 server。配置格式兼容 Claude Code 的 `mcpServers`，支持 stdio、Streamable HTTP、旧版 SSE 和 WebSocket；Agent 会发现并调用 tools，读取 resources 和 prompts，处理清单变更通知，并把 server instructions 加入会话。工具名使用 `mcp__<server>__<tool>`，避免多个 server 冲突。
+
+常用管理命令：
+
+```bash
+# stdio；默认 local scope，只对当前项目和本机生效
+ai mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem .
+
+# 只对当前项目生效，写入当前目录 .mcp.json
+ai mcp add --scope project local-tools -- node ./tools/mcp-server.mjs
+
+# Streamable HTTP；header 值可引用环境变量，避免把 token 明文写进配置
+ai mcp add --transport http \
+  -H 'Authorization: Bearer ${MCP_TOKEN}' \
+  remote-tools https://example.com/mcp
+
+# 标准 OAuth Authorization Code + PKCE（auth 也可写成 login）
+ai mcp add --transport http company https://example.com/mcp
+ai mcp auth company
+
+# URL 参数写法会自动使用 HTTP transport
+ai mcp add dcpv2 --url https://example.com/mcp/dcpv2
+
+# WebSocket
+ai mcp add --transport ws realtime wss://example.com/mcp
+
+ai mcp list
+ai mcp get remote-tools       # header/env 的值会遮盖
+ai mcp test remote-tools      # 实际连接并列出发现的工具
+ai mcp prompts remote-tools
+ai mcp prompt remote-tools review target=src/mcp.ts
+ai mcp logout company
+ai mcp remove remote-tools
+```
+
+也可以直接写项目配置：
+
+```json
+{
+  "mcpServers": {
+    "local-tools": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["./tools/mcp-server.mjs"],
+      "env": { "API_KEY": "${LOCAL_TOOLS_KEY}" }
+    },
+    "remote-tools": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+scope 分为 `local`、`user`、`project`：默认 `local` 存在 `~/.ai/config.json` 的当前项目分区，不污染仓库；`user` 对所有项目生效；`project` 写入可共享的 `.mcp.json`。项目配置会从文件系统上层到当前目录依次读取，越靠近当前目录优先级越高，local 最终覆盖同名配置。
+
+字符串支持 `${VAR}` 和 `${VAR:-default}`；缺少必需环境变量时，该 server 不会启动，界面会显示原因。HTTP/SSE 支持静态 Header、`--headers-helper` 动态 Header，以及浏览器 OAuth 登录、动态客户端注册、token 刷新和 logout；凭据单独存放在权限为 `0600` 的 `~/.ai/mcp-auth.json`。可用 `disabled: true` 暂停某个 server，用 `AI_MCP_DISABLED=1` 暂时关闭全部 MCP；连接与调用超时可分别用 `AI_MCP_CONNECT_TIMEOUT_MS`、`AI_MCP_TOOL_TIMEOUT_MS` 调整。超大文本、音频和其他二进制结果会安全落盘到 `~/.ai/mcp-results`，避免塞满模型上下文。
+
+MCP server 和本地工具一样拥有实际操作能力。只添加你信任的 server；共享 `.mcp.json` 时用环境变量引用密钥，不要提交明文 token。当前版本尚没有 Studio/CC 那种逐 server、逐工具审批规则，因此生产写操作应只暴露给可信会话。
 
 ### 消息渠道
 

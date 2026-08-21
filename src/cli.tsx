@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs'
 import { spawn } from 'node:child_process'
+import packageJson from '../package.json' with { type: 'json' }
 import {
   useState,
   useRef,
@@ -100,6 +101,8 @@ import {
   terminalHyperlink,
 } from './ui-format.js'
 import { formatModelStatus, type ModelStatus } from './ui-model-status.js'
+import { runMcpCli } from './mcp-cli.js'
+import { loadMcpConfiguration, summarizeMcpServer } from './mcp.js'
 import {
   anchoredTranscriptOffset,
   BufferedTranscriptLedger,
@@ -141,6 +144,11 @@ let activeUiTheme = UI_THEMES.dark
 // 命令行参数（在渲染界面之前处理）
 // ———————————————————————————————————————————————
 const argv = process.argv.slice(2)
+
+if (argv[0] === '--version' || argv[0] === '-v' || argv[0] === '-V') {
+  console.log(`${packageJson.version} (ai)`)
+  process.exit(0)
+}
 
 if (argv[0] === '--help' || argv[0] === '-h') {
   console.log(`ai — 终端里的可编辑对话框（接入任意 OpenAI 兼容大模型），也能通过 QQ 远程操控
@@ -186,6 +194,9 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   ai --skills              列出已安装的技能（skill，可复用的操作手册）
   ai --skill-show <名字>    打印某个技能的完整正文（审查/测试下载来的技能用）
   ai --skill-new <名字>     新建一个技能模板到 ~/.ai/skills/<名字>/SKILL.md
+  ai mcp <add|list|get|test|auth|logout|prompts|remove> ...
+                           管理 MCP servers；运行 ai mcp help 查看示例
+  ai -v, --version         显示版本号并退出
   ai --help                显示帮助
 
 切换服务商 / 模型（OpenAI 兼容即可，如 OpenAI、通义千问、Moonshot、OpenRouter、本地 Ollama）:
@@ -216,6 +227,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   /btw <问题>       运行中旁问：共享当前上下文、无工具、不打断主任务、不写入历史
   /usage            查看本次会话 input/output/cache/total token
   /usage reset      清零本次会话 token 计数
+  /mcp              查看当前目录生效的 MCP servers
 
 对话框内快捷键:
   Enter           发送
@@ -228,6 +240,10 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   Ctrl+C 两次      退出
 `)
   process.exit(0)
+}
+
+if (argv[0] === 'mcp') {
+  process.exit(await runMcpCli(argv.slice(1)))
 }
 
 if (argv[0] === '--config') {
@@ -1677,7 +1693,7 @@ function App() {
     async (text: string) => {
       setError(null)
 
-      // /usage、/models 都是本地命令：不进 LLM 历史、不消耗 token。
+      // /usage、/models、/mcp 都是本地命令：不进 LLM 历史、不消耗 token。
       const trimmed = text.trim()
       if (trimmed === '/btw' || trimmed.startsWith('/btw ')) {
         const question = trimmed.slice('/btw'.length).trim()
@@ -1700,6 +1716,23 @@ function App() {
         } else {
           pushLocal(`本次会话 Token：${formatTokenUsage(tokenUsageRef.current)}`)
         }
+        return
+      }
+      if (trimmed === '/mcp') {
+        setMessages(prev => [...prev, { id: ++idRef.current, role: 'user', content: text }])
+        const loaded = loadMcpConfiguration()
+        const entries = Object.entries(loaded.servers)
+        const lines = entries.map(([name, config]) => {
+          const source = loaded.sources[name]
+          return `  ${name}${config.disabled ? ' [disabled]' : ''}  ${summarizeMcpServer(config)}  [${source.scope}]`
+        })
+        const errors = loaded.errors.map(error => `  ✗ ${error}`)
+        const content = entries.length
+          ? `当前生效的 MCP servers：\n${[...lines, ...errors].join('\n')}\n\n用 ai mcp test <名字> 实测连接。`
+          : errors.length
+            ? `MCP 配置有误：\n${errors.join('\n')}`
+            : '当前目录没有配置 MCP server。用 ai mcp help 查看添加方式。'
+        setMessages(prev => [...prev, { id: ++idRef.current, role: 'tool', content, gap: true }])
         return
       }
       if (trimmed === '/models' || trimmed.startsWith('/models ')) {
