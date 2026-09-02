@@ -36,6 +36,7 @@ import { managedSubagents, type ManagedSubagentResult } from './agent/subagent-m
 import type { TokenUsage } from './token-usage.js'
 import type { LocalToolContentBlock } from './llm.js'
 import { compactUrlForDisplay } from './ui-format.js'
+import type { FileDiffSnapshot } from './ui-diff.js'
 import { PDFParse } from 'pdf-parse'
 import XLSX from 'xlsx'
 import JSZip from 'jszip'
@@ -106,6 +107,8 @@ export type ToolResult = {
   evidence?: ToolEvidence
   /** 只回灌给模型的非文本内容；普通 UI 永远不渲染其中的 base64。 */
   modelContent?: LocalToolContentBlock[]
+  /** Before/after text captured inside the file mutation lock for an accurate UI diff. */
+  fileDiff?: FileDiffSnapshot
   durationMs: number
 }
 
@@ -1445,6 +1448,7 @@ export async function runTool(
       return await withFileMutationLock(path, locks, async () => {
         let before: FileReadSnapshot | null = null
         try { before = fileSnapshot(path) } catch { /* 新文件 */ }
+        const beforeContent = before ? readFileSync(path, 'utf8') : ''
 
         if (before) {
           const known = snapshots.get(path)
@@ -1484,6 +1488,7 @@ export async function runTool(
 
         const output = await runToolText(name, args, executionContext)
         const after = fileSnapshot(path)
+        const afterContent = readFileSync(path, 'utf8')
         snapshots.set(path, after)
         return {
           ok: true,
@@ -1493,6 +1498,12 @@ export async function runTool(
             path,
             bytes: after.size,
             replacements,
+          },
+          fileDiff: {
+            path,
+            before: beforeContent,
+            after: afterContent,
+            created: before === null,
           },
           durationMs: Date.now() - startedAt,
         }

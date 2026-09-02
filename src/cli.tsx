@@ -79,6 +79,7 @@ import {
   activityCategory,
   addActivity,
   activeToolPresentation,
+  clampRows,
   compactToolResultRows,
   conciseBrowserToolCard,
   conciseShellFailure,
@@ -88,7 +89,10 @@ import {
   formatUserPrompt,
   hasActivity,
   parseAgentCardItem,
+  planLiveFooter,
   recoverableToolFailure,
+  singleRow,
+  tailByRows,
   type ActivityCounts,
   type AgentCardItem,
 } from './ui-activity.js'
@@ -101,6 +105,8 @@ import {
   terminalHyperlink,
 } from './ui-format.js'
 import { formatModelStatus, type ModelStatus } from './ui-model-status.js'
+import { FileDiffCard } from './DiffCard.js'
+import { buildFileDiffCard, type FileDiffCard as FileDiffCardData, type FileDiffSnapshot } from './ui-diff.js'
 import { runMcpCli } from './mcp-cli.js'
 import { loadMcpConfiguration, summarizeMcpServer } from './mcp.js'
 import {
@@ -779,6 +785,7 @@ type UIMessage = {
     | 'tool'
     | 'remote-tool'
     | 'tool-card'
+    | 'file-diff'
     | 'activity'
     | 'agent-batch'
   content: string
@@ -794,6 +801,7 @@ type UIMessage = {
     quietFailure?: boolean
   }
   agentCard?: AgentCardItem[]
+  fileDiffCard?: FileDiffCardData
 }
 
 type ActiveTool = {
@@ -813,6 +821,7 @@ type ToolBatch = {
     resultDetail?: string
     failed?: boolean
     rawUrl?: string
+    fileDiff?: FileDiffSnapshot
   }>
 }
 
@@ -1016,12 +1025,14 @@ const MessageRow = memo(
     gap,
     toolCard,
     agentCard,
+    fileDiffCard,
   }: {
     role: string
     content: string
     gap?: boolean
     toolCard?: UIMessage['toolCard']
     agentCard?: UIMessage['agentCard']
+    fileDiffCard?: UIMessage['fileDiffCard']
   }) => {
   if (role === 'user') {
     if (activeUiTheme.scheme === 'light') {
@@ -1099,6 +1110,15 @@ const MessageRow = memo(
           )
         })}
       </Box>
+    )
+  }
+  if (role === 'file-diff' && fileDiffCard) {
+    return (
+      <FileDiffCard
+        card={fileDiffCard}
+        columns={process.stdout.columns || 80}
+        light={activeUiTheme.scheme === 'light'}
+      />
     )
   }
   if ((role === 'remote-tool' || role === 'tool-card') && toolCard) {
@@ -1270,36 +1290,21 @@ const BlinkingToolDot = memo(() => {
   return <Text>{!ANIMATE_SPINNER || visible ? '●' : ' '}</Text>
 })
 
-const ActiveToolRow = memo(({ tool }: { tool: ActiveTool }) => {
-  const presentation = activeToolPresentation(tool.name, tool.summary, tool.detail)
+// The two rows this occupies are budgeted by planLiveFooter; both the label and
+// the detail must stay on a single terminal row each, whatever the tool input was.
+const ActiveToolRow = memo(({ tool, columns }: { tool: ActiveTool; columns: number }) => {
+  const presentation = activeToolPresentation(tool.name, tool.summary, tool.detail, columns)
   return (
     <Box flexDirection="column">
-      <Text>
-        <BlinkingToolDot /> {presentation.label}
+      <Text wrap="truncate-end">
+        <BlinkingToolDot /> {singleRow(presentation.label, columns - 2)}
       </Text>
-      {presentation.detail && <Text dimColor>{'  └ '}{presentation.detail}</Text>}
+      {presentation.detail && (
+        <Text dimColor wrap="truncate-end">{'  └ '}{presentation.detail}</Text>
+      )}
     </Box>
   )
 })
-
-// 取文本「末尾若干行」，按终端列宽把自动换行也算进占用行数。
-// 用途：底部那截「正在生成、尚未成行」的流式尾巴限高，绝不让它撑爆动态区、
-// 把输入框顶到屏幕最上方。完整内容会逐行沉淀进上方历史，这里只截断实时预览，不丢信息。
-function tailByRows(text: string, maxRows: number, cols: number): { shown: string; truncated: boolean } {
-  const logical = text.split('\n')
-  const width = Math.max(1, cols)
-  const out: string[] = []
-  let used = 0
-  for (let i = logical.length - 1; i >= 0; i--) {
-    const line = logical[i]
-    const wrapped = Math.max(1, Math.ceil(line.length / width)) // 空行也占 1 行
-    if (used + wrapped > maxRows && out.length > 0) break
-    out.unshift(line)
-    used += wrapped
-    if (used >= maxRows) break
-  }
-  return { shown: out.join('\n'), truncated: out.length < logical.length }
-}
 
 function TranscriptAlternateScreen({
   rows,
@@ -1374,6 +1379,8 @@ function App() {
   const [terminalSize, setTerminalSize] = useState(() =>
     safeTerminalSize(process.stdout.columns, process.stdout.rows),
   )
+  // 最近一次真正生效的终端尺寸；resize 回调用它判断「尺寸其实没变」。
+  const terminalSizeRef = useRef(terminalSize)
   const [staticBaseMessageCount, setStaticBaseMessageCount] = useState(0)
   const [staticHeaderVisible, setStaticHeaderVisible] = useState(true)
   const [staticEpoch, setStaticEpoch] = useState(0)
@@ -1517,6 +1524,14 @@ function App() {
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
       resizeTimerRef.current = setTimeout(() => {
         const next = safeTerminalSize(process.stdout.columns, process.stdout.rows)
+        resizeTimerRef.current = null
+        // SIGWINCH also arrives when nothing changed (tmux/ssh clients re-send it on
+        // attach, focus and refresh). Reprinting the whole <Static> history for those
+        // would flood the terminal with duplicated output for no visible benefit.
+        if (next.columns === terminalSizeRef.current.columns && next.rows === terminalSizeRef.current.rows) {
+          return
+        }
+        terminalSizeRef.current = next
         // Repaint the visible screen without CSI 3J. Clearing scrollback here erased the
         // very intermediate evidence Ctrl+O is meant to preserve.
         process.stdout.write('\x1b[2J\x1b[H')
@@ -1524,7 +1539,6 @@ function App() {
         setStaticBaseMessageCount(0)
         setStaticHeaderVisible(true)
         setStaticEpoch(epoch => epoch + 1)
-        resizeTimerRef.current = null
       }, 120)
     }
     process.stdout.on('resize', onResize)
@@ -1982,6 +1996,7 @@ function App() {
                 tool.result = ev.summary
                 tool.resultDetail = ev.detail
                 tool.failed = ev.phase === 'failure'
+                tool.fileDiff = ev.fileDiff
                 const completedUrl = toolUrl(tool.name, tool.inputDetail, tool.resultDetail)
                 if (completedUrl) {
                   tool.rawUrl = completedUrl
@@ -2046,6 +2061,14 @@ function App() {
                     setMessages(prev => [
                       ...prev,
                       ...keyTools.map(item => {
+                        if (!item.failed && item.fileDiff) {
+                          return {
+                            id: ++idRef.current,
+                            role: 'file-diff' as const,
+                            content: '',
+                            fileDiffCard: buildFileDiffCard(item.fileDiff),
+                          }
+                        }
                         const browserCard = !item.failed
                           ? conciseBrowserToolCard(item.name, item.resultDetail)
                           : undefined
@@ -2185,13 +2208,28 @@ function App() {
     setStaticEpoch(epoch => epoch + 1)
   }, [])
 
-  // 流式尾巴正常只有一行；但模型若长时间不吐换行，这一「逻辑行」也可能很长，
-  // 自动换行后撑高动态区。按终端高度兜底截断，保证动态区永不超出屏幕、输入框不跳顶。
-  // 预留 ~9 行给 spinner、错误行、带边框输入框、页脚提示和各处 margin。
+  // 动态区（流式尾巴 + 运行中的工具 + 排队提示 + /btw）每秒要重画好几次，因此它
+  // 必须始终比终端矮：Ink 靠「上移上一帧的行数再擦除」来重绘，一旦某一帧比屏幕还高，
+  // 上移就够不到已经滚出屏幕的那几行，擦除失效，于是每帧都在下面再追加一份完整内容
+  // （issue.png 里疯狂刷屏、输出暴涨就是这么来的）。这里先按终端高度把行数分配好，
+  // 各段都只拿自己那份；被截掉的内容都还在 Ctrl+O 的完整转录里。
   const termRows = terminalSize.rows
   const termCols = terminalSize.columns - 2 // 容器 paddingX=1，左右各 1
+  const footerPlan = planLiveFooter({
+    rows: termRows,
+    tools: activeTools.length,
+    queued: queuedPrompts.length,
+    hasError: Boolean(error),
+    hasBtw: Boolean(btw),
+  })
+  const visibleTools = activeTools.slice(activeTools.length - footerPlan.tools)
+  // The “还有 N 条” line has to fit inside the queued budget as well.
+  const shownQueued = queuedPrompts.length > footerPlan.queued
+    ? Math.max(0, footerPlan.queued - 1)
+    : footerPlan.queued
+  const hiddenQueued = queuedPrompts.length - shownQueued
   const stream = streaming
-    ? tailByRows(streaming, Math.max(3, termRows - 9), termCols)
+    ? tailByRows(streaming, footerPlan.stream, termCols)
     : { shown: '', truncated: false }
   const projectedTranscriptLines = useMemo(
     () => showTranscript
@@ -2237,6 +2275,7 @@ function App() {
             gap={row.msg.gap}
             toolCard={row.msg.toolCard}
             agentCard={row.msg.agentCard}
+            fileDiffCard={row.msg.fileDiffCard}
           />
         )
       }
@@ -2315,15 +2354,15 @@ function App() {
 
       {/* Active tools have their own unresolved rows below. Show the aggregate only
           between batches, otherwise "running 1 command" is repeated twice. */}
-      {busy && activeTools.length === 0 && hasActivity(activity) && (
+      {busy && visibleTools.length === 0 && hasActivity(activity) && (
         <Box>
-          <Text dimColor>{formatActivity(activity, false)}</Text>
+          <Text dimColor wrap="truncate-end">{formatActivity(activity, false)}</Text>
         </Box>
       )}
 
       {/* 当前具体目标始终可见；活动摘要只负责说明累计工作量。 */}
-      {activeTools.slice(-3).map(tool => (
-        <ActiveToolRow key={tool.callId} tool={tool} />
+      {visibleTools.map(tool => (
+        <ActiveToolRow key={tool.callId} tool={tool} columns={termCols} />
       ))}
 
       {busy && (
@@ -2347,17 +2386,19 @@ function App() {
       {/* 错误 */}
       {error && (
         <Box marginBottom={1}>
-          <Text color="red">⚠ {error}</Text>
+          <Text color="red">⚠ {clampRows(error, 2, termCols - 2)}</Text>
         </Box>
       )}
 
-      {queuedPrompts.length > 0 && (
+      {footerPlan.queued > 0 && (
         <Box flexDirection="column" marginBottom={1}>
-          {queuedPrompts.map((prompt, index) => (
-            <Text key={`${index}-${prompt}`} dimColor>
-              {index === 0 ? '排队中 › ' : '       › '}{prompt}
+          {queuedPrompts.slice(0, shownQueued).map((prompt, index) => (
+            <Text key={`${index}-${prompt}`} dimColor wrap="truncate-end">
+              {index === 0 ? '排队中 › ' : '       › '}
+              {singleRow(prompt, termCols - 10)}
             </Text>
           ))}
+          {hiddenQueued > 0 && <Text dimColor>{`       › … 还有 ${hiddenQueued} 条`}</Text>}
         </Box>
       )}
 
@@ -2369,15 +2410,17 @@ function App() {
           paddingX={1}
           marginBottom={1}
         >
-          <Text>
+          <Text wrap="truncate-end">
             <Text color={activeUiTheme.accent} bold>/btw </Text>
-            <Text dimColor>{btw.question}</Text>
+            <Text dimColor>{singleRow(btw.question, termCols - 10)}</Text>
           </Text>
           <Box marginTop={1}>
             {btw.status === 'loading' ? (
               <Text color={activeUiTheme.accent}><Spinner /> 正在旁路回答…</Text>
             ) : (
-              <Text color={btw.status === 'error' ? 'red' : undefined}>{btw.answer}</Text>
+              <Text color={btw.status === 'error' ? 'red' : undefined}>
+                {clampRows(btw.answer, footerPlan.btw, termCols - 4)}
+              </Text>
             )}
           </Box>
           <Text dimColor>Space / Enter / Esc 关闭；不会写入主对话</Text>

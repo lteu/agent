@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
+import { runTool, type ToolContext } from '../src/tools.js'
+import { buildFileDiffCard, syntaxSegments, truncateDiffLine } from '../src/ui-diff.js'
 import {
   anchoredTranscriptOffset,
   BufferedTranscriptLedger,
@@ -235,4 +240,112 @@ test('鼠标控制序列不会泄漏进文本输入', () => {
   assert.equal(stripSgrMouseSequences('\x1b[<64;84;11M'), '')
   assert.equal(stripSgrMouseSequences('[<65;84;10M'), '')
   assert.equal(stripSgrMouseSequences('a\x1b[<64;84;11Mb'), 'ab')
+})
+
+test('文件更新生成带上下文和准确行号的多个 diff hunk', () => {
+  const before = [
+    'first',
+    'keep 2',
+    'old 3',
+    'keep 4',
+    'keep 5',
+    'keep 6',
+    'keep 7',
+    'keep 8',
+    'keep 9',
+    'keep 10',
+    'old 11',
+    'last',
+  ].join('\n')
+  const after = before.replace('old 3', 'new 3\nadded 4').replace('old 11', 'new 12')
+  const card = buildFileDiffCard({
+    path: '/workspace/src/example.ts',
+    before,
+    after,
+    created: false,
+  }, '/workspace')
+
+  assert.equal(card.operation, 'Update')
+  assert.equal(card.displayPath, 'src/example.ts')
+  assert.equal(card.additions, 3)
+  assert.equal(card.removals, 2)
+  assert.equal(card.hunks.length, 2)
+  assert.deepEqual(
+    card.hunks[0].lines.filter(line => line.kind !== 'context').map(line => [line.kind, line.oldLine, line.newLine]),
+    [
+      ['remove', 3, undefined],
+      ['add', undefined, 3],
+      ['add', undefined, 4],
+    ],
+  )
+  assert.deepEqual(
+    card.hunks[1].lines.filter(line => line.kind !== 'context').map(line => [line.kind, line.oldLine, line.newLine]),
+    [
+      ['remove', 11, undefined],
+      ['add', undefined, 12],
+    ],
+  )
+})
+
+test('新文件显示为 Create，所有内容都是新增行', () => {
+  const card = buildFileDiffCard({
+    path: '/workspace/new.sql',
+    before: '',
+    after: "SELECT 1\nWHERE name = 'demo'\n",
+    created: true,
+  }, '/workspace')
+  assert.equal(card.operation, 'Create')
+  assert.equal(card.additions, 2)
+  assert.equal(card.removals, 0)
+  assert.deepEqual(card.hunks[0].lines.map(line => line.newLine), [1, 2])
+})
+
+test('SQL 风格 diff 行识别关键字、数字、字符串和注释', () => {
+  assert.deepEqual(
+    syntaxSegments("WHEN price = 198 THEN '实验组' -- label").map(segment => segment.kind),
+    ['keyword', 'plain', 'number', 'plain', 'keyword', 'plain', 'string', 'plain', 'comment'],
+  )
+})
+
+test('diff 行按终端显示宽度截断中文', () => {
+  const clipped = truncateDiffLine('中文'.repeat(20), 12)
+  assert.equal(clipped.endsWith('…'), true)
+  assert.ok(clipped.length < 40)
+})
+
+test('文件工具在同一个修改锁内返回真实 before/after 快照', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'ai-diff-test-'))
+  const path = join(directory, 'sample.txt')
+  const context: ToolContext = {
+    apiKey: '',
+    model: '',
+    baseURL: '',
+    readSnapshots: new Map(),
+    fileMutationLocks: new Map(),
+  }
+  try {
+    const created = await runTool('write_file', { path, content: 'alpha\nbeta\n' }, context)
+    assert.deepEqual(created.fileDiff, {
+      path,
+      before: '',
+      after: 'alpha\nbeta\n',
+      created: true,
+    })
+
+    await runTool('read_file', { path }, context)
+    const edited = await runTool('edit_file', {
+      path,
+      old_string: 'beta',
+      new_string: 'gamma',
+    }, context)
+    assert.equal(edited.ok, true)
+    assert.deepEqual(edited.fileDiff, {
+      path,
+      before: 'alpha\nbeta\n',
+      after: 'alpha\ngamma\n',
+      created: false,
+    })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })

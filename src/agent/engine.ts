@@ -36,6 +36,7 @@ import {
   type ToolContext,
   type ToolResult,
 } from '../tools.js'
+import type { FileDiffSnapshot } from '../ui-diff.js'
 import { createMcpRuntime } from '../mcp.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
 import {
@@ -77,6 +78,8 @@ export type AgentEvent =
       /** 同一轮并行工具共享 batchId；batchSize 让默认 UI 在整批结束后折叠为一行。 */
       batchId?: string
       batchSize?: number
+      /** Successful local file mutation, captured atomically for terminal diff rendering. */
+      fileDiff?: FileDiffSnapshot
       phase: 'start' | 'success' | 'failure' | 'info'
     }
   // 撞到最大步数：不直接结束，而是问一句「要不要继续」，由消费方提示用户回复「继续」接着跑。
@@ -660,6 +663,7 @@ async function* runAgentCore(
               phase: 'success',
               summary: describeToolSuccess(call.function.name, safeArgs(call.function.arguments), result),
               detail: result.output,
+              fileDiff: result.fileDiff,
             }
           } else {
             yield {
