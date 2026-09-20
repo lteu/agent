@@ -108,7 +108,7 @@ import { formatModelStatus, type ModelStatus } from './ui-model-status.js'
 import { FileDiffCard } from './DiffCard.js'
 import { buildFileDiffCard, type FileDiffCard as FileDiffCardData, type FileDiffSnapshot } from './ui-diff.js'
 import { runMcpCli } from './mcp-cli.js'
-import { loadMcpConfiguration, summarizeMcpServer } from './mcp.js'
+import { createMcpRuntime, type McpRuntime, loadMcpConfiguration, summarizeMcpServer } from './mcp.js'
 import {
   anchoredTranscriptOffset,
   BufferedTranscriptLedger,
@@ -234,6 +234,7 @@ if (argv[0] === '--help' || argv[0] === '-h') {
   /usage            查看本次会话 input/output/cache/total token
   /usage reset      清零本次会话 token 计数
   /mcp              查看当前目录生效的 MCP servers
+  /mcp refresh [名字] 后台刷新全部或指定服务的工具列表
 
 对话框内快捷键:
   Enter           发送
@@ -1346,6 +1347,8 @@ function TranscriptAlternateScreen({
   )
 }
 
+let interactiveMcp: McpRuntime | undefined
+
 function App() {
   const { exit } = useApp()
   const [apiKey, setApiKey] = useState<string | undefined>(config.apiKey)
@@ -1732,6 +1735,19 @@ function App() {
         }
         return
       }
+      if (trimmed === '/mcp refresh' || trimmed.startsWith('/mcp refresh ')) {
+        const name = trimmed.slice('/mcp refresh'.length).trim() || undefined
+        setMessages(prev => [...prev,
+          { id: ++idRef.current, role: 'user', content: text },
+          { id: ++idRef.current, role: 'tool', content: `已提交 MCP 后台刷新${name ? `：${name}` : '（全部服务）'}；可用 /mcp 查看状态。`, gap: true },
+        ])
+        void interactiveMcp?.refresh(name).catch(error => {
+          setMessages(prev => [...prev, {
+            id: ++idRef.current, role: 'tool', content: `MCP 刷新失败：${error instanceof Error ? error.message : String(error)}`, gap: true,
+          }])
+        })
+        return
+      }
       if (trimmed === '/mcp') {
         setMessages(prev => [...prev, { id: ++idRef.current, role: 'user', content: text }])
         const loaded = loadMcpConfiguration()
@@ -1740,9 +1756,12 @@ function App() {
           const source = loaded.sources[name]
           return `  ${name}${config.disabled ? ' [disabled]' : ''}  ${summarizeMcpServer(config)}  [${source.scope}]`
         })
-        const errors = loaded.errors.map(error => `  ✗ ${error}`)
+        const errors = [...new Set([...loaded.errors, ...(interactiveMcp?.failures ?? [])])].map(error => `  ✗ ${error}`)
+        const status = interactiveMcp
+          ? `\n\n${interactiveMcp.loading ? 'MCP 正在后台连接' : 'MCP 初始连接已完成'}；当前可用 ${interactiveMcp.getSchemas().length} 个工具。配置修改后需重启会话。`
+          : ''
         const content = entries.length
-          ? `当前生效的 MCP servers：\n${[...lines, ...errors].join('\n')}\n\n用 ai mcp test <名字> 实测连接。`
+          ? `当前生效的 MCP servers：\n${[...lines, ...errors].join('\n')}${status}\n\n用 ai mcp test <名字> 实测连接。`
           : errors.length
             ? `MCP 配置有误：\n${errors.join('\n')}`
             : '当前目录没有配置 MCP server。用 ai mcp help 查看添加方式。'
@@ -1858,6 +1877,7 @@ function App() {
           baseURL: modelConfig.baseURL,
           provider: modelConfig.provider,
           signal: controller.signal,
+          mcp: interactiveMcp,
           verifyLevel: parseVerifyLevel(process.env.AI_VERIFY_LEVEL),
           historyTrace,
           drainQueuedPrompts: () => {
@@ -2541,6 +2561,7 @@ if (argv[0] === 'serve') {
   const { startWatch } = await import('./channels/watch.js')
   startWatch()
 } else {
+  interactiveMcp = await createMcpRuntime({ background: true })
   // exitOnCtrlC: false —— 关掉 Ink 内置的「Ctrl+C 即退出」，把控制权交给 useInput，
   // 否则第一次 Ctrl+C 就被 Ink 直接退出了，下面的「连按两次才退出」逻辑根本来不及生效。
   // Filter SGR mouse reports before Ink's keyboard parser receives them. A custom
@@ -2598,12 +2619,14 @@ if (argv[0] === 'serve') {
   // restoring terminal modes so the next shell prompt cannot overwrite that output.
   void renderedInstance.waitUntilExit().then(
     () => {
+      void interactiveMcp?.close()
       inputBridge?.dispose()
       restoreTerminal()
       clearTerminalAfterInk(process.stdout)
       process.off('exit', restoreTerminal)
     },
     () => {
+      void interactiveMcp?.close()
       inputBridge?.dispose()
       restoreTerminal()
       process.off('exit', restoreTerminal)

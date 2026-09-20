@@ -189,6 +189,13 @@ Skill 正文和附带脚本都会成为模型可执行的操作依据。安装�
 
 `ai` 可以作为原生 MCP client 连接外部工具 server。配置格式兼容 Claude Code 的 `mcpServers`，支持 stdio、Streamable HTTP、旧版 SSE 和 WebSocket；Agent 会发现并调用 tools，读取 resources 和 prompts，处理清单变更通知，并把 server instructions 加入会话。工具名使用 `mcp__<server>__<tool>`，避免多个 server 冲突。
 
+交互终端在启动时异步连接 MCP，连接在整个会话内复用，不随每次提问重连；服务逐个就绪，工具和 instructions 从下一轮模型请求开始可用，清单变更通知会更新工具。`/mcp` 可查看连接进度、可用工具数量和失败原因。退出会话会取消未完成的连接并关闭已连接服务；修改配置后需重启会话。
+
+工具发现不会随模型轮次全量刷新：模型直接使用上一份成功列表；`tools/list_changed` 通知和重连只更新对应服务，并发刷新合并为同一个请求。刷新失败保留旧列表。默认每 5 分钟后台刷新一次以兜底漏发通知的服务，可用 `AI_MCP_REFRESH_INTERVAL_MS` 调整间隔（毫秒，`0` 关闭），或用 `/mcp refresh [服务名]` 手动后台刷新。通知恰好到达正在执行的刷新期间时，会在完成后补查一次，避免遗漏变更。
+
+适用边界：后台连接不保证首轮就能使用尚未就绪的 MCP 工具。单次执行及 `ai mcp test` 等命令仍等待初始连接批次（受连接超时约束）。这里没有实现 claude.ai 的特殊 5 秒等待策略，也没有跨进程常驻服务。
+
+
 常用管理命令：
 
 ```bash

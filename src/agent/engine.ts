@@ -37,7 +37,7 @@ import {
   type ToolResult,
 } from '../tools.js'
 import type { FileDiffSnapshot } from '../ui-diff.js'
-import { createMcpRuntime } from '../mcp.js'
+import { createMcpRuntime, type McpRuntime } from '../mcp.js'
 import { compactInPlace, type CompactDeps } from './compact.js'
 import {
   createHistoryTraceContext,
@@ -141,8 +141,8 @@ export type EngineDeps = CompactDeps & {
    * loop boundary, never between an assistant tool call and its tool results.
    */
   drainQueuedPrompts?: () => string[]
-  /** Disable automatic MCP config loading for an isolated run (enabled by default). */
-  mcp?: boolean
+  /** false disables MCP; a supplied runtime is borrowed for the session and never closed here. */
+  mcp?: boolean | McpRuntime
 }
 
 export function queuedPromptMessage(prompts: string[]): string {
@@ -224,7 +224,9 @@ export async function* runAgent(
   deps: EngineDeps,
 ): AsyncGenerator<AgentEvent, void, unknown> {
   const historyTrace = deps.historyTrace ?? createHistoryTraceContext('unknown', 'unknown')
-  const mcp = deps.mcp === false ? undefined : await createMcpRuntime()
+  const ownsMcp = typeof deps.mcp !== 'object'
+  const mcp = deps.mcp === false ? undefined
+    : typeof deps.mcp === 'object' ? deps.mcp : await createMcpRuntime()
   const existingExtraNames = new Set(deps.extraTools?.schemas.map(schema => schema.function.name) ?? [])
   const mcpSchemas = (mcp?.schemas ?? []).filter(schema => !existingExtraNames.has(schema.function.name))
   const mcpCollisionFailures = (mcp?.schemas ?? [])
@@ -236,8 +238,8 @@ export async function* runAgent(
         refresh: async () => {
           const tasks: Promise<void>[] = []
           if (deps.extraTools?.refresh) tasks.push(deps.extraTools.refresh())
-          if (mcp) tasks.push(mcp.refresh())
           await Promise.all(tasks)
+          updateMcpInstructions()
         },
         getSchemas: () => {
           const channelSchemas = deps.extraTools?.getSchemas?.() ?? deps.extraTools?.schemas ?? []
@@ -259,7 +261,12 @@ export async function* runAgent(
     : undefined
   let originalSystemMessage: ChatMessage | undefined
   let injectedSystemMessage: ChatMessage | undefined
-  if (mcp?.instructions) {
+  const updateMcpInstructions = () => {
+    if (!mcp?.instructions) return
+    if (injectedSystemMessage) {
+      injectedSystemMessage.content = [originalSystemMessage?.content, mcp.instructions].filter(Boolean).join('\n\n')
+      return
+    }
     const systemIndex = history.findIndex(message => message.role === 'system')
     if (systemIndex >= 0) {
       originalSystemMessage = history[systemIndex]
@@ -273,6 +280,7 @@ export async function* runAgent(
       history.unshift(injectedSystemMessage)
     }
   }
+  updateMcpInstructions()
   try {
     for (const failure of [...(mcp?.failures ?? []), ...mcpCollisionFailures]) {
       const event: AgentEvent = {
@@ -300,7 +308,7 @@ export async function* runAgent(
         else history.splice(index, 1)
       }
     }
-    await mcp?.close()
+    if (ownsMcp) await mcp?.close()
   }
 }
 
@@ -430,7 +438,7 @@ async function* runAgentCore(
     // ⓪ 用户已中断（Esc/Ctrl+C）：立刻收手，别再压缩历史或发起下一次模型调用。
     if (deps.signal?.aborted) throw new DOMException('已中断', 'AbortError')
 
-    // Refresh dynamic MCP discovery between model turns, matching CC's behavior.
+    // Channel hooks and cached MCP instructions; MCP discovery runs independently.
     await deps.extraTools?.refresh?.().catch(() => undefined)
     const tools = [...TOOL_SCHEMAS, ...currentExtraSchemas()]
 

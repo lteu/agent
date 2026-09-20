@@ -76,12 +76,15 @@ type ConnectedServer = {
 
 export type McpRuntime = {
   schemas: McpToolSchema[]
+  /** Settles when the initial connection batch finishes, including failures. */
+  ready: Promise<void>
+  readonly loading: boolean
   failures: string[]
   /** InitializeResult.instructions supplied by connected servers, ready for system-prompt injection. */
   instructions?: string
   run: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<ToolResult>
-  /** Refresh tool/prompt/resource discovery after MCP list-changed notifications or between agent turns. */
-  refresh: () => Promise<void>
+  /** Explicit refresh; omitted server refreshes all connected servers. Never called per model turn. */
+  refresh: (server?: string) => Promise<void>
   /** Always returns the current schema list; unlike `schemas`, callers need not retain an array reference. */
   getSchemas: () => McpToolSchema[]
   close: () => Promise<void>
@@ -557,11 +560,11 @@ async function createTransport(name: string, config: McpServerConfig, cwd: strin
   })
 }
 
-async function listAllTools(client: Client, timeout: number): Promise<any[]> {
+async function listAllTools(client: Client, timeout: number, signal?: AbortSignal): Promise<any[]> {
   const tools: any[] = []
   let cursor: string | undefined
   do {
-    const page = await client.listTools(cursor ? { cursor } : undefined, { timeout })
+    const page = await client.listTools(cursor ? { cursor } : undefined, { timeout, signal })
     tools.push(...page.tools)
     cursor = page.nextCursor
   } while (cursor)
@@ -594,8 +597,9 @@ async function discoverToolSchemas(
   client: Client,
   serverName: string,
   timeout: number,
+  signal?: AbortSignal,
 ): Promise<{ mapping: Map<string, string>; schemas: McpToolSchema[] }> {
-  const tools = client.getServerCapabilities()?.tools ? await listAllTools(client, timeout) : []
+  const tools = client.getServerCapabilities()?.tools ? await listAllTools(client, timeout, signal) : []
   const mapping = new Map<string, string>()
   const schemas: McpToolSchema[] = []
   for (const tool of tools) {
@@ -627,12 +631,24 @@ async function connectServer(
   config: McpServerConfig,
   cwd: string,
   onChanged?: () => void,
+  signal?: AbortSignal,
+  refreshIntervalMs = 300_000,
+  onRefreshError?: (name: string, error: unknown) => void,
 ): Promise<{ server: ConnectedServer; schemas: McpToolSchema[] }> {
   const transport = await createTransport(name, config, cwd)
   const client = new Client(
     { name: 'ai-cli', version: '0.1.0' },
     { capabilities: { roots: {}, elicitation: { form: { applyDefaults: true }, url: {} } } },
   )
+  // SDK initialization failures call close without awaiting it. Share that promise
+  // so session shutdown also waits for the stdio child to actually terminate.
+  const closeClient = client.close.bind(client)
+  let closingClient: Promise<void> | undefined
+  let refreshTimer: ReturnType<typeof setInterval> | undefined
+  client.close = () => {
+    clearInterval(refreshTimer)
+    return closingClient ??= closeClient()
+  }
   client.setRequestHandler(ListRootsRequestSchema, async () => ({
     roots: [{ uri: pathToFileURL(cwd).toString(), name: 'working-directory' }],
   }))
@@ -641,6 +657,8 @@ async function connectServer(
   client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'cancel' as const }))
 
   const timeout = positiveEnvInt('AI_MCP_CONNECT_TIMEOUT_MS', 10_000)
+  let refreshInFlight: Promise<void> | undefined
+  let revision = 0
   const server: ConnectedServer = {
     name,
     client,
@@ -649,15 +667,33 @@ async function connectServer(
     config,
     cwd,
     schemas: [],
-    refreshTools: async () => {
-      const discovered = await discoverToolSchemas(client, name, timeout)
-      server.tools = discovered.mapping
-      server.schemas = discovered.schemas
-      onChanged?.()
+    refreshTools: () => {
+      if (refreshInFlight) return refreshInFlight
+      if (closingClient || signal?.aborted) return Promise.resolve()
+      refreshInFlight = (async () => {
+        let observedRevision: number
+        do {
+          observedRevision = revision
+          const discovered = await discoverToolSchemas(client, name, timeout, signal)
+          if (closingClient || signal?.aborted) return
+          // Publish only complete successful lists; failed refreshes retain the cache.
+          server.tools = discovered.mapping
+          server.schemas = discovered.schemas
+          onChanged?.()
+          // A notification arriving during discovery may describe a newer list.
+        } while (observedRevision !== revision)
+      })().finally(() => { refreshInFlight = undefined })
+      return refreshInFlight
     },
   }
-  client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
-    await server.refreshTools()
+  const refreshInBackground = () => {
+    void server.refreshTools().catch(error => {
+      if (!closingClient && !signal?.aborted) onRefreshError?.(name, error)
+    })
+  }
+  client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+    revision++
+    refreshInBackground()
   })
   client.setNotificationHandler(ResourceListChangedNotificationSchema, async () => {
     onChanged?.()
@@ -674,8 +710,13 @@ async function connectServer(
   }
 
   try {
-    await client.connect(transport, { timeout })
+    signal?.throwIfAborted()
+    await client.connect(transport, { timeout, signal })
     await server.refreshTools()
+    if (refreshIntervalMs > 0) {
+      refreshTimer = setInterval(refreshInBackground, refreshIntervalMs)
+      refreshTimer.unref()
+    }
     return { server, schemas: server.schemas }
   } catch (error) {
     await client.close().catch(() => transport.close().catch(() => undefined))
@@ -851,10 +892,21 @@ async function mapWithConcurrency<T, R>(
 export async function createMcpRuntime(options: {
   cwd?: string
   servers?: Record<string, McpServerConfig>
+  /** Return immediately and publish each server as it becomes ready. */
+  background?: boolean
+  /** Low-frequency background fallback; 0 disables it. Defaults to five minutes. */
+  refreshIntervalMs?: number
 } = {}): Promise<McpRuntime> {
   const cwd = resolve(options.cwd ?? process.cwd())
   const loaded = options.servers ? { servers: options.servers, errors: [] } : loadMcpConfiguration(cwd)
   const failures = [...loaded.errors]
+  const configuredInterval = options.refreshIntervalMs ?? Number(process.env.AI_MCP_REFRESH_INTERVAL_MS ?? 300_000)
+  const refreshIntervalMs = Number.isFinite(configuredInterval) && configuredInterval >= 0
+    ? Math.floor(configuredInterval) : 300_000
+  const recordRefreshError = (name: string, error: unknown) => {
+    const message = `${name}: MCP refresh failed: ${error instanceof Error ? error.message : String(error)}`
+    if (!failures.includes(message)) failures.push(message)
+  }
   const configs: Array<[string, McpServerConfig]> = []
 
   if (process.env.AI_MCP_DISABLED !== '1') {
@@ -876,34 +928,10 @@ export async function createMcpRuntime(options: {
 
   const connected = new Map<string, ConnectedServer>()
   const schemas: McpToolSchema[] = []
-  const exposedNames = new Set<string>()
+  let closed = false
+  let loading = true
+  const lifetime = new AbortController()
   let rebuildSchemas = (): void => {}
-  const results = await mapWithConcurrency(
-    configs,
-    4,
-    ([name, config]) => connectServer(name, config, cwd, () => rebuildSchemas()),
-  )
-  for (let index = 0; index < results.length; index++) {
-    const result = results[index]
-    const name = configs[index][0]
-    if (result.status === 'rejected') {
-      failures.push(`${name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`)
-      continue
-    }
-    let collision: string | undefined
-    for (const schema of result.value.schemas) {
-      if (exposedNames.has(schema.function.name)) collision = schema.function.name
-    }
-    if (collision) {
-      failures.push(`${name}: MCP tool name collision: ${collision}`)
-      await result.value.server.client.close().catch(() => undefined)
-      continue
-    }
-    connected.set(name, result.value.server)
-    for (const schema of result.value.schemas) {
-      exposedNames.add(schema.function.name)
-    }
-  }
 
   const resourceSchemas: McpToolSchema[] = [
     {
@@ -1004,16 +1032,31 @@ export async function createMcpRuntime(options: {
     const message = value?.message ?? String(error)
     return (
       (value?.code === 404 && /"code"\s*:\s*-32001|session not found/i.test(message))
+      || /^Not connected$/i.test(message)
       || /connection closed|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|SSE stream disconnected|maximum reconnection attempts/i.test(message)
     )
   }
 
-  const reconnectServer = async (server: ConnectedServer): Promise<ConnectedServer> => {
-    await server.client.close().catch(() => undefined)
-    const replacement = await connectServer(server.name, server.config, server.cwd, () => rebuildSchemas())
-    connected.set(server.name, replacement.server)
-    rebuildSchemas()
-    return replacement.server
+  const reconnecting = new Map<string, Promise<ConnectedServer>>()
+  const reconnectServer = (server: ConnectedServer): Promise<ConnectedServer> => {
+    const current = connected.get(server.name)
+    if (current && current !== server) return Promise.resolve(current)
+    const pending = reconnecting.get(server.name)
+    if (pending) return pending
+    const replacement = (async () => {
+      await server.client.close().catch(() => undefined)
+      lifetime.signal.throwIfAborted()
+      const result = await connectServer(server.name, server.config, server.cwd, rebuildSchemas, lifetime.signal, refreshIntervalMs, recordRefreshError)
+      if (closed) {
+        await result.server.client.close().catch(() => undefined)
+        lifetime.signal.throwIfAborted()
+      }
+      connected.set(server.name, result.server)
+      rebuildSchemas()
+      return result.server
+    })().finally(() => { reconnecting.delete(server.name) })
+    reconnecting.set(server.name, replacement)
+    return replacement
   }
 
   const run = async (name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> => {
@@ -1206,38 +1249,74 @@ export async function createMcpRuntime(options: {
     }
   }
 
-  let closed = false
-  const refresh = async (): Promise<void> => {
+  const refresh = async (name?: string): Promise<void> => {
     if (closed) return
-    const results = await Promise.allSettled([...connected.values()].map(server => server.refreshTools()))
-    results.forEach((result, index) => {
-      if (result.status !== 'rejected') return
-      const server = [...connected.values()][index]
-      const message = `${server?.name ?? 'unknown'}: MCP refresh failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
-      if (!failures.includes(message)) failures.push(message)
-    })
-    rebuildSchemas()
+    const selected = [...connected.values()].filter(server => name === undefined || server.name === name)
+    if (name !== undefined && !selected.length) throw new Error(`找不到已连接的 MCP server "${name}"`)
+    await Promise.all(selected.map(async server => {
+      try {
+        await server.refreshTools()
+      } catch (error) {
+        if (!closed) recordRefreshError(server.name, error)
+      }
+    }))
   }
   const close = async (): Promise<void> => {
     if (closed) return
     closed = true
+    lifetime.abort()
+    await ready
+    await Promise.allSettled(reconnecting.values())
     await Promise.allSettled([...connected.values()].map(server => server.client.close()))
     connected.clear()
+    rebuildSchemas()
   }
 
-  const instructionBlocks = [...connected.values()].flatMap(server => {
-    const raw = server.client.getInstructions()?.trim()
-    if (!raw) return []
-    const clipped = raw.length > MAX_DESCRIPTION_LENGTH
-      ? raw.slice(0, MAX_DESCRIPTION_LENGTH) + '…'
-      : raw
-    return [`## ${server.name}\n${clipped}`]
-  })
-  const instructions = instructionBlocks.length
-    ? `# MCP Server Instructions\n\n${instructionBlocks.join('\n\n')}`.slice(0, 10_000)
-    : undefined
+  const getInstructions = () => {
+    const instructionBlocks = [...connected.values()].flatMap(server => {
+      const raw = server.client.getInstructions()?.trim()
+      if (!raw) return []
+      const clipped = raw.length > MAX_DESCRIPTION_LENGTH
+        ? raw.slice(0, MAX_DESCRIPTION_LENGTH) + '…'
+        : raw
+      return [`## ${server.name}\n${clipped}`]
+    })
+    const instructions = instructionBlocks.length
+      ? `# MCP Server Instructions\n\n${instructionBlocks.join('\n\n')}`.slice(0, 10_000)
+      : undefined
 
-  return { schemas, failures, instructions, run, refresh, getSchemas: () => [...schemas], close }
+    return instructions
+  }
+
+  const ready = mapWithConcurrency(configs, 4, async ([name, config]) => {
+    if (closed) return
+    try {
+      const result = await connectServer(name, config, cwd, rebuildSchemas, lifetime.signal, refreshIntervalMs, recordRefreshError)
+      if (closed) {
+        await result.server.client.close().catch(() => undefined)
+        return
+      }
+      const collision = result.schemas.find(schema =>
+        schemas.some(existing => existing.function.name === schema.function.name))
+      if (collision) {
+        failures.push(`${name}: MCP tool name collision: ${collision.function.name}`)
+        await result.server.client.close().catch(() => undefined)
+        return
+      }
+      connected.set(name, result.server)
+      rebuildSchemas()
+    } catch (error) {
+      if (!closed) failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }).then(() => { loading = false })
+  if (!options.background) await ready
+
+  return {
+    schemas, ready, failures,
+    get loading() { return loading },
+    get instructions() { return getInstructions() },
+    run, refresh, getSchemas: () => [...schemas], close,
+  }
 }
 
 export function summarizeMcpServer(config: McpServerConfig): string {
